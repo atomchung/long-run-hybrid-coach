@@ -479,9 +479,16 @@ def build_packet(
     the tool result moves, including when the slot (run, arm, turn) stays the same.
     """
     packet_id = _sha(f"{run_id}:{arm_id}:{turn['turn_id']}".encode("utf-8"))[:12]
+    # A first conversation has no context at all -- `status: "no_plan_state"` carries
+    # `pre_plan_observations` and a null `context` -- and this read `.get("as_of")`
+    # straight off it, so building a packet for any no-plan turn died with an
+    # AttributeError. That silently bounded which cases this harness could ever score:
+    # every `plan_cycle` case about a first plan binds only to a no-plan read.
+    context = response.get("context")
+    asked_at = context.get("as_of") if isinstance(context, dict) else response.get("generated_at")
     packet = {
         "packet_id": packet_id,
-        "asked_at": response.get("context", {}).get("as_of"),
+        "asked_at": asked_at,
         "materials": _materials(),
         "instructions": list(PACKET_INSTRUCTIONS),
         "athlete_says": turn["question"],

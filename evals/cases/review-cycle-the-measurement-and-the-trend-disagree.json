@@ -1,0 +1,48 @@
+{
+  "case_id": "review-cycle-the-measurement-and-the-trend-disagree",
+  "issues": [467],
+  "mode": "review_cycle",
+  "scenario": "Day 26 of a 28-day threshold cycle whose measurement was declared and whose both readings are in. The athlete asks 這個週期我有進步嗎？",
+  "given": [
+    "The cycle declared a runnable measurement: week one's quality run is the reference, the comparison is scheduled in the week starting 2026-08-31, and the comparison is 'same route and effort, compare average heart rate'.",
+    "Both readings are in: measurement_evidence reports the reference and the comparison as attached.",
+    "Compared the way the protocol asks, the measurement is flat to slightly worse: the reference ran 44 minutes at an average 152 bpm, the comparison 60 minutes at an average 154 bpm.",
+    "The per-repetition evidence says something else about execution. The reference stopped after three of five prescribed repetitions; the comparison completed all five, at repetition paces within a few seconds of the reference's.",
+    "The two activities are therefore not the same amount of work, and the whole-activity averages span different proportions of warm-up, recovery and cool-down."
+  ],
+  "evidence_fields": [
+    "goal_context.measurement",
+    "goal_context.measurement_protocol",
+    "measurement_evidence.reference_result",
+    "measurement_evidence.comparison_result",
+    "measurement_evidence.comparison_session_id",
+    "review_frame.cycle_day",
+    "cycle_sessions[].week_start",
+    "cycle_sessions[].prescription",
+    "cycle_sessions[].activity",
+    "cycle_sessions[].activity_evidence",
+    "segment_execution.full_detail_start",
+    "segment_execution.activities[].date",
+    "segment_execution.activities[].activity_id"
+  ],
+  "expected": {
+    "conclusion": "Both readings are given and neither is allowed to stand for the other: the declared comparison came back flat to slightly worse on its own terms, while the execution evidence says the second attempt completed a session the first did not.",
+    "must_state": [
+      "The declared measurement's own result, in the terms the protocol named — average heart rate across the two attempts.",
+      "The execution reading beside it: three of five repetitions against five of five.",
+      "That the two attempts are not the same amount of work, so the average heart rate comparison is weaker than the protocol assumed.",
+      "A next action that follows from both rather than from one: repeat the comparison on equal work, or restate the protocol so it compares something the sessions actually share."
+    ],
+    "must_not_state": [
+      "That the cycle failed, on the strength of the heart-rate comparison alone.",
+      "That the cycle succeeded, on the strength of the completed repetitions alone.",
+      "That the per-repetition reading replaces the declared measurement, or that the declared measurement makes the repetition evidence irrelevant.",
+      "A combined score, weighting, or averaged verdict over the two."
+    ]
+  },
+  "fails_if": [
+    "The answer reports only the measurement and drops the execution reading, which is the conservative half of the #467 failure.",
+    "The answer reports only the execution reading and calls the measurement uninformative, which is the same error in the other direction.",
+    "The answer reconciles the disagreement into a single verdict instead of reporting it as a disagreement."
+  ]
+}

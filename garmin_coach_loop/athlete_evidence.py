@@ -153,6 +153,21 @@
   what a restatement displaced, so a second statement is never lost quietly, and a day
   that genuinely holds two things is one sentence holding both.
 
+- **Which planned session they did not do.** A past session nothing attached to reads
+  ``planned`` for ever, and until now an athlete saying "那天沒練" had nowhere to put it:
+  ``confirmActivityMatch`` needs an activity, and a subjective note fires nothing (issue
+  #468). One statement per planned session, keyed to the plan that wrote it, and read
+  back beside the commit chain so the session reports as ``missed`` with the athlete
+  named as the source.
+
+  It is a *statement*, never an inference. Nothing in the product derives one from an
+  absence: a watch that was off and a session nobody trained look the same, which is
+  what issue #30 Part B is about, and the athlete is the only source that separates
+  them. Nothing asks them for it, either -- a coach walking the week session by session
+  asking "and this one?" is the interrogation the Skill forbids. Removing it is
+  ordinary, and an activity that attaches later is reported as the attachment it is
+  rather than silently overruling what they said.
+
 Everything here is *reported*, never measured, and it says so: every record carries
 ``source: "athlete_reported"`` and the instant it was recorded. Nothing in this module
 scores, aggregates, compares against a baseline, or decides anything -- it is storage for
@@ -245,6 +260,9 @@ __all__ = [
     "reported_strength_sessions",
     "reported_subjective_states",
     "resolve_settings",
+    "confirmed_session_outcomes",
+    "record_session_not_trained",
+    "retract_session_outcome",
     "retract_activity_summary",
     "retract_body_measurement",
     "retract_long_term_goal",
@@ -497,6 +515,7 @@ def empty_evidence() -> dict[str, Any]:
         "reported_activities": [],
         "subjective_states": [],
         "reported_recovery": [],
+        "session_outcomes": [],
         "imports": [],
     }
 
@@ -554,6 +573,11 @@ def _validated_evidence(value: dict[str, Any]) -> dict[str, Any]:
     # written before an athlete could have their own readings kept is a file from an
     # athlete who had none kept, not a damaged one.
     recovery = _record_list(value, "reported_recovery")
+    # What the athlete said about a planned session whose day has already passed, on the
+    # same terms as every container above: absent reads as empty and the version does not
+    # move. A file written before an athlete could say "that one I did not do" is a file
+    # from an athlete who never said it, not a damaged one.
+    session_outcomes = _record_list(value, "session_outcomes")
     # The ledger of uploads, on the same terms: absent reads as empty and the version does
     # not move. It holds no file content -- a digest, a format, a count and a timestamp --
     # and exists so that dragging the same export in twice is visibly the same upload
@@ -582,6 +606,7 @@ def _validated_evidence(value: dict[str, Any]) -> dict[str, Any]:
         "reported_activities": activities,
         "subjective_states": states,
         "reported_recovery": recovery,
+        "session_outcomes": session_outcomes,
         "imports": imports,
     }
 
@@ -3376,6 +3401,210 @@ def retract_subjective_state(
             "state_count": len(states),
             "note": None,
         }
+
+
+SESSION_NOT_TRAINED = "not_trained"
+
+
+def _session_outcome_position(
+    outcomes: list[dict[str, Any]], plan_id: str, session_id: str
+) -> int | None:
+    """Where this plan's statement about this session sits, or None.
+
+    Keyed by the pair rather than by the session alone: a session id is only unique
+    inside the plan that wrote it, and two cycles of one athlete may reuse a name.
+    """
+    for index, record in enumerate(outcomes):
+        if record.get("plan_id") == plan_id and record.get("session_id") == session_id:
+            return index
+    return None
+
+
+def record_session_not_trained(
+    state_dir: Path | str,
+    *,
+    plan_id: Any,
+    session_id: Any,
+    date: Any,
+    sport: Any,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Store the athlete's own statement that one already-elapsed session was not done.
+
+    The gap this closes (issue #468, the concrete trigger for issue #30 Part B): a
+    planned session nothing attached to reads ``planned`` for ever, and the athlete
+    saying "that day I did not train" had nowhere to go. ``confirmActivityMatch`` needs
+    an activity and a pair sitting in ``reconciliation.ambiguous``; ``recordSubjectiveState``
+    is a sentence nothing fires on. So an absence the athlete had already resolved out
+    loud stayed exactly as ambiguous as the day it went unmatched.
+
+    What is stored is the statement, not an inference. **No absence of provider evidence
+    ever writes one of these** -- a watch that was off, flat or never synced looks
+    identical to a session nobody trained, which is the whole reason issue #30 Part B
+    exists, and the athlete is the only source that can tell the two apart. Nothing here
+    asks them either: the coach volunteering a per-session interrogation is the failure
+    the Skill's own "a session whose day passed without an outcome is an ordinary state"
+    forbids, and it stays forbidden. This is the door for an answer already given.
+
+    One record per (plan, session), newest winning, so repeating the statement converges
+    rather than accumulating -- and because the content is fixed by the pair, a repeat is
+    the *same* record and comes back as an idempotent replay.
+
+    It does not write PlanState. The session it is about has usually left
+    ``week.sessions`` already -- past weeks live in the commit chain, which is append-only
+    -- so there is nothing there to correct, and reaching into history to rewrite a
+    committed plan would break the property every other reader depends on. The context
+    builder reads these beside the commit chain instead and reports the session as
+    ``missed``, with ``activity_evidence`` saying the athlete is where that came from.
+
+    Reversible for the same reason it is stored: ``retract_session_outcome`` removes it,
+    and an activity that later attaches to the session is reported as the attachment it
+    is, with the standing statement named in ``unknowns`` rather than silently overruled.
+    """
+    if not isinstance(plan_id, str) or not plan_id:
+        raise AthleteEvidenceError("a session outcome must name the plan it belongs to")
+    if not isinstance(session_id, str) or not session_id:
+        raise AthleteEvidenceError("a session outcome must name one session_id")
+    if not isinstance(date, str) or not date:
+        raise AthleteEvidenceError("a session outcome must carry the session's own date")
+    if sport not in SPORTS or sport == "rest":
+        raise AthleteEvidenceError(f"a session outcome cannot be recorded for sport {sport!r}")
+    recorded_at = _recorded_at(now)
+
+    root = resolve_state_root(state_dir)
+    # 0o700 when this module creates it, matching init_store; an already-existing
+    # directory keeps whatever the store gave it.
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation="recording a session outcome"):
+        _refuse_when_handed_off(root, "recording a session outcome")
+        evidence = load_evidence(root)
+        outcomes = evidence["session_outcomes"]
+        content = {
+            "plan_id": plan_id,
+            "session_id": session_id,
+            "date": date,
+            "sport": sport,
+            "outcome": SESSION_NOT_TRAINED,
+        }
+        outcome_id = canonical_hash(content)
+        position = _session_outcome_position(outcomes, plan_id, session_id)
+        held = outcomes[position] if position is not None else {}
+        if position is not None and held.get("outcome_id") == outcome_id:
+            return {
+                "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+                "outcome_id": outcome_id,
+                "idempotent_replay": True,
+                "replaced": None,
+                "session_outcome": held,
+                "outcome_count": len(outcomes),
+            }
+        record = {
+            "outcome_id": outcome_id,
+            **content,
+            "recorded_at": recorded_at,
+            "source": ATHLETE_REPORTED_SOURCE,
+        }
+        replaced: dict[str, Any] | None = None
+        if position is None:
+            outcomes.append(record)
+        else:
+            replaced = held
+            outcomes[position] = record
+        _atomic_json(evidence_path(root), evidence)
+        return {
+            "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+            "outcome_id": outcome_id,
+            "idempotent_replay": False,
+            "replaced": replaced,
+            "session_outcome": record,
+            "outcome_count": len(outcomes),
+        }
+
+
+def retract_session_outcome(
+    state_dir: Path | str, *, plan_id: Any, session_id: Any
+) -> dict[str, Any]:
+    """Take back "I did not train that one" -- the correction path, not a second claim.
+
+    This is what keeps ``missed`` from being one-way. The athlete misremembered the day,
+    or the session turns out to have been trained after all and no activity will ever
+    arrive to say so: removing the statement returns the session to whatever the evidence
+    alone makes of it, which for an unmatched past session is ``planned`` again.
+
+    Keyed by the same pair the record is, and finding nothing is not an error -- which is
+    what makes it safe to repeat.
+    """
+    if not isinstance(plan_id, str) or not plan_id:
+        raise AthleteEvidenceError("a session outcome retraction must name the plan")
+    if not isinstance(session_id, str) or not session_id:
+        raise AthleteEvidenceError("a session outcome retraction must name one session_id")
+
+    root = resolve_state_root(state_dir)
+    # 0o700 when this module creates it, matching init_store; an already-existing
+    # directory keeps whatever the store gave it.
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation="retracting a session outcome"):
+        _refuse_when_handed_off(root, "retracting a session outcome")
+        evidence = load_evidence(root)
+        outcomes = evidence["session_outcomes"]
+        position = _session_outcome_position(outcomes, plan_id, session_id)
+        standing = lambda: sorted(
+            str(record.get("session_id"))
+            for record in outcomes
+            if record.get("plan_id") == plan_id
+        )
+        if position is None:
+            # The standing sessions ride ``note`` rather than a field named for a day,
+            # exactly as a long-term goal's and a training preference's retraction do:
+            # all three are keyed by a name rather than by a date, so there is no "that
+            # day" for them to have other records on (AGENTS.md 14 -- one field, one
+            # meaning, on every path).
+            others = standing()
+            return {
+                "retracted": True,
+                "removed": None,
+                "outcome_count": len(outcomes),
+                "note": (
+                    f"no statement about session {session_id} was found to retract; the "
+                    "session reads from its evidence alone"
+                    + (f". Still on record for this plan: {', '.join(others)}" if others else "")
+                ),
+            }
+        removed = outcomes.pop(position)
+        _atomic_json(evidence_path(root), evidence)
+        others = standing()
+        return {
+            "retracted": True,
+            "removed": removed,
+            "outcome_count": len(outcomes),
+            "note": (
+                f"still on record for this plan: {', '.join(others)}" if others else None
+            ),
+        }
+
+
+def confirmed_session_outcomes(
+    evidence: dict[str, Any], plan_id: str
+) -> dict[str, dict[str, Any]]:
+    """This plan's session statements, by ``session_id``, for the context builder.
+
+    A malformed record degrades itself rather than the account, the way every reader in
+    this module does: a row missing its session id or carrying an outcome this version
+    does not know is skipped, and the rest are still read.
+    """
+    resolved: dict[str, dict[str, Any]] = {}
+    for record in evidence.get("session_outcomes") or []:
+        if not isinstance(record, dict):
+            continue
+        if record.get("plan_id") != plan_id:
+            continue
+        session_id = record.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            continue
+        if record.get("outcome") != SESSION_NOT_TRAINED:
+            continue
+        resolved[session_id] = record
+    return resolved
 
 
 def reported_subjective_states(

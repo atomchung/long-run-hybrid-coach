@@ -600,6 +600,11 @@ def build_context_with_domain(
         cycle_sessions=cycle_sessions,
         denied_activity_matches=denied_activity_match_event_ids(state_dir),
         confirmed_activity_matches=confirmed_activity_matches(state_dir, plan["plan_id"]),
+        # Read from the same evidence file as everything below, and scoped to this plan:
+        # a session id names a session only inside the plan that wrote it.
+        session_not_trained=athlete_evidence.confirmed_session_outcomes(
+            evidence, plan["plan_id"]
+        ),
         athlete_availability=availability,
         athlete_profile=profile,
         # Read from the same file, over the same window, and handed across untouched.

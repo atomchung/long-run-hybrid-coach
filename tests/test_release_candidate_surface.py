@@ -35,12 +35,12 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / ".agents" / "skills" / "garmin-coach-loop"
 
 # The release candidate this repository currently carries.
-RELEASE_CANDIDATE_VERSION = "1.4.9"
+RELEASE_CANDIDATE_VERSION = "1.4.10"
 
 # What the catalogue is, at that version.
-RELEASE_CANDIDATE_TOOL_COUNT = 22
+RELEASE_CANDIDATE_TOOL_COUNT = 23
 RELEASE_CANDIDATE_TOOL_CATALOGUE_SHA256 = (
-    "59c5fbae728c178f3e88442fba05bdd8c0d8fbab300409e36bad65f535393f0f"
+    "a92d1f4da5461a6ea47038d26614c7d2de7b11a6188b4744126bc6985bf99d2b"
 )
 
 # The other two reviewed surfaces. AGENTS.md "Version numbers": a patch that moves
@@ -50,10 +50,10 @@ RELEASE_CANDIDATE_TOOL_CATALOGUE_SHA256 = (
 # `change_gates.py` to notice -- and a path rule says a file changed, never that the bytes
 # a reviewer approved are no longer the bytes being served.
 RELEASE_CANDIDATE_INSTRUCTIONS_SHA256 = (
-    "d66db02bc7cd66833a54b7ac1dc131588b34cd8fd528f61ef6f33df354bc316d"
+    "897b240fc1aeca9d979fda2ed088cfc4ef59a6c36f43cc48757d796ad9ea0dc4"
 )
 RELEASE_CANDIDATE_SKILL_SHA256 = (
-    "fa8342cf49f9b47f137f223f318d205bc65200798994ab4f25ba3bf52f978c17"
+    "8932154ff3321e62be79cc7468389059139c5328281b0807daa6b6dc18d406fb"
 )
 
 # Names a client may still hold in a cached catalogue. They are answered as a refusal

@@ -149,6 +149,21 @@ happened.
 Completion is evidence that a stimulus occurred, not proof that the intended
 adaptation improved.
 
+Two questions live here and an answer owes both, kept apart. *How is the
+training going* is read from execution — the same work repeated, beside what
+came back each time — and several comparable sessions moving one way is a
+direction worth saying so, with no declared measurement required to say it.
+*Has the declared outcome moved* is read from the cycle's own measurement
+protocol and nothing else: until that has been run the outcome is unproven, and
+no wearable estimate stands in for it.
+
+Neither silences the other. An unrun protocol leaves the outcome unproven and
+leaves the execution reading exactly as readable as it was; a clear execution
+trend is evidence about training and does not promote itself into a
+demonstrated outcome. Where a measurement and the trend disagree, give both and
+say they disagree. Sessions that asked for different things are not a
+comparison, and the single-occurrence rule above still holds.
+
 Change one main training variable at a time when possible: duration, volume,
 intensity, recovery, or frequency. Size the change from the athlete's recent
 completion and response; do not apply a fixed universal progression percentage, and

@@ -32,6 +32,18 @@
         "destructive_justification": "Appends confirmation or denial evidence without deleting or overwriting the underlying provider activity."
       }
     },
+    "confirmSessionNotTrained": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Stores the athlete’s own statement that one already-elapsed planned session was not trained.",
+        "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
+        "destructive_justification": "Appends one athlete statement beside unchanged plan and provider evidence; retractAthleteRecord removes it."
+      }
+    },
     "readCoachEvidence": {
       "annotations": {
         "readOnlyHint": true,

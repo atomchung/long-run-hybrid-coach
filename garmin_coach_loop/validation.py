@@ -2359,14 +2359,23 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         # unconditional), so a null could only be a builder bug reading to the coach as
         # "this session prescribed nothing".
         _nonempty(item.get("prescription"), f"{field}.prescription", errors)
-        # An absent activity means one of three things, and the coach acts on only one of
+        # An absent activity means one of four things, and the coach acts on only two of
         # them: "nothing of that sport attached to this session" is evidence about the
-        # athlete; "that sport was trained that day but attached elsewhere" and "older
-        # than anything this build read" are both evidence about the data.
+        # athlete, and "the athlete told the coach this one did not happen" is their own
+        # answer for it (issue #468); "that sport was trained that day but attached
+        # elsewhere" and "older than anything this build read" are both evidence about
+        # the data.
         _enum(
             item.get("activity_evidence"),
             f"{field}.activity_evidence",
-            {"attached", "athlete_reported", "none_found", "other_activity_same_day", "outside_evidence_window"},
+            {
+                "attached",
+                "athlete_confirmed_not_trained",
+                "athlete_reported",
+                "none_found",
+                "other_activity_same_day",
+                "outside_evidence_window",
+            },
             errors,
         )
         activity = item.get("activity")
@@ -2815,10 +2824,18 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
     _enum(session.get("match_status"), f"{field}.match_status", {"planned", "completed", "partial", "moved", "replaced", "missed"}, errors)
 
 
+# The cycle-record vocabulary a measurement reading is reported in. It is the same list
+# `cycle_sessions[].activity_evidence` uses, because `_measurement_evidence` copies the
+# value straight off the record -- so a value added there and not here refuses the whole
+# context. That is not a theoretical coupling: `athlete_confirmed_not_trained` was added
+# for issue #468 and missed here, and the reference session is exactly the session an
+# athlete is most likely to answer for, which turned "I did not train that day" into a
+# 422 on every later turn.
 _ACTIVITY_EVIDENCE = (
     "attached",
     "other_activity_same_day",
     "athlete_reported",
+    "athlete_confirmed_not_trained",
     "outside_evidence_window",
     "none_found",
 )

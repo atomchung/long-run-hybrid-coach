@@ -907,11 +907,12 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(22, len(tools))
+        self.assertEqual(23, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
                 "confirmActivityMatch",
+                "confirmSessionNotTrained",
                 "readCoachEvidence",
                 "getCoachState",
                 "inspectIntervalsPermissions",
@@ -1380,6 +1381,12 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # what the plan prescribed.
     "confirmPrescribedStrength": (False, True, True, False),
     "confirmActivityMatch": (False, False, True, False),
+    # The one record tool that is not destructive, and the reason is the shape rather
+    # than the intent: the statement's whole content is which session it names, so a
+    # repeat is the same row and there is no earlier version of it to displace. It
+    # overwrites no plan value and no provider evidence either -- the cycle record
+    # reads it beside them -- and retractAthleteRecord takes it back.
+    "confirmSessionNotTrained": (False, False, True, False),
     # The three previews and the export, all read-only again since 1.4.3 (issue #408).
     # A preview signs its proposal and hands it back rather than storing it, so there is
     # nothing on disk for the apply to find -- which is also why the apply takes the

@@ -26,11 +26,18 @@ from tests.test_gateway import (
 # account below. Ceilings rather than measurements, set above what this checkout
 # produces, for the reason every other budget in this repository is: a journey that grows
 # has to say what it bought.
+#
+# Raised once, by ~900 characters on every journey, and what it bought is the
+# execution-trend / declared-outcome split in `hybrid_training.md` (issue #467). The
+# whole of that text rides every refresh as `coaching_guidance`, which is why one
+# paragraph moves all four numbers at once and why the cost is stated here rather than
+# absorbed. What it fixes is a coach answering "cannot tell" about a visible,
+# direction-consistent trend because the cycle's measurement protocol was never run.
 CANDIDATE_CEILINGS: dict[str, int] = {
-    "what_should_i_do_today": 26_500,
-    "correct_a_goal_then_move_thursday": 31_000,
-    "how_did_thursdays_session_go": 30_500,
-    "review_the_week_and_roll_it": 52_000,
+    "what_should_i_do_today": 27_500,
+    "correct_a_goal_then_move_thursday": 31_500,
+    "how_did_thursdays_session_go": 31_000,
+    "review_the_week_and_roll_it": 53_000,
 }
 
 # The one journey the candidate arm does not win, and by how much. A day question

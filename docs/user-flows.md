@@ -226,7 +226,7 @@ What each layer *refuses* is the load-bearing half.
 ### The same sentence, four answers
 
 [`evals/cases/`](../evals/cases) is where those stop being principles and start being
-executable. Fifty-two cases carrying all five coaching modes, each naming the evidence
+executable. Fifty-six cases carrying all five coaching modes, each naming the evidence
 fields it reads and what the answer must state. The modes and the layers above are close
 but not one-to-one — eval cases still name a first plan `plan_cycle` even though
 `init_store` writes no DecisionEvent, and a cycle review writes `review_cycle` — and

@@ -157,8 +157,8 @@ Written by the athlete's own statements rather than by any sync: the hosted
 routes `recordAthleteProfile`, `recordAthleteAvailability`,
 `recordLongTermGoal`, `recordTrainingPreference`, `recordStrengthExecution`,
 `confirmPrescribedStrength`, `recordBodyMeasurement`, `recordActivitySummary`,
-`recordSubjectiveState` and `importAthleteHistory`, the CLI `record-profile` and
-`record-availability`,
+`recordSubjectiveState`, `confirmSessionNotTrained` and `importAthleteHistory`, the CLI
+`record-profile` and `record-availability`,
 and the days named in an initialization request. Every record carries the instant
 it was recorded and one of three provenances.
 
@@ -172,6 +172,7 @@ Everything in it is something neither provider above can ever answer:
 | Athlete-reported per-set `weight_kg`, `assist_kg`, `reps`, `rpe`, `notes` | Same structural gap as `strength_log` — no provider supplies load — but reachable without a local database. |
 | Athlete-stated `weight_kg` and `body_fat_pct`, one record per day | The Apple body-composition rows above are one machine's `health.db`, so a hosted athlete has no path to them at all. A number read off a scale needs none. |
 | A session the athlete trained that no device recorded: sport, duration, optional distance, 1-5 feel, note | Intervals holds what a watch uploaded. A pool without one, a hotel treadmill or a hike is training that no provider will ever have. It stays beside `recent_actuals` and never enters it — see below. |
+| That one already-elapsed planned session was not trained (issue #468) | An absence of provider evidence cannot answer this: a watch that was off, flat or never synced looks exactly like a session nobody did, which is what issue #30 Part B is about. The athlete is the only source that separates the two, and nothing in the product infers it or asks them for it session by session. It reads back on the cycle record as `missed` with `activity_evidence: "athlete_confirmed_not_trained"`, and `retractAthleteRecord` takes it back. |
 | Training that predates the Intervals connection, out of a file the athlete uploads | Intervals holds one account's history from the day it was connected. Everything before that lives in a Garmin, Strava or Apple export the athlete still has, and no provider read will ever reach it (issue #101). |
 | What the athlete is training for beyond this cycle: `metric`, `target`, optional `target_date` | An aim is not an observation, so no provider records one. It also outlives the 28-day cycle, which is why it is not in PlanState: the cycle's own `goal` is a milestone toward it, and would take the target with it when the cycle closed. |
 | How the athlete says they felt on a day: the sentence and its date, last two weeks | A wearable reports a readiness figure; nothing measures "我覺得很累". It used to live only inside the conversation it was said in, so three consecutive weeks of it read exactly like a first (issue #188). Stored as the words rather than a score — a subjective feeling translated into a number is what `recovery_signals` refuses, and this is the sentence that ban was protecting. Symptoms are not here: those are `red_flags`, which limit the day deterministically. |

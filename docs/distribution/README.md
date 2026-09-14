@@ -373,7 +373,7 @@ invariant, not a deployment choice: see [`../../AGENTS.md`](../../AGENTS.md).
 
 ## The tool catalogue and its annotations
 
-22 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
+23 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
 hints, and a justification for each hint. This is that table.
 
 Every name, title and hint below is asserted against the running catalogue by
@@ -403,6 +403,7 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | --- | --- | --- | --- | --- | --- |
 | `startCoachSession` | Read the plan and reconcile completed work | no | yes | no | Reconciles verified actuals and can correct stored athlete-reported recovery values by date. Corrections overwrite those values; Intervals is only read. |
 | `confirmActivityMatch` | Resolve one probable activity match | no | no | no | Records a currently ambiguous identity-backed pair as confirmed or denied. Confirmation reconciles the existing actual; denial suppresses that proposed pair and preserves provider evidence. Append-only decision evidence, with idempotent replay. |
+| `confirmSessionNotTrained` | Record a past session as not trained | no | no | no | Stores one athlete statement that an already-elapsed planned session was not trained, beside plan and provider evidence that is not changed. Idempotent on the session; `retractAthleteRecord` removes it. Never derived from an absence of provider data. |
 | `readCoachEvidence` | Read more of this session's evidence | yes | no | no | Returns evidence groups `startCoachSession` already assembled, out of the snapshot it held. No provider request, no reconciliation, and the plan store is never opened. |
 | `getCoachState` | Read the stored plan summary | yes | no | no | Reads the current plan without a provider call or plan mutation, and records nothing about the call. |
 | `inspectIntervalsPermissions` | Check the Intervals connection | yes | no | no | Asks the provider what this credential can do, and which account it belongs to — the account label is read live and kept nowhere. Three GET requests; changes nothing on either side. |
@@ -432,7 +433,7 @@ that reaching the service, so an athlete was shown a preview and kept their data
 refusal naming the support page, so a client holding the old catalogue cannot narrate an
 erasure that did not happen — and they are in no `tools/list`.
 
-The split is 6 read-only and 16 write; the longest name is 27 characters, against the
+The split is 6 read-only and 17 write; the longest name is 27 characters, against the
 64-character cap. For one release it read 0 and 24: every dispatched call recorded
 per-account usage and outcome counters, and a review rule that counts a log line as a
 state change counts those. The counters were removed in 1.4.3 rather than argued with

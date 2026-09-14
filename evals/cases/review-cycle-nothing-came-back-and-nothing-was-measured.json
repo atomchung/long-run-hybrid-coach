@@ -1,0 +1,43 @@
+{
+  "case_id": "review-cycle-nothing-came-back-and-nothing-was-measured",
+  "issues": [467],
+  "mode": "review_cycle",
+  "scenario": "Day 26 of a 28-day threshold cycle. The athlete asks 這個週期我有進步嗎？",
+  "given": [
+    "The cycle declared no measurement: goal_context.measurement is null and measurement_evidence is null.",
+    "No quality session in the cycle has an attached activity. Every running row after week one reads none_found, which says this build read those days and nothing of that sport attached to the session.",
+    "One strength day is on record from the athlete's own report; nothing else came back for the cycle's sessions.",
+    "There is therefore neither a declared outcome reading nor two comparable executions to read a direction from.",
+    "No per-segment execution is available for the window."
+  ],
+  "evidence_fields": [
+    "goal_context.measurement",
+    "goal_context.measurement_protocol",
+    "measurement_evidence",
+    "review_frame.cycle_day",
+    "cycle_sessions[].week_start",
+    "cycle_sessions[].prescription",
+    "cycle_sessions[].activity",
+    "cycle_sessions[].activity_evidence",
+    "unknowns"
+  ],
+  "expected": {
+    "conclusion": "Neither question can be answered from this record, and the answer says so for each of them separately rather than as one shrug.",
+    "must_state": [
+      "That no measurement was declared or run, so the outcome is unproven.",
+      "That the record holds no comparable executions to read a direction from either — stated as its own finding, not as a consequence of the missing measurement.",
+      "That an absent activity is an absence and not a confirmed rest: nothing here establishes that the athlete did not train.",
+      "The cheapest thing that would change the answer next time — declaring the measurement, or the athlete saying what actually happened on those days."
+    ],
+    "must_not_state": [
+      "That the athlete missed those sessions, or that adherence was poor, from absent activities alone.",
+      "That the cycle worked, or that it failed.",
+      "A trend read out of prescriptions rather than out of what came back."
+    ]
+  },
+  "fails_if": [
+    "The answer converts absent activities into missed sessions and reports a compliance problem.",
+    "The answer, having been told the two claims are separate, manufactures an execution trend where no session came back.",
+    "The answer gives one undifferentiated 'cannot tell' without saying which of the two questions is blocked by what."
+  ]
+}

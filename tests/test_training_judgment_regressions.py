@@ -42,6 +42,40 @@ class TrainingJudgmentRegressionTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, text)
 
+    def test_the_execution_trend_and_the_declared_outcome_stay_two_claims(self):
+        """Issue #467: one sentence was read as governing both, and it governs one.
+
+        The reproduced failure: three same-goal interval sessions with an unambiguous
+        direction -- repetitions up, fastest repetition faster, heart-rate ceiling higher
+        -- and the coach answered that progress was simply unanswerable, because the
+        cycle's measurement protocol had never been run. Both halves of the repair are
+        pinned here: the outcome boundary the answer was right to keep, and the trend
+        reading it wrongly suppressed along with it.
+        """
+        text = " ".join(training_judgment().split())
+
+        for phrase in (
+            # the boundary that must survive: completion is not adaptation
+            "not proof that the intended adaptation improved",
+            # the outcome claim is read from the protocol and from nothing else
+            "read from the cycle's own measurement protocol and nothing else",
+            "until that has been run the outcome is unproven",
+            "no wearable estimate stands in for it",
+            # the reading the collapse suppressed, and the thing that makes it a reading
+            "several comparable sessions moving one way is a direction",
+            # neither claim may answer for the other, in either direction
+            "Neither silences the other",
+            "leaves the execution reading exactly as readable as it was",
+            "does not promote itself into a demonstrated outcome",
+            # a disagreement is reported as one rather than resolved by loudness
+            "Where a measurement and the trend disagree, give both",
+            # the guards against the opposite failure, over-reading
+            "Sessions that asked for different things are not a comparison",
+            "A single session rarely establishes a direction",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, text)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

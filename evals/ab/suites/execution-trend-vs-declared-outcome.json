@@ -1,0 +1,105 @@
+{
+  "suite_id": "execution-trend-vs-declared-outcome",
+  "suite_version": 1,
+  "issues": [467, 25],
+  "question": "When a cycle's declared measurement was never run, does the coach still read the execution trend its repeated sessions carry -- and when it does, does it keep that reading apart from the outcome claim instead of promoting one into the other?",
+  "note": "The arms of this suite are not two context builds. What issue #467 moved is served text -- SKILL.md, orchestration.md and hybrid_training.md -- and both the packet's `materials` and the tool result's own `coaching_guidance` carry that text, so the comparison is two runs of this one live arm: one built with the three files as `origin/main` has them, one with the candidate. Every tool result is otherwise byte-identical, because the context builder change that ships beside it is inert until an athlete records a session outcome. Read the two runs' reports side by side; `report` compares arms within a run and has nothing to compare here.",
+  "overlay_fields": [
+    "cycle_sessions",
+    "recent_actuals",
+    "segment_execution"
+  ],
+  "arms": [
+    {
+      "arm_id": "served-text",
+      "commit": null,
+      "source": "live",
+      "summary": "Whatever this checkout serves. The run is named for which of the two texts was in place when its packets were built."
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "claim_separation",
+      "reads": "THE DIMENSION THIS SUITE EXISTS FOR. The answer makes two claims where the evidence supports two, and says which evidence carries each. An answer that reports the whole progress question as unknown because the protocol was not run has collapsed them one way; an answer that says the 5K improved because the repetitions did has collapsed them the other."
+    },
+    {
+      "dimension": "trend_evidence",
+      "reads": "Where a trend is claimed, it is carried by figures the context handed over -- repetitions completed, repetition pace, the heart rate they were held at -- named to the sessions they came from. A trend asserted without them is a fabrication however reasonable it sounds."
+    },
+    {
+      "dimension": "outcome_boundary",
+      "reads": "The declared outcome is judged against the protocol and nothing else. A device fitness estimate, an easy run's pace or a resting heart rate presented as the outcome evidence fails this dimension whatever else the answer got right."
+    },
+    {
+      "dimension": "over_reading_restraint",
+      "reads": "One session is not a direction, and a whole-activity average is not a repetition. The control turns are where this is read: an answer that finds a trend in a single attached session, or that compares a 50-minute average against a 1 km target, has over-corrected."
+    },
+    {
+      "dimension": "absence_restraint",
+      "reads": "An absent activity is an absence. No answer may report the athlete as having missed a session on the strength of nothing having attached to it."
+    },
+    {
+      "dimension": "next_action",
+      "reads": "The answer reaches something the athlete can do: run the measurement, declare it, repeat a comparison on equal work, or say what would make the reading firmer. A review that only describes has not finished."
+    }
+  ],
+  "turns": [
+    {
+      "turn_id": "trend-without-a-measurement",
+      "scenario": "30_review_cycle__a_quality_series_improving_and_no_measurement",
+      "mode": "review_cycle",
+      "covers": [
+        "review-cycle-a-trend-without-a-runnable-measurement"
+      ],
+      "question": "這個週期我有進步嗎？",
+      "target_session_ids": [
+        "run-quality-01",
+        "run-quality-02",
+        "run-quality-03"
+      ],
+      "why": "The sharp turn, and the read the issue was filed on. Three attempts at one session, each back with its repetitions: five then six then six completed, fastest repetition 6:02 then 5:52 then 5:41, the ceiling rising 174/178/183. The cycle never declared a measurement, so `goal_context.measurement` is null and `unknowns` says no comparison is scheduled. Everything needed for both claims is present and nothing in the read says what either fact means."
+    },
+    {
+      "turn_id": "one-session-is-not-a-trend",
+      "scenario": "14_review_cycle__two_sessions_one_day",
+      "mode": "review_cycle",
+      "covers": [
+        "review-cycle-one-session-is-not-a-trend"
+      ],
+      "question": "這個週期我有進步嗎？",
+      "target_session_ids": [
+        "run-quality-01"
+      ],
+      "why": "The control against over-correction. Exactly one quality session in the cycle came back -- 50 minutes, 9.0 km, an average 5:33/km -- and no later attempt exists to compare it against. If the candidate text buys a trend here it has bought a licence rather than a reading, and the whole-session average is also the figure most likely to be read as though it were a repetition time."
+    },
+    {
+      "turn_id": "the-measurement-and-the-trend-disagree",
+      "scenario": "19_review_cycle__week_one_quality_segments",
+      "mode": "review_cycle",
+      "covers": [
+        "review-cycle-the-measurement-and-the-trend-disagree"
+      ],
+      "question": "這個週期我有進步嗎？",
+      "target_session_ids": [
+        "run-quality-01",
+        "run-measure-01"
+      ],
+      "why": "Both readings of the declared measurement are in and they say the athlete got marginally worse -- 152 bpm over 44 minutes against 154 over 60. The per-repetition evidence says the reference stopped after three of five and the comparison completed all five. This is where the two claims are most likely to be resolved into one, in either direction."
+    },
+    {
+      "turn_id": "nothing-came-back-at-all",
+      "scenario": "15_review_cycle__strength_reported_and_not",
+      "mode": "review_cycle",
+      "covers": [
+        "review-cycle-nothing-came-back-and-nothing-was-measured"
+      ],
+      "question": "這個週期我有進步嗎？",
+      "target_session_ids": [
+        "run-quality-01",
+        "run-quality-02",
+        "run-quality-03"
+      ],
+      "why": "The floor. No declared measurement and nothing attached to any quality session, so both claims are genuinely unanswerable and the answer's job is to say which is blocked by what -- without converting nineteen absences into a compliance finding."
+    }
+  ]
+}

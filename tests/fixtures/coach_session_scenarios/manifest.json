@@ -37,7 +37,8 @@
     "26_no_plan__empty_account": "A connected account with nothing in it: Intervals answered, the window is empty, and the athlete has stated nothing either",
     "27_revisit_today__time_fallback_applies": "A thirty-minute day with unchanged recovery: the threshold session already carries a thirty-minute fallback for lost time",
     "28_revisit_today__recovery_fallback_not_triggered": "The same thirty-minute day and unchanged recovery, but the session's fallback is conditional on recovery declining; lost time alone does not trigger that replacement",
-    "29_revisit_today__late_cycle_no_measurement": "Today's session on day 23 of a cycle whose measurement was never declared: the gap is in unknowns and the question is still what to run"
+    "29_revisit_today__late_cycle_no_measurement": "Today's session on day 23 of a cycle whose measurement was never declared: the gap is in unknowns and the question is still what to run",
+    "30_review_cycle__a_quality_series_improving_and_no_measurement": "Day 26 of a cycle that never declared a measurement, whose quality session was attempted three times with its repetitions back each time: five then six then six completed, the fastest repetition 6:02 then 5:52 then 5:41, the ceiling rising -- a direction with no protocol to measure the outcome against"
   },
   "scope": "Anonymous and synthetic; built only from examples/garmin-coach-loop-28-day and the fixtures in tests/coach_session_scenarios.py"
 }
