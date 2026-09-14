@@ -218,7 +218,8 @@ What each layer *refuses* is the load-bearing half.
 [`evals/cases/`](../evals/cases) is where those stop being principles and start being
 executable. Fifty-two cases carrying all five coaching modes, each naming the evidence
 fields it reads and what the answer must state. The modes and the layers above are close
-but not one-to-one — a first plan and a cycle review both write `plan_cycle` — and
+but not one-to-one — eval cases still name a first plan `plan_cycle` even though
+`init_store` writes no DecisionEvent, and a cycle review writes `review_cycle` — and
 `decision-evidence.md` is where each layer says which cases cover it. Four of them share one athlete sentence —
 今天有空，還能再練嗎 — and differ only in what else is true:
 

@@ -4006,11 +4006,11 @@ def set_baseline(
 
     Deliberately not gated on the event's mode (issue #32). Judging whether the
     baseline still describes the athlete happens wherever a prescription is being
-    anchored to it -- planning a cycle, planning a week, revisiting today, reviewing
-    either -- so the event carries whatever mode that conversation was already in,
-    and `apply_decision` holds it to the same mode/action rules as any other
-    decision. An earlier version required `plan_cycle` here, which forced a week
-    plan that found its anchor stale to fake a cycle event just to move one number.
+    anchored to it -- a week change or a cycle review -- so the event carries
+    whatever mode that conversation was already in, and `apply_decision` holds it
+    to the same mode/action rules as any other decision. An earlier version
+    required `plan_cycle` here, which forced a week plan that found its anchor
+    stale to fake a cycle event just to move one number.
     """
     status = status_store(state_dir)
     before = status["current_plan"]

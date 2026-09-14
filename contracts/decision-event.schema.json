@@ -31,7 +31,7 @@
       "minLength": 1
     },
     "mode": {
-      "description": "Decision scope for locally authored events: plan_week/review_week preserve the goal and cycle direction (outlook may change); plan_cycle/review_cycle may change goal, cycle and executable week together. Hosted change_request.decision_scope maps week to review_week and cycle to review_cycle; first plans use plan_cycle. Scope is part of the athlete's decision, not inferred training judgment.",
+      "description": "Decision scope for locally authored events: plan_week/review_week preserve the goal and cycle direction (outlook may change); plan_cycle/review_cycle may change goal, cycle and executable week together. Hosted change_request.decision_scope maps week to review_week and cycle to review_cycle. A first plan writes sequence 1 with no DecisionEvent. plan_cycle, plan_week and revisit_today remain so stored history can revalidate; live producers emit review_week, review_cycle, and record_delivery. Scope is part of the athlete's decision, not inferred training judgment.",
       "enum": [
         "plan_cycle",
         "plan_week",
