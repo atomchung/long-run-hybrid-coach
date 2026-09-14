@@ -22,33 +22,36 @@ Verified against `main` at `df27358`, 2026-08-29; the weekly-volume and
 
 ## The layer vocabulary, and where it does not line up
 
-Six `mode` values exist in `contracts/decision-event.schema.json`. The hosted
-runtime emits four of them:
+Six `mode` values exist in `contracts/decision-event.schema.json`. Three have a
+live producer:
 
 | mode | produced by | when |
 | --- | --- | --- |
-| `plan_cycle` | `plan_init.py` | the first plan is authored |
-| `review_week` | `decision_scope.py`; reconciliation | explicit week scope, or deterministic reconciliation |
-| `review_cycle` | `decision_scope.py` | explicit cycle scope, including goal/cycle and week changes together |
-| `record_delivery` | `store.py` | the verified delivery boundary records a receipt |
+| `review_week` | `plan_change._derive_mode` (`decision_scope.week` or legacy omission); `reconcile.py` | explicit week scope, a week-only diff, or deterministic reconciliation |
+| `review_cycle` | `plan_change._derive_mode` (`decision_scope.cycle` or a cycle/goal-only diff) | explicit cycle scope, including goal/cycle and week changes together |
+| `record_delivery` | `store.py` | the verified delivery boundary records a receipt or a withdrawal |
+
+`plan_cycle`, `plan_week` and `revisit_today` have no producer. A first plan
+writes sequence 1 with no DecisionEvent (`init_store` / `plan_init.py`). The
+gateway never accepts a client-supplied mode. The three unused values stay in
+the enum because `doctor-store` revalidates the entire commit history, and
+stored events already carry them.
 
 Modern `change_request` declares `decision_scope: week|cycle`; omission retains
 exact legacy `_derive_mode` behavior for existing clients. The server builds the
-DecisionEvent mode and binds it into the confirmation. `plan_week` and
-`revisit_today` remain enum values without a hosted emitter. So the
-~50-line `revisit_today` block at `validation.py:4042` — daily action policy,
-unknowns preservation, the goal-and-cycle freeze, the session-id binding — runs
-on zero hosted turns. `validation.py:3645` already records this happening once:
-the symptom boundary keyed on `revisit_today` "went from bypassable to never runs
-without a line of it changing", and #84 moved that one rule off mode. The rest of
-the block was left where it was.
+DecisionEvent mode and binds it into the confirmation.
 
-This is dead code, not a live hole: every invariant it states is held elsewhere
-by construction. `plan_change.py` builds the event's `unknowns` as a union with
-the context's, so the preservation rule cannot be violated on the projection
-path; the `plan_week`/`review_week` block at `validation.py:4005` holds the goal
-and the seven cycle keys a week may not move. Worth deleting or reviving
-deliberately, not worth calling a defect.
+The distinct `revisit_today` validate_bundle policy was deleted (issue #315).
+Each invariant it stated has one live owner:
+
+- unknowns preservation — `_decision_event` unions `context["unknowns"]`
+  (`plan_change.py`)
+- goal and cycle frozen — the week-scope block in `validate_bundle` (`review_week`)
+- version increment — projector content-hash plus `store._apply_decision`
+- session_id binding — `_decision_event` sets it when exactly one session changed
+- actions — `MODE_ACTIONS` for the live modes; the projector emits `keep`/`adjust`
+
+The explicit-symptom boundary is evidence-triggered, not mode-triggered.
 
 The consequence that *does* matter for this file: **the store cannot distinguish
 a today-decision from a weekly reassessment.** Both land as `review_week`. So the

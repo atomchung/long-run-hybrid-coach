@@ -1386,6 +1386,9 @@ def _derive_mode(
     otherwise moving the week is a week decision, and a cycle/goal-only change is a
     cycle decision. Omission therefore does not unlock the cycle+week operation.
     """
+    # Only review_week and review_cycle. plan_cycle, plan_week and revisit_today
+    # remain in the DecisionEvent enum for stored history and are never derived
+    # here (issue #315).
     if decision_scope is not None:
         return DECISION_SCOPE_MODES[decision_scope]
     before_cycle = before.get("cycle") or {}
