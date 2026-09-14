@@ -23,6 +23,7 @@ from garmin_coach_loop.identity import lookup_or_create_owner, record_token_fing
 from garmin_coach_loop.mcp_transport import PROTOCOL_VERSION, RETIRED_TOOLS, TOOLS_BY_NAME
 from garmin_coach_loop.privacy_request import PrivacyRequestError
 from garmin_coach_loop.store import init_store, read_current_plan, resolve_state_dir
+from schema_runtime import apply_body_from_prepare
 from test_gateway import (
     HMAC_KEY,
     retained_transaction,
@@ -46,20 +47,20 @@ OPERATOR_EVIDENCE = "athlete-id-only"
 
 def apply_from_prepare(
     prepared: dict[str, Any],
+    apply_tool: str = "applyCoachDecision",
     *,
     confirmed: bool = True,
     extra_if_present: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Build an apply body from producer output.
 
-    Every producer returns the opaque ``proposal``; apply adds only confirmation.
-    The optional identity echo is used exclusively by the #280 mutation regression.
+    The echo set is the matching apply tool's published input properties,
+    filled from keys the prepare result actually returned. A missing required
+    producer key fails rather than being invented. ``extra_if_present`` is
+    only the #280 mutation: copy an identifier the apply schema does not
+    declare, if this prepare actually returned it.
     """
-    if not prepared.get("proposal"):
-        raise AssertionError(
-            "producer did not return proposal; refusing to synthesize it"
-        )
-    body: dict[str, Any] = {"proposal": prepared["proposal"], "confirmed": confirmed}
+    body = apply_body_from_prepare(prepared, apply_tool, confirmed=confirmed)
     for key in extra_if_present:
         if key in prepared and prepared[key] is not None:
             body[key] = prepared[key]
@@ -551,7 +552,10 @@ class DeliveryPublicFlowTests(PublicFlowCase):
             [row["session_id"] for row in prepared["preview"]],
         )
         with mock.patch.object(gateway_module, "prepare_delivery_set", side_effect=AssertionError("apply reprojected")):
-            applied = self.tool("applyWorkoutDelivery", apply_from_prepare(prepared))
+            applied = self.tool(
+                "applyWorkoutDelivery",
+                apply_from_prepare(prepared, "applyWorkoutDelivery"),
+            )
         self.assertEqual(
             ["run-quality-01"],
             [item["session_id"] for item in applied["delivered"]],
@@ -566,7 +570,10 @@ class DeliveryPublicFlowTests(PublicFlowCase):
         self.assertTrue(execution.get("external_id"))
 
     def test_standalone_withdrawal_commits_the_public_prepared_set(self):
-        self.tool("applyWorkoutDelivery", apply_from_prepare(self.prepare_one_run()))
+        self.tool(
+            "applyWorkoutDelivery",
+            apply_from_prepare(self.prepare_one_run(), "applyWorkoutDelivery"),
+        )
         original_id = self.fake.events[0]["id"]
         # Anonymous fixture: a previously committed plan superseded this delivery.
         import test_gateway as fixtures
@@ -578,7 +585,10 @@ class DeliveryPublicFlowTests(PublicFlowCase):
         })
         self.assertEqual("5x1000m threshold", prepared["preview"][0]["event_name"])
         with mock.patch.object(gateway_module, "prepare_withdrawal_set", side_effect=AssertionError("apply reprojected")):
-            result = self.tool("applyWorkoutDelivery", apply_from_prepare(prepared))
+            result = self.tool(
+                "applyWorkoutDelivery",
+                apply_from_prepare(prepared, "applyWorkoutDelivery"),
+            )
         self.assertEqual(["run-quality-01"], [row["session_id"] for row in result["withdrawn"]])
         self.assertEqual([original_id], self.fake.deleted)
         self.assertEqual([], self.fake.events)
@@ -595,7 +605,7 @@ class DeliveryPublicFlowTests(PublicFlowCase):
         delivered_prepare = self.prepare_one_run()
         self.tool(
             "applyWorkoutDelivery",
-            apply_from_prepare(delivered_prepare),
+            apply_from_prepare(delivered_prepare, "applyWorkoutDelivery"),
         )
         current = self.tool("startCoachSession", {"all_clear": True})
         prepared = self.tool(
