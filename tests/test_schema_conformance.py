@@ -34,8 +34,12 @@ import unittest
 from typing import Any
 
 from garmin_coach_loop import plan_change, plan_init, validation
+from garmin_coach_loop.context_core import RED_FLAG_FIELDS
 from garmin_coach_loop.gateway import CoachGateway
 from garmin_coach_loop.mcp_transport import TOOLS_BY_NAME
+
+from schema_runtime import path_label as derived_path_label
+from schema_runtime import published_fields
 
 
 ACCEPTED = "accepted"
@@ -107,6 +111,10 @@ FIRST_PLAN_INVENTORY: dict[tuple[Any, ...], dict[str, tuple[str, str]]] = {
         "red_flags": _d(ACCEPTED, "first-plan symptoms, because no context exists to carry them"),
         "publish_new_workouts": _d(ACCEPTED, "preview flag, same as a later change"),
         "change_request": _d(ACCEPTED, "the one plan-authoring object"),
+    },
+    ("red_flags",): {
+        name: _d(ACCEPTED, "first-plan symptoms, because no context exists to carry them")
+        for name in RED_FLAG_FIELDS
     },
     ("change_request",): {
         "decision_scope": _d(ACCEPTED, "cycle, or omitted for clients on the previous catalogue"),
@@ -290,6 +298,40 @@ FIRST_PLAN_INVENTORY: dict[tuple[Any, ...], dict[str, tuple[str, str]]] = {
         "duration": _d(OPAQUE, _PLAN_OPAQUE),
         "target": _d(OPAQUE, _PLAN_OPAQUE),
     },
+    (
+        "change_request",
+        "sessions",
+        "[]",
+        "plan",
+        "oneOf:time_axis",
+        "steps",
+        "[]",
+        "steps",
+        "[]",
+        "duration",
+    ): {
+        "kind": _d(OPAQUE, _PLAN_OPAQUE),
+        "seconds": _d(OPAQUE, _PLAN_OPAQUE),
+        "meters": _d(OPAQUE, _PLAN_OPAQUE),
+    },
+    (
+        "change_request",
+        "sessions",
+        "[]",
+        "plan",
+        "oneOf:time_axis",
+        "steps",
+        "[]",
+        "steps",
+        "[]",
+        "target",
+    ): {
+        "kind": _d(OPAQUE, _PLAN_OPAQUE),
+        "unit": _d(OPAQUE, _PLAN_OPAQUE),
+        "low_seconds_per_km": _d(OPAQUE, _PLAN_OPAQUE),
+        "high_seconds_per_km": _d(OPAQUE, _PLAN_OPAQUE),
+        "ceiling_bpm": _d(OPAQUE, _PLAN_OPAQUE),
+    },
     ("change_request", "sessions", "[]", "fallback"): {
         "action": _d(ACCEPTED, "carried"),
         "description": _d(ACCEPTED, "carried"),
@@ -321,6 +363,7 @@ RUNTIME_KNOWN: dict[tuple[Any, ...], frozenset[str]] = {
         if name not in ("proposal", "confirmed")
     )
     | {"context"},
+    ("red_flags",): frozenset(RED_FLAG_FIELDS),
     ("change_request",): frozenset(
         {
             "decision_scope",
@@ -471,6 +514,30 @@ class FirstPlanSchemaConformanceTests(unittest.TestCase):
                 "steps",
                 "[]",
             ),
+            (
+                "change_request",
+                "sessions",
+                "[]",
+                "plan",
+                "oneOf:time_axis",
+                "steps",
+                "[]",
+                "steps",
+                "[]",
+                "duration",
+            ),
+            (
+                "change_request",
+                "sessions",
+                "[]",
+                "plan",
+                "oneOf:time_axis",
+                "steps",
+                "[]",
+                "steps",
+                "[]",
+                "target",
+            ),
         }
         for path, fields in FIRST_PLAN_INVENTORY.items():
             with self.subTest(path=_label(path)):
@@ -540,6 +607,43 @@ class FirstPlanSchemaConformanceTests(unittest.TestCase):
             set(),
             set(RUNTIME_KNOWN) - set(FIRST_PLAN_INVENTORY),
             "RUNTIME_KNOWN names a path the inventory does not",
+        )
+
+    def test_field_list_is_derived_from_the_published_schema(self):
+        """A schema that stops exposing fields must not make this suite vacuously pass.
+
+        The inventory is the disposition table. The field list under test is
+        `published_fields()`, walked from the catalogue a client is handed. If
+        that walk is empty, or if it disagrees with the inventory, the build
+        fails -- including when a nested object the inventory never named grows
+        properties (the gap the per-path equality below could not see).
+        """
+        derived = published_fields("prepareCoachDecision")
+        self.assertTrue(
+            derived,
+            "prepareCoachDecision input schema exposed no properties; the "
+            "walker must not treat an empty schema as success",
+        )
+        inventoried = {
+            path + (name,)
+            for path, fields in FIRST_PLAN_INVENTORY.items()
+            for name in fields
+        }
+        self.assertEqual(
+            set(),
+            set(derived) - inventoried,
+            "published schema declares "
+            + ", ".join(derived_path_label(path) for path in sorted(set(derived) - inventoried))
+            + " with no first-plan disposition",
+        )
+        self.assertEqual(
+            set(),
+            inventoried - set(derived),
+            "inventory names "
+            + ", ".join(
+                derived_path_label(path) for path in sorted(inventoried - set(derived))
+            )
+            + " which the published schema does not declare",
         )
 
 
