@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,7 +32,9 @@ from test_gateway import (
     TOKEN_B,
     WEEKLY_CHANGE,
     as_change_request,
+    onboarding,
     publishable_plan,
+    unwritable,
 )
 from test_mcp_gateway import McpTestCase
 
@@ -248,6 +251,198 @@ class FirstPlanPublicFlowTests(PublicFlowCase):
         self.assertEqual(committed, self.snapshot(self.state_dir))
         stored = read_current_plan(self.state_dir)["current_plan"]
         self.assertEqual(prepared["preview"]["goal"]["outcome"], stored["goal"]["outcome"])
+
+
+class FirstPlanAvailabilityReplayTests(PublicFlowCase):
+    """Issue #281: first-plan availability survives the post-commit crash window.
+
+    Every case here calls public ``applyCoachDecision`` with the producer proposal.
+    Failure is injected after ``init_store`` returns, never by mocking
+    ``_store_initial_availability``.
+    """
+
+    DAYS = ["mon", "wed", "sat"]
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A)
+        self.state_dir = self.owner_dir(self.owner_id)
+        self.handshake()
+
+    def prepare_first_plan_with_days(self, days: list[str] | None = None) -> dict[str, Any]:
+        session = self.tool("startCoachSession", {"all_clear": True})
+        self.assertEqual("no_plan_state", session["status"], session)
+        prepared = self.tool(
+            "prepareCoachDecision",
+            {
+                "change_request": as_change_request(
+                    onboarding(availability={"days": list(days or self.DAYS), "equipment": ["dumbbells"]})
+                )
+            },
+        )
+        self.assertTrue(prepared.get("proposal"), prepared)
+        return prepared
+
+    def apply_http(self, prepared: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        status, _, body = self.post_mcp(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "applyCoachDecision",
+                    "arguments": apply_from_prepare(prepared),
+                },
+            }
+        )
+        return status, json.loads(body)
+
+    def crash_after_init_store(self):
+        real = gateway_module.init_store
+
+        def crash(*args, **kwargs):
+            result = real(*args, **kwargs)
+            raise RuntimeError("injected crash after init_store")
+
+        return mock.patch.object(gateway_module, "init_store", crash)
+
+    def commit_names(self) -> list[str]:
+        commits = self.state_dir / "commits"
+        return sorted(
+            path.name
+            for path in commits.iterdir()
+            if path.is_dir() and not path.name.startswith(".")
+        )
+
+    def recurring_days(self) -> list[str] | None:
+        recurring = athlete_evidence.load_evidence(self.state_dir)["availability"]["recurring"]
+        if not isinstance(recurring, dict):
+            return None
+        return list(recurring.get("available_days") or [])
+
+    def test_crash_after_init_store_converges_on_the_exact_retry(self):
+        """Catch: version-1 replay used to return success without storing the days."""
+        prepared = self.prepare_first_plan_with_days()
+        with self.crash_after_init_store():
+            status, payload = self.apply_http(prepared)
+        self.assertEqual(500, status, payload)
+        self.assertEqual("internal_error", payload["error"], payload)
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+        self.assertEqual(["00000001-initial"], self.commit_names())
+        self.assertIsNone(self.recurring_days())
+
+        self.gateway._held.clear()
+        replayed = self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        self.assertEqual("passed", replayed["status"], replayed)
+        self.assertTrue(replayed["idempotent_replay"], replayed)
+        self.assertNotIn("warnings", replayed)
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+        self.assertEqual(["00000001-initial"], self.commit_names())
+        self.assertEqual(self.DAYS, self.recurring_days())
+
+        session = self.tool("startCoachSession", {"all_clear": True})
+        constraints = session["context"]["constraints"]
+        self.assertEqual(self.DAYS, constraints["available_days"])
+        self.assertEqual("athlete_evidence", constraints["availability_source"])
+
+        recorded_at = athlete_evidence.load_evidence(self.state_dir)["availability"]["recurring"][
+            "recorded_at"
+        ]
+        again = self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        self.assertTrue(again["idempotent_replay"], again)
+        self.assertEqual(self.DAYS, self.recurring_days())
+        self.assertEqual(
+            recorded_at,
+            athlete_evidence.load_evidence(self.state_dir)["availability"]["recurring"][
+                "recorded_at"
+            ],
+        )
+        self.assertEqual(["00000001-initial"], self.commit_names())
+
+    def test_retry_is_a_noop_when_initial_availability_was_already_stored(self):
+        """Catch: a successful first apply's retry must not restamp athlete evidence."""
+        prepared = self.prepare_first_plan_with_days()
+        first = self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        self.assertFalse(first["idempotent_replay"], first)
+        evidence_before = (self.state_dir / "athlete-evidence.json").read_bytes()
+        plan_before = self.snapshot(self.state_dir)
+
+        replayed = self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        self.assertTrue(replayed["idempotent_replay"], replayed)
+        self.assertEqual(evidence_before, (self.state_dir / "athlete-evidence.json").read_bytes())
+        self.assertEqual(plan_before, self.snapshot(self.state_dir))
+        self.assertEqual(self.DAYS, self.recurring_days())
+
+    def test_late_replay_does_not_overwrite_availability_the_athlete_changed(self):
+        """Catch: blindly replaying init days after recordAthleteAvailability."""
+        prepared = self.prepare_first_plan_with_days()
+        self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        changed = self.tool(
+            "recordAthleteAvailability",
+            {"recurring": {"available_days": ["tue", "thu"]}},
+        )
+        self.assertEqual(["tue", "thu"], changed["recurring"]["available_days"])
+
+        replayed = self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        self.assertTrue(replayed["idempotent_replay"], replayed)
+        self.assertEqual(["tue", "thu"], self.recurring_days())
+        self.assertEqual(["00000001-initial"], self.commit_names())
+
+    def test_late_replay_does_not_resurrect_days_after_a_week_override(self):
+        """Catch: a week retraction after init must still stand on a late apply replay."""
+        prepared = self.prepare_first_plan_with_days()
+        self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        self.tool(
+            "recordAthleteAvailability",
+            {"week": {"unavailable_days": ["wed"], "note": "something came up Wednesday"}},
+        )
+        before = athlete_evidence.load_evidence(self.state_dir)["availability"]
+
+        replayed = self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        self.assertTrue(replayed["idempotent_replay"], replayed)
+        after = athlete_evidence.load_evidence(self.state_dir)["availability"]
+        self.assertEqual(before, after)
+        self.assertEqual(self.DAYS, after["recurring"]["available_days"])
+        self.assertEqual(1, len(after["week_overrides"]))
+
+    def test_crash_then_athlete_change_then_retry_keeps_the_later_statement(self):
+        """Catch: missing settlement plus a later athlete write is not 'never applied'."""
+        prepared = self.prepare_first_plan_with_days()
+        with self.crash_after_init_store():
+            status, payload = self.apply_http(prepared)
+        self.assertEqual(500, status, payload)
+        self.gateway._held.clear()
+        self.tool(
+            "recordAthleteAvailability",
+            {"recurring": {"available_days": ["tue", "thu"]}},
+        )
+
+        replayed = self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        self.assertTrue(replayed["idempotent_replay"], replayed)
+        self.assertEqual(["tue", "thu"], self.recurring_days())
+        self.assertEqual(["00000001-initial"], self.commit_names())
+
+    def test_persistence_failure_warns_and_the_exact_retry_still_converges(self):
+        """Catch: a volume failure used to leave days unrestored even after retry."""
+        prepared = self.prepare_first_plan_with_days()
+        with unwritable("athlete-evidence.json"):
+            applied = self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        self.assertEqual("passed", applied["status"], applied)
+        self.assertFalse(applied["idempotent_replay"], applied)
+        self.assertEqual(1, applied["plan_version"])
+        self.assertTrue(
+            any("available days were not stored" in item for item in applied.get("warnings") or []),
+            applied,
+        )
+        self.assertIsNone(self.recurring_days())
+
+        self.gateway._held.clear()
+        replayed = self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        self.assertTrue(replayed["idempotent_replay"], replayed)
+        self.assertNotIn("warnings", replayed)
+        self.assertEqual(self.DAYS, self.recurring_days())
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+        self.assertEqual(["00000001-initial"], self.commit_names())
 
 
 class WarmPlanPublicFlowTests(PublicFlowCase):

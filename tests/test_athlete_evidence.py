@@ -24,9 +24,11 @@ from garmin_coach_loop.athlete_evidence import (
     AthleteEvidenceError,
     all_reported_activity_summaries,
     all_reported_strength_sessions,
+    availability_fingerprint,
     body_measurement_series,
     confirm_prescribed_strength,
     effective_availability,
+    empty_availability_fingerprint,
     evidence_path,
     exercise_key,
     load_evidence,
@@ -51,6 +53,7 @@ from garmin_coach_loop.athlete_evidence import (
     retract_strength_report,
     retract_subjective_state,
     retract_training_preference,
+    settle_initialization_availability,
     stated_long_term_goals,
     stated_training_preferences,
     statement_key,
@@ -97,6 +100,7 @@ class EvidenceFileTests(unittest.TestCase):
 
         self.assertIsNone(evidence["availability"]["recurring"])
         self.assertEqual([], evidence["availability"]["week_overrides"])
+        self.assertIsNone(evidence["initialization_availability"])
         self.assertEqual([], evidence["strength_reports"])
         self.assertEqual([], evidence["body_measurements"])
         self.assertEqual([], evidence["reported_activities"])
@@ -162,6 +166,7 @@ class EvidenceFileTests(unittest.TestCase):
 
         self.assertEqual([], evidence["body_measurements"])
         self.assertEqual([], evidence["reported_activities"])
+        self.assertIsNone(evidence["initialization_availability"])
         # And nothing that was already in the file was lost on the way through.
         self.assertEqual(TIMEZONE, evidence["profile"]["timezone"])
         self.assertEqual(1, len(evidence["strength_reports"]))
@@ -531,6 +536,100 @@ class RecurringAvailabilityTests(unittest.TestCase):
         self.assertEqual("sat", normalize_weekday("SAT"))
         self.assertIsNone(normalize_weekday("週六"))
         self.assertIsNone(normalize_weekday(6))
+
+
+class InitializationAvailabilitySettlementTests(unittest.TestCase):
+    """The first-plan availability receipt, independent of the public apply path."""
+
+    PLAN_HASH = "initial-plan-hash"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "owner"
+
+    def settle(self, *, days=None, before_hash=None, plan_hash=None, now=NOW):
+        return settle_initialization_availability(
+            self.state_dir,
+            plan_hash=plan_hash or self.PLAN_HASH,
+            days=days or ["mon", "wed", "sat"],
+            before_hash=before_hash or availability_fingerprint(self.state_dir),
+            now=now,
+        )
+
+    def test_a_missing_file_fingerprints_as_empty(self):
+        self.assertEqual(empty_availability_fingerprint(), availability_fingerprint(self.state_dir))
+
+    def test_unset_days_are_written_exactly_once(self):
+        first = self.settle()
+        self.assertTrue(first["applied"])
+        self.assertFalse(first["idempotent_replay"])
+        stored = load_evidence(self.state_dir)
+        self.assertEqual(["mon", "wed", "sat"], stored["availability"]["recurring"]["available_days"])
+        self.assertEqual(
+            {"plan_hash": self.PLAN_HASH, "settled": True},
+            stored["initialization_availability"],
+        )
+        before = evidence_path(self.state_dir).read_bytes()
+
+        second = self.settle(days=["tue", "thu"], now=NOW + dt.timedelta(days=1))
+        self.assertTrue(second["idempotent_replay"])
+        self.assertFalse(second["applied"])
+        self.assertEqual(before, evidence_path(self.state_dir).read_bytes())
+
+    def test_a_moved_container_is_settled_without_overwriting(self):
+        record_availability(
+            self.state_dir,
+            recurring={"available_days": ["tue", "thu"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+        empty_before = empty_availability_fingerprint()
+        result = self.settle(before_hash=empty_before, now=NOW + dt.timedelta(hours=1))
+        self.assertTrue(result["superseded"])
+        self.assertFalse(result["applied"])
+        self.assertEqual(
+            ["tue", "thu"],
+            load_evidence(self.state_dir)["availability"]["recurring"]["available_days"],
+        )
+        self.assertEqual(
+            {"plan_hash": self.PLAN_HASH, "settled": True},
+            load_evidence(self.state_dir)["initialization_availability"],
+        )
+
+    def test_a_week_override_counts_as_newer_athlete_evidence(self):
+        before_hash = availability_fingerprint(self.state_dir)
+        record_availability(
+            self.state_dir,
+            week={"unavailable_days": ["wed"], "note": "something came up"},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+        result = self.settle(before_hash=before_hash, now=NOW + dt.timedelta(hours=1))
+        self.assertTrue(result["superseded"])
+        self.assertIsNone(load_evidence(self.state_dir)["availability"]["recurring"])
+        self.assertEqual(1, len(load_evidence(self.state_dir)["availability"]["week_overrides"]))
+
+    def test_later_athlete_updates_keep_the_marker_and_their_own_days(self):
+        self.settle()
+        record_availability(
+            self.state_dir,
+            recurring={"available_days": ["tue", "thu"]},
+            timezone_name=TIMEZONE,
+            now=NOW + dt.timedelta(days=1),
+        )
+        stored = load_evidence(self.state_dir)
+        self.assertEqual(["tue", "thu"], stored["availability"]["recurring"]["available_days"])
+        self.assertEqual(
+            {"plan_hash": self.PLAN_HASH, "settled": True},
+            stored["initialization_availability"],
+        )
+        replay = self.settle(days=["mon", "wed", "sat"], now=NOW + dt.timedelta(days=2))
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(
+            ["tue", "thu"],
+            load_evidence(self.state_dir)["availability"]["recurring"]["available_days"],
+        )
 
 
 class WeekStatementTests(unittest.TestCase):

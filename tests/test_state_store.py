@@ -731,6 +731,21 @@ class ConfirmedDecisionTests(unittest.TestCase):
         init_store(target, self.before, proposal_claims=claims, confirmed_delivery=exact)
         self.assertEqual(exact, read_current_plan(target)["receipt"]["confirmed_delivery"])
 
+    def test_initial_receipt_may_carry_initialization_availability_bookkeeping(self):
+        """Issue #281: the days to recover live on the receipt, not in PlanState."""
+        target = self.state_dir.parent / "first-with-availability"
+        intent = {"days": ["mon", "wed", "sat"], "before_hash": "availability-before"}
+        init_store(target, self.before, initialization_availability=intent)
+        current = read_current_plan(target)
+        self.assertEqual(intent, current["receipt"]["initialization_availability"])
+        self.assertNotIn("initialization_availability", current["current_plan"])
+        self.assertEqual("passed", doctor_store(target)["status"])
+        self.assertEqual([], doctor_store(target)["errors"])
+        refused = self.state_dir.parent / "first-with-empty-days"
+        with self.assertRaises(StateStoreError):
+            init_store(refused, self.before, initialization_availability={"days": []})
+        self.assertFalse((refused / "store.json").exists())
+
     def test_a_different_plan_at_the_same_version_refuses_the_confirmed_write(self):
         """The fork ``base_version`` cannot see, and the projections do not cover.
 

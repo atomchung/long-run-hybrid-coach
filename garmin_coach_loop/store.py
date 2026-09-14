@@ -73,6 +73,11 @@ STORE_SCHEMA_VERSION = "1.0"
 # it, which travels to Intervals inside the delivered description. Optional, and the bump
 # is for the reason 3, 4 and 5 were: `validate_plan_state` refuses an unexpected key on a
 # session, so one plan carrying a note is one store an older checkout cannot open at all.
+#
+# Optional `initialization_availability` on the initial commit receipt (issue #281) is
+# recovery bookkeeping for the post-commit availability write, the same way
+# `confirmed_delivery` is bookkeeping for calendar effects. It is not a PlanState field
+# and does not move this number.
 WRITER_CONTRACT_VERSION = 6
 
 # One delivery may be writing to Intervals at a time, and while it is, the plan it was
@@ -1537,6 +1542,7 @@ def _write_commit(
     event: dict[str, Any] | None,
     context_hash: str | None,
     confirmed_delivery: dict[str, Any] | None = None,
+    initialization_availability: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     suffix = "initial" if event is None else _commit_slug(str(event["event_id"]))
     name = _commit_name(sequence, suffix)
@@ -1565,6 +1571,8 @@ def _write_commit(
     }
     if confirmed_delivery is not None:
         receipt["confirmed_delivery"] = copy.deepcopy(confirmed_delivery)
+    if initialization_availability is not None:
+        receipt["initialization_availability"] = copy.deepcopy(initialization_availability)
     receipt["receipt_hash"] = canonical_hash(receipt)
     try:
         _write_new_json(pending / "plan.json", plan)
@@ -1706,8 +1714,10 @@ def init_store(
     state_dir: Path | str, plan: dict[str, Any], *,
     proposal_claims: dict[str, Any] | None = None,
     confirmed_delivery: dict[str, Any] | None = None,
+    initialization_availability: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     _validate_confirmed_delivery(proposal_claims, confirmed_delivery, plan)
+    _validate_initialization_availability(initialization_availability)
     root = _state_root(state_dir)
     validation = validate_plan_state(plan)
     if validation["status"] != "passed":
@@ -1749,6 +1759,7 @@ def init_store(
                 event=None,
                 context_hash=None,
                 confirmed_delivery=confirmed_delivery,
+                initialization_availability=initialization_availability,
             )
             manifest = _manifest(
                 plan_id=plan["plan_id"],
@@ -2858,6 +2869,30 @@ def status_store(
         if outstanding:
             status["unresolved_delivery_operations"] = outstanding
     return status
+
+
+def _validate_initialization_availability(value: dict[str, Any] | None) -> None:
+    """Persist only the days the confirmed first plan asked to store.
+
+    This is recovery bookkeeping on the initial receipt, not athlete evidence and not
+    PlanState. A missing value is a plan that named no days. A malformed value would
+    leave a retry unable to tell which days to store, so it is refused before the
+    first commit rather than written as a guess.
+    """
+    if value is None:
+        return
+    if not isinstance(value, dict) or set(value) != {"days", "before_hash"}:
+        raise StateStoreError(
+            "initialization availability bookkeeping requires days and before_hash"
+        )
+    days = value["days"]
+    if not isinstance(days, list) or not days:
+        raise StateStoreError("initialization availability days must be a non-empty list")
+    before_hash = value["before_hash"]
+    if not isinstance(before_hash, str) or not before_hash:
+        raise StateStoreError(
+            "initialization availability before_hash must be a non-empty string"
+        )
 
 
 def _validate_confirmed_delivery(

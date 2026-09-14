@@ -167,6 +167,13 @@ file is also why this is additive -- ``store._inspect_store`` reads ``store.json
 ``commits/`` and nothing else, so a store carrying this file opens unchanged on code
 that has never heard of it, and ``WRITER_CONTRACT_VERSION`` does not move.
 
+A first-plan apply may also record ``initialization_availability`` here: a settlement
+marker keyed to the initial plan hash. It is not the athlete's statement. It is the
+receipt that the post-commit write of the days named on that first plan has been
+accounted for -- applied, or skipped because newer athlete evidence already moved the
+container (issue #281). Absent is an ordinary pre-existing file. The version number
+does not move for it, for the same reason it does not move for ``profile``.
+
 **Missing versus unreadable.** No file means no evidence, which is a perfectly ordinary
 state and never an error -- an athlete who has said nothing has said nothing. A file that
 exists but cannot be parsed, or does not hold the shape written here, is a different
@@ -229,6 +236,8 @@ __all__ = [
     "profile_language",
     "profile_timezone",
     "record_activity_summary",
+    "availability_fingerprint",
+    "empty_availability_fingerprint",
     "record_availability",
     "record_body_measurement",
     "record_long_term_goal",
@@ -247,6 +256,7 @@ __all__ = [
     "retract_strength_report",
     "retract_subjective_state",
     "retract_training_preference",
+    "settle_initialization_availability",
     "stated_long_term_goals",
     "stated_training_preferences",
     "statement_key",
@@ -508,6 +518,7 @@ def empty_evidence() -> dict[str, Any]:
         "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
         "profile": None,
         "availability": {"recurring": None, "week_overrides": []},
+        "initialization_availability": None,
         "long_term_goals": [],
         "training_preferences": [],
         "strength_reports": [],
@@ -582,10 +593,17 @@ def _validated_evidence(value: dict[str, Any]) -> dict[str, Any]:
     # neither is an ordinary athlete, not a damaged file.
     goals = _record_list(value, "long_term_goals")
     preferences = _record_list(value, "training_preferences")
+    # Settlement of the first-plan availability side effect (issue #281). Absent is a
+    # file written before that receipt existed, not a damaged file, and the version
+    # does not move -- the same decision as profile and the other later containers.
+    init_availability = value.get("initialization_availability")
+    if init_availability is not None and not isinstance(init_availability, dict):
+        raise _unreadable("initialization_availability must be an object or null")
     return {
         "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
         "profile": profile,
         "availability": {"recurring": recurring, "week_overrides": list(overrides)},
+        "initialization_availability": init_availability,
         "long_term_goals": goals,
         "training_preferences": preferences,
         "strength_reports": list(reports),
@@ -1083,6 +1101,103 @@ def record_availability(
         "effective_this_week": effective_availability(
             evidence, week_start=week_start_for(today)
         ),
+    }
+
+
+def _availability_container(evidence: dict[str, Any]) -> dict[str, Any]:
+    availability = evidence.get("availability") or {}
+    return {
+        "recurring": availability.get("recurring"),
+        "week_overrides": list(availability.get("week_overrides") or []),
+    }
+
+
+def empty_availability_fingerprint() -> str:
+    """The availability fingerprint of an athlete who has stated no days."""
+    return canonical_hash(_availability_container(empty_evidence()))
+
+
+def availability_fingerprint(state_dir: Path | str) -> str:
+    """Hash of the availability container as it stands, or of the empty shape.
+
+    Used as the before-image of a first-plan availability write so a retry can tell
+    "nothing has moved since the plan committed" from "the athlete wrote here later"
+    without guessing from the current days (issue #281).
+    """
+    return canonical_hash(_availability_container(load_evidence(state_dir)))
+
+
+def _initialization_settled(marker: Any, plan_hash: str) -> bool:
+    return (
+        isinstance(marker, dict)
+        and marker.get("plan_hash") == plan_hash
+        and marker.get("settled") is True
+    )
+
+
+def settle_initialization_availability(
+    state_dir: Path | str,
+    *,
+    plan_hash: str,
+    days: list[Any],
+    before_hash: str,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Apply the first-plan availability side effect once, or skip it as superseded.
+
+    The PlanState commit is already durable when this runs. This writes the days that
+    commit named, and a settlement marker keyed to ``plan_hash``, in one atomic file
+    replace. A later ``record_availability`` keeps the marker because it is a separate
+    container, so a late replay cannot resurrect the original days after the athlete
+    changed or overrode them.
+
+    ``before_hash`` is ``availability_fingerprint`` taken before that commit. When the
+    container no longer hashes to it, the athlete wrote availability after the plan
+    landed and this call records settlement without touching their statement.
+    """
+    if not isinstance(plan_hash, str) or not plan_hash:
+        raise AthleteEvidenceError("initialization availability plan_hash is required")
+    if not isinstance(before_hash, str) or not before_hash:
+        raise AthleteEvidenceError("initialization availability before_hash is required")
+    if not isinstance(days, list) or not days:
+        raise AthleteEvidenceError("initialization availability days must name at least one weekday")
+    recurring_days = _day_lists({"available_days": days}, "initialization_request.availability")
+
+    recorded_at = _recorded_at(now)
+    root = resolve_state_root(state_dir)
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    applied = False
+    superseded = False
+    with _exclusive_lock(root, operation="settle-initialization-availability"):
+        _refuse_when_handed_off(root, "settle-initialization-availability")
+        evidence = load_evidence(root)
+        if _initialization_settled(evidence.get("initialization_availability"), plan_hash):
+            return {
+                "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+                "idempotent_replay": True,
+                "applied": False,
+                "superseded": False,
+                "recurring": evidence["availability"]["recurring"],
+            }
+        if canonical_hash(_availability_container(evidence)) != before_hash:
+            superseded = True
+        else:
+            record = _availability_record(*recurring_days, recorded_at=recorded_at)
+            standing = evidence["availability"]["recurring"]
+            if standing is None or not _same_statement(standing, record, _RECURRING_CONTENT):
+                evidence["availability"]["recurring"] = record
+                applied = True
+        evidence["initialization_availability"] = {
+            "plan_hash": plan_hash,
+            "settled": True,
+        }
+        _atomic_json(evidence_path(root), evidence)
+    return {
+        "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+        "idempotent_replay": not applied and not superseded,
+        "applied": applied,
+        "superseded": superseded,
+        "recurring": evidence["availability"]["recurring"],
     }
 
 
