@@ -220,6 +220,47 @@ Do not infer a client acceptance, provider smoke, Scan Tools result, submission,
 deployment receipt from a green local test, a green PR, or a release bundle. Use the
 change-gate output and the evidence boundary each gate names.
 
+## Multi-agent runs
+
+Task state lives in the GitHub issue. Never in conversation memory, and never in a
+tracked state file: a file sits inside one worktree, so a parallel worker cannot read
+another's copy until a merge, and two workers editing it conflict. Issue comments are
+append-only, live outside every worktree, and any agent can read them with
+`gh issue view <n> --comments`.
+
+- **A worker reports by commenting on the issue.** What it delivered, which files it
+  touched, which verification it ran with the actual output, and what it could not
+  prove. A worker that reports only in its own terminal has not reported.
+- **The coordinator owns the issue body.** It reads the delivered artifacts, not the
+  worker's account of them, and folds the outcome into an execution status block in the
+  body. Workers never edit the body.
+- **One coordinator at a time**, named in that status block. It is whichever session
+  currently holds the role, not a fixed agent.
+
+Two tasks may run in parallel only when both hold:
+
+1. Neither depends on the other's output.
+2. Their file ranges do not intersect. Every task brief states its file range before
+   dispatch; an unstated range means the task is not parallelizable yet.
+
+A dependency chain runs sequentially. Splitting it across worktrees buys nothing and
+costs a merge.
+
+**The coordinator hands off after each task.** Update the issue body, then end the
+session; the next task starts from a fresh session that reads the issue. A coordinator
+that stays alive across a whole run carries every prior task in its context and pays for
+it on every turn.
+
+**A dispatched worker inherits the host CLI's model and reasoning effort** unless the
+dispatch names them. Name them, and trust the launch receipt's effective values rather
+than the arguments sent.
+
+**Closing a task is three separate actions, and none triggers another:** release the
+worker, remove its worktree, update the issue. Merging the pull request does none of
+them. Decide a worktree is finished from its pull request state, not from
+`git branch --merged`: this repository squash-merges, so a merged branch tip is never an
+ancestor of `main`.
+
 ## Verification
 
 Run:
