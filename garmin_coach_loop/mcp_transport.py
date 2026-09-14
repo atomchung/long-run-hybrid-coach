@@ -1726,7 +1726,8 @@ TOOLS: tuple[Tool, ...] = (
                     "description": (
                         "Set true only when an earlier startCoachSession in this same "
                         "conversation returned coaching_guidance and it is still in "
-                        "front of you. The response then names it by digest instead of "
+                        "front of you. Send its guidance_digest to verify it and receive "
+                        "it by name instead of "
                         "repeating ten thousand characters you already have. Leave it out on "
                         "the first read of a conversation, and any time you are not "
                         "sure you still have the text."
@@ -1739,7 +1740,8 @@ TOOLS: tuple[Tool, ...] = (
                         "returned, sent beside guidance_received so this one can tell "
                         "whether the copy you hold is still current. A digest that no "
                         "longer matches is answered with the replacement text; one that "
-                        "matches, or is omitted, is answered by name."
+                        "matches is answered by name. Omission returns an unverified "
+                        "notice and the current digest for comparison."
                     ),
                 },
                 "recovery_signals": _RECOVERY_SIGNALS_UPLOAD,
@@ -1847,7 +1849,7 @@ TOOLS: tuple[Tool, ...] = (
                         "for a question about one thing: what was prescribed, what was "
                         "executed, what it is being compared against and where each came "
                         "from, all of it kept whole. Rows are never shortened -- what a "
-                        "focus leaves out is other sessions, and the response counts what "
+                        "focus leaves out is unrelated rows, and the response counts what "
                         "each field held so a short answer cannot be mistaken for thin "
                         "evidence. Omit it to read the groups entire."
                     ),
@@ -1858,7 +1860,8 @@ TOOLS: tuple[Tool, ...] = (
                             "description": (
                                 "session_id values from the plan. Their activities and "
                                 "the days they were trained on come with them, so a "
-                                "session's lifts, segments and readings arrive together."
+                                "session's lifts, segments and readings arrive together, "
+                                "including other sessions sharing those days."
                             ),
                         },
                         "dates": {

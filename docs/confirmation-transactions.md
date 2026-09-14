@@ -16,23 +16,21 @@ Treat prepare → model-carried intermediary state → apply as one defect class
 
 ## Current state
 
-The public MCP catalogue still splits one user confirmation across two tools. First-plan prepare still returns a derived candidate `plan_id` / `plan_version` that the matching apply refuses if those keys are copied (issue #280). Warm plan change apply can already be `{proposal, confirmed: true}`. Delivery apply still names the opaque token `proposal_hash` and still holds the exact set. Public owner deletion is not an MCP transaction since 1.4.5. Operator deletion is a separate equivalent pair on the CLI path.
+PRs #443 and #444 implemented the prepared-record kernel and public migration. Each migrated pair previews and then commits with `{proposal, confirmed: true}`. First-plan prepare omits top-level `plan_id` and `plan_version`; successful apply returns the durable identity. Echoed business fields are still invalid, but the producer no longer hands the model those candidate identifiers (issue #280). Delivery uses the signed `proposal` token; its returned `delivery_set` is informational and cannot be submitted to apply. Public owner deletion remains outside MCP, with an equivalent operator pair on the CLI path.
 
 ## Completed evidence
 
 - Inventory with migrated/excluded reasons (this file).
 - Exact shared prepared-record contract (this file): lookup identity, stored exact effect, confirmation binding, staleness, side-effect scope, expiry, idempotency, reuse, commit-without-reauthoring, per-kind validation, duplicate vs stale replay.
 - Public MCP producer-to-consumer tests in `tests/test_confirmation_transactions.py` (cold first-plan, warm change, delivery, withdrawal). Apply bodies come from prepare output.
-- Issue #280: current-behavior lock (producer still returns candidate ids; echoing them is 400, delete in C) plus `@unittest.expectedFailure` intended repair that copies those keys **only if returned**.
+- Issue #280: `test_issue_280_first_plan_apply_from_producer_must_persist` passes as an ordinary test after C. It copies candidate identity only if the producer returns it; omission allows mechanical apply to persist the preview. The obsolete characterization and expected-failure decorator are gone.
 - Operator deletion characterization on an isolated anonymous local owner (preview output → exact digest → commit → absence; scope-changed refusal). Public MCP names stay retired.
 - Same-evidence baseline: `evals/baselines/issue-435-a-same-evidence-quality.json` (generic provider/model + anonymous case + original answer + rationale). Runtime receipts live outside the repo. Limited self-score, not independent quality evidence.
 - Public/model surface unchanged in A.
 
 ## Next handoff
 
-**B — Transaction kernel**, against the prepared-record contract below. No public schema cut. No coaching policy.
-
-Then **C** one catalogue cut; **D** real-client E2E including independent #433 and a real operator deletion transaction.
+**D — real-client E2E**, including independent #433 and a real operator deletion transaction. B and C have landed; their local tests do not supply D's live receipts.
 
 ## Blockers
 
@@ -41,7 +39,7 @@ The contract below preserves commit-time validation, committed-receipt recovery,
 - No independent coaching-quality scoring exists; the A baseline is a limited self-score.
 - #433 remains an independent ChatGPT acceptance question.
 - D must still demonstrate live operator deletion, not only the A unit characterization.
-- C, not B, makes the public field rename (`proposal_hash` → `proposal`) and stops first-plan prepare from returning candidate ids.
+- C completed the public field rename (`proposal_hash` → `proposal`) and first-plan identity omission. These are no longer implementation blockers.
 
 Product/UX tradeoffs that A does **not** reopen:
 
@@ -51,9 +49,9 @@ Product/UX tradeoffs that A does **not** reopen:
 
 ---
 
-## Inventory
+## Inventory — historical A snapshot
 
-Only workflows that already have a preview/confirmation boundary **and** currently require intermediary transaction state to be carried between two calls.
+The table records which workflows required intermediary transaction state at A, before PR #444. Its old holds, consumer paths and “Today” column are historical evidence, not current behavior; the target column is now implemented for the migrated tools.
 
 ### Migrated (in scope for B/C public apply)
 
@@ -84,7 +82,14 @@ Excluding the retired public tools does **not** satisfy D. D must run `deletion_
 
 ---
 
-## The single server-owned prepared record (B)
+## The single server-owned prepared record — accepted B/C design
+
+This contract was authored at A. References below to old `HELD_*` names and
+`_hold_calendar` describe the primitives being replaced, not surviving storage
+paths. C now stores the effect, validation metadata and recovery inputs in one
+`HELD_TRANSACTION` through `_prepare_transaction`; `_transaction_calendar` reads
+its compound calendar effect. The invariants and required outcomes below remain
+the design contract.
 
 One in-memory record per confirmation. Public apply for every migrated MCP flow:
 
@@ -222,7 +227,7 @@ Drop as the source of the committed effect: re-projection from `HELD_CHANGE_REQU
 
 ### First-plan prepare identity (C)
 
-Prepare may derive an internal plan id for the candidate. It must not return that id as top-level authoritative `plan_id` / `plan_version` before apply succeeds. After apply, those fields are the durable store identity. A current-behavior lock in A records that today they are still returned; delete that lock in C.
+Prepare derives an internal plan id for the candidate but omits top-level `plan_id` / `plan_version` before apply succeeds. After apply, those fields are the durable store identity. C removed A's old-behavior lock and made the producer-to-consumer regression pass.
 
 ### Ephemeral vs durable
 
@@ -294,7 +299,7 @@ Deterministic validity tests are not live model quality proof. Absent evidence s
 
 Repo holds: `evals/baselines/issue-435-a-same-evidence-quality.json` bound to `evals/cases/revisit-today-a-missed-session-is-not-a-debt.json` (same scenario and given), generic `xai` / `grok-4.6`, original answer and rationale. Structural binding is in `tests/test_evals.py`. Runtime session/launch/time receipts are not in the repo.
 
-Unavailable: no #86 harness run; no Claude/ChatGPT live coaching comparison; no D acceptance.
+This A baseline does not include a repeated-sample #86 run, Claude/ChatGPT live comparison or D acceptance. Separate historical #86 runs and their protocol already exist in `evals/ab/README.md`; their existence is not quality evidence for this transaction migration.
 
 ---
 
