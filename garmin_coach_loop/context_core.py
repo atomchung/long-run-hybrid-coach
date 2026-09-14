@@ -3013,13 +3013,32 @@ def assemble_context(
             else:
                 activity_evidence = "none_found"
         match_status = session.get("match_status")
-        if session.get("session_id") in not_trained:
+        session_id = session.get("session_id")
+        if session_id in not_trained:
             if activity is None and match_status == _RESOLVABLE_MATCH_STATUS:
                 # The statement is the outcome the plan never got to record. `missed` is
                 # already a PlanState value and already what a coach reads a skipped
                 # session as -- there is no new status here, only a way for the athlete's
                 # answer to reach the field that was going to say `planned` for ever.
                 match_status = "missed"
+                if session_id in week_session_ids:
+                    # The session is still in the stored week, so `current_calendar`
+                    # projects the plan's own `planned` for it -- and `current_calendar`
+                    # is in the `today` read while `cycle_sessions` is not. Without this
+                    # line a daily turn reads the one container that disagrees with the
+                    # athlete and nothing says so. Named rather than overlaid: the
+                    # calendar is the plan's projection and `validate_bundle` holds it to
+                    # exactly that (`_expected_current_calendar`).
+                    unknowns.append(
+                        f"current_calendar.{session_id}: still the plan's own planned, "
+                        "because the calendar projects the plan; the athlete recorded "
+                        "this session as not trained and cycle_sessions reports it missed"
+                    )
+            elif activity is None and match_status == "missed":
+                # Agreement, not conflict: the plan already recorded the same outcome the
+                # athlete stated, so there is nothing for them to settle. Saying otherwise
+                # would manufacture a question to ask them on every later read.
+                pass
             else:
                 # Conflicting data is reported, never reconciled (AGENTS.md, product
                 # boundaries). An outcome the plan already settled, or an activity that
@@ -3028,7 +3047,7 @@ def assemble_context(
                 # named here instead of being quietly dropped, or quietly overwriting
                 # what the provider and the plan both hold.
                 unknowns.append(
-                    f"cycle_sessions.{session.get('session_id')}: the athlete recorded "
+                    f"cycle_sessions.{session_id}: the athlete recorded "
                     f"this session as not trained, and it reads {match_status} with "
                     + ("an activity attached" if activity is not None else "no activity attached")
                     + "; only they can say which stands"

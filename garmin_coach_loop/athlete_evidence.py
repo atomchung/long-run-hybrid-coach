@@ -3548,7 +3548,18 @@ def retract_session_outcome(
         evidence = load_evidence(root)
         outcomes = evidence["session_outcomes"]
         position = _session_outcome_position(outcomes, plan_id, session_id)
+        standing = lambda: sorted(
+            str(record.get("session_id"))
+            for record in outcomes
+            if record.get("plan_id") == plan_id
+        )
         if position is None:
+            # The standing sessions ride ``note`` rather than a field named for a day,
+            # exactly as a long-term goal's and a training preference's retraction do:
+            # all three are keyed by a name rather than by a date, so there is no "that
+            # day" for them to have other records on (AGENTS.md 14 -- one field, one
+            # meaning, on every path).
+            others = standing()
             return {
                 "retracted": True,
                 "removed": None,
@@ -3556,24 +3567,18 @@ def retract_session_outcome(
                 "note": (
                     f"no statement about session {session_id} was found to retract; the "
                     "session reads from its evidence alone"
-                ),
-                "on_record": sorted(
-                    str(record.get("session_id"))
-                    for record in outcomes
-                    if record.get("plan_id") == plan_id
+                    + (f". Still on record for this plan: {', '.join(others)}" if others else "")
                 ),
             }
         removed = outcomes.pop(position)
         _atomic_json(evidence_path(root), evidence)
+        others = standing()
         return {
             "retracted": True,
             "removed": removed,
             "outcome_count": len(outcomes),
-            "note": None,
-            "on_record": sorted(
-                str(record.get("session_id"))
-                for record in outcomes
-                if record.get("plan_id") == plan_id
+            "note": (
+                f"still on record for this plan: {', '.join(others)}" if others else None
             ),
         }
 

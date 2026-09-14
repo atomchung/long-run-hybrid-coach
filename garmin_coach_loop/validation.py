@@ -2824,10 +2824,18 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
     _enum(session.get("match_status"), f"{field}.match_status", {"planned", "completed", "partial", "moved", "replaced", "missed"}, errors)
 
 
+# The cycle-record vocabulary a measurement reading is reported in. It is the same list
+# `cycle_sessions[].activity_evidence` uses, because `_measurement_evidence` copies the
+# value straight off the record -- so a value added there and not here refuses the whole
+# context. That is not a theoretical coupling: `athlete_confirmed_not_trained` was added
+# for issue #468 and missed here, and the reference session is exactly the session an
+# athlete is most likely to answer for, which turned "I did not train that day" into a
+# 422 on every later turn.
 _ACTIVITY_EVIDENCE = (
     "attached",
     "other_activity_same_day",
     "athlete_reported",
+    "athlete_confirmed_not_trained",
     "outside_evidence_window",
     "none_found",
 )

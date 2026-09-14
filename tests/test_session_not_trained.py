@@ -34,6 +34,7 @@ from tests.test_gateway import (
 )
 from tests.coach_session_scenarios import (
     activity_row,
+    plan_measuring_week_one_quality,
     roll_the_week_to_the_measurement_week,
 )
 
@@ -157,6 +158,69 @@ class SessionNotTrainedRouteTests(SessionNotTrainedTestCase):
         # build looked and nothing attached; this says the athlete answered.
         self.assertEqual("athlete_confirmed_not_trained", row["activity_evidence"])
 
+    def test_a_today_read_is_told_the_calendar_still_says_planned(self):
+        """`current_calendar` is in the `today` read and `cycle_sessions` is not.
+
+        The calendar is the plan's own projection and `validate_bundle` holds it to
+        exactly that, so it is not overlaid. Without a line saying so, a daily turn the
+        day after the athlete answered reads the one container that still disagrees with
+        them, and nothing in that read says the disagreement exists.
+        """
+        self.confirm()
+
+        response = self.gateway.route(
+            "session", self.owner_id, TOKEN_A, {"read": ["today"]}
+        )
+        context = response["context"]
+        self.assertIn("current_calendar", context)
+        self.assertNotIn("cycle_sessions", context)
+        calendar = next(
+            row for row in context["current_calendar"] if row["session_id"] == UNMATCHED_SESSION
+        )
+        self.assertEqual("planned", calendar["status"])
+        self.assertTrue(
+            any(
+                UNMATCHED_SESSION in note and "not trained" in note
+                for note in context["unknowns"]
+            ),
+            context["unknowns"],
+        )
+
+    def test_a_plan_that_already_recorded_the_same_outcome_is_not_a_conflict(self):
+        """Agreement must not read as a question to put to the athlete.
+
+        A weekly review may record the session `missed` through the ordinary coaching
+        path after the athlete said so. Both sides then say the same thing, and a
+        conflict line there would manufacture a question to ask on every later read --
+        the opposite of what this route is for.
+        """
+        self.confirm()
+        shutil.rmtree(self.state_dir)
+        plan = plan_with_an_unmatched_elapsed_session()
+        for session in plan["week"]["sessions"]:
+            if session["session_id"] == UNMATCHED_SESSION:
+                session["match_status"] = "missed"
+        init_store(self.state_dir, plan)
+        athlete_evidence.record_session_not_trained(
+            self.state_dir,
+            plan_id=self.plan["plan_id"],
+            session_id=UNMATCHED_SESSION,
+            date=UNMATCHED_DATE,
+            sport="mobility",
+            now=self.now,
+        )
+
+        context = self.session()["context"]
+        row = next(
+            item for item in context["cycle_sessions"] if item["session_id"] == UNMATCHED_SESSION
+        )
+
+        self.assertEqual("missed", row["match_status"])
+        self.assertEqual(
+            [],
+            [note for note in context["unknowns"] if "only they can say which stands" in note],
+        )
+
     def test_it_writes_no_plan_version_and_leaves_the_stored_session_alone(self):
         """The append-only chain is not rewritten, and that is the design, not a gap.
 
@@ -251,7 +315,11 @@ class SessionNotTrainedRouteTests(SessionNotTrainedTestCase):
         here, which is exactly why only the athlete may fill this in.
         """
         for _ in range(3):
-            self.session()
+            row = self.cycle_row()
+            # The read path, not only the container: a build that learned to infer this
+            # would leave the container empty and still report the session as missed.
+            self.assertEqual("planned", row["match_status"])
+            self.assertEqual("none_found", row["activity_evidence"])
 
         self.assertEqual([], athlete_evidence.load_evidence(self.state_dir)["session_outcomes"])
 
@@ -269,6 +337,66 @@ class SessionNotTrainedRetractionTests(SessionNotTrainedTestCase):
         row = self.cycle_row()
         self.assertEqual("planned", row["match_status"])
         self.assertEqual("none_found", row["activity_evidence"])
+
+    def test_a_retraction_removes_one_statement_and_leaves_the_others_standing(self):
+        """A mutation making `retract_session_outcome` clear the container survived the
+        whole suite, so the property three docstrings assert had nothing holding it."""
+        self.confirm(UNMATCHED_SESSION)
+        athlete_evidence.record_session_not_trained(
+            self.state_dir,
+            plan_id=self.plan["plan_id"],
+            session_id="run-easy-01",
+            date="2026-08-11",
+            sport="running",
+            now=self.now,
+        )
+        self.assertEqual(2, len(athlete_evidence.load_evidence(self.state_dir)["session_outcomes"]))
+
+        result = self.retract(UNMATCHED_SESSION)
+
+        self.assertEqual(1, result["record_count"])
+        standing = athlete_evidence.load_evidence(self.state_dir)["session_outcomes"]
+        self.assertEqual(["run-easy-01"], [row["session_id"] for row in standing])
+
+    def test_a_statement_is_read_back_only_for_the_plan_that_wrote_it(self):
+        """The other surviving mutation: dropping the plan_id filter changed nothing.
+
+        A session id is unique only inside the plan that wrote it, so a statement read
+        back under another plan would answer for a session nobody answered for.
+        """
+        self.confirm(UNMATCHED_SESSION)
+        evidence = athlete_evidence.load_evidence(self.state_dir)
+
+        own = athlete_evidence.confirmed_session_outcomes(evidence, self.plan["plan_id"])
+        other = athlete_evidence.confirmed_session_outcomes(evidence, "some-other-plan")
+
+        self.assertEqual([UNMATCHED_SESSION], sorted(own))
+        self.assertEqual({}, other)
+
+    def test_the_retraction_keeps_one_meaning_for_on_record_that_day(self):
+        """AGENTS.md 14: a field may not mean two things on two paths of one tool.
+
+        This kind is keyed by a session, not by a day, so `on_record_that_day` is null
+        here for the same reason it is null for a long-term goal and a training
+        preference. Filling it with every session still carrying a statement would have a
+        caller tell the athlete those were "on record that day", which is not what they
+        are.
+        """
+        self.confirm(UNMATCHED_SESSION)
+        athlete_evidence.record_session_not_trained(
+            self.state_dir,
+            plan_id=self.plan["plan_id"],
+            session_id="run-easy-01",
+            date="2026-08-11",
+            sport="running",
+            now=self.now,
+        )
+
+        result = self.retract(UNMATCHED_SESSION)
+
+        self.assertIsNone(result["on_record_that_day"])
+        self.assertEqual([], result["candidates"])
+        self.assertIn("run-easy-01", result["note"])
 
     def test_retracted_true_is_idempotency_and_not_a_receipt_for_a_deletion(self):
         """Issue #460's remaining item, checked rather than only described.
@@ -365,6 +493,64 @@ class SessionNotTrainedSurvivesTheWeekRollingTests(SessionNotTrainedTestCase):
 # after the athlete has already answered for it.
 LATE_SYNC_SESSION = "run-easy-01"
 LATE_SYNC_DATE = "2026-08-11"
+
+
+class SessionNotTrainedUnderADeclaredMeasurementTests(SessionNotTrainedTestCase):
+    """The cycle that declared a measurement, which is where the first cut broke.
+
+    `_measurement_evidence` copies `cycle_sessions[].activity_evidence` straight onto
+    `measurement_evidence.reference_result` / `comparison_result`, and those two fields
+    carry their own enum in `validation.py` and in the published contract. Adding a value
+    to the cycle-record enum and not to those refuses the *whole context*: an athlete who
+    answered for the reference session -- the session they are most likely to answer for
+    -- turned every later `startCoachSession` into a 422 with no detail, which the model
+    cannot act on and cannot trace back to a statement it should retract.
+
+    The fixture plan here is the one that declares a measurement, because the plan every
+    other test in this file uses has `goal.measurement` null and never reaches this path.
+    """
+
+    now = dt.datetime(2026, 9, 4, 0, 30, tzinfo=dt.timezone.utc)
+
+    def setUp(self):
+        super().setUp()
+        shutil.rmtree(self.state_dir)
+        self.plan = plan_measuring_week_one_quality()
+        init_store(self.state_dir, copy.deepcopy(self.plan))
+        roll_the_week_to_the_measurement_week(
+            self.state_dir, copy.deepcopy(self.plan), self.now
+        )
+
+    def test_answering_for_either_end_of_the_measurement_keeps_the_context_readable(self):
+        for session_id, field in (
+            ("run-quality-01", "reference_result"),
+            ("run-measure-01", "comparison_result"),
+        ):
+            with self.subTest(session=session_id):
+                self.confirm(session_id)
+                # Raises GatewayError 422 if either enum is missing the value.
+                context = self.session()["context"]
+                self.assertEqual([], validate_coach_context(context)["errors"])
+                self.assertEqual(
+                    "athlete_confirmed_not_trained",
+                    context["measurement_evidence"][field],
+                )
+                self.retract(session_id)
+
+    def test_the_measurement_reading_says_the_athlete_answered_not_that_nothing_was_found(self):
+        """`none_found` and `athlete_confirmed_not_trained` are different next actions.
+
+        One says this build looked and nothing attached -- look again, or wait for a sync.
+        The other says the measurement was not run, which is rescheduled rather than
+        looked harder for.
+        """
+        before = self.session()["context"]["measurement_evidence"]
+        self.assertEqual("none_found", before["reference_result"])
+
+        self.confirm("run-quality-01")
+
+        after = self.session()["context"]["measurement_evidence"]
+        self.assertEqual("athlete_confirmed_not_trained", after["reference_result"])
 
 
 class SessionNotTrainedConflictTests(SessionNotTrainedTestCase):

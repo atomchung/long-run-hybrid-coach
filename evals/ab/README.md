@@ -430,12 +430,20 @@ scenario does not contain.
 ### The 2026-09-15 runs: a served-text change, characterized
 
 `execution-trend-vs-declared-outcome` v1 is the first suite here whose arms are not two
-context builds. Issue #467 moved served text — `SKILL.md`, `orchestration.md` and
-`hybrid_training.md` — so the comparison is **two runs of one live arm**,
-`2026-09-15-467-current` and `2026-09-15-467-candidate`, built minutes apart with the
-three files swapped between them. Every packet's `start_coach_session` is byte-identical
+context builds. Issue #467 moved served text, so the comparison is **two runs of one live
+arm**, `2026-09-15-467-current` and `2026-09-15-467-candidate`, built minutes apart with
+the files swapped between them. Every packet's `start_coach_session` is byte-identical
 across the two runs (verified key by key at build time); only `materials.orchestration`
-and `materials.training_judgment` differ. Four turns, the sharp one answered three times
+and `materials.training_judgment` differ.
+
+**Two of the three changed texts are in that comparison, not three, and the third is the
+one the issue named.** A packet's `materials` is what `_materials()` builds — the
+orchestration prompt and the training reference — because those are what the *product*
+serves. `SKILL.md` is installed on the client side and reaches no packet, so this run says
+nothing about whether its step-4 rewrite changes an answer. That is the awkward half: #467
+diagnosed `SKILL.md` step 4 by name, and it is the file this harness structurally cannot
+vary. Measuring it needs a Skill-consuming client, which is the client acceptance this cut
+owes anyway — not another run here. Four turns, the sharp one answered three times
 per run and the three controls once, one model throughout
 (anthropic/claude-opus-5). Twelve answers.
 

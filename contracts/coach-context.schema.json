@@ -510,11 +510,13 @@
           ]
         },
         "reference_result": {
+          "description": "Whether this end of the comparison has a reading, in the same vocabulary cycle_sessions[].activity_evidence uses, plus not_in_record for a session the cycle's record does not hold. 'athlete_confirmed_not_trained' is the one worth telling apart from 'none_found': the reading is missing because the athlete said that session did not happen, not because this build looked and found nothing — so the measurement was not merely unread, it was not run, and rescheduling it is the action rather than looking harder.",
           "type": "string",
           "enum": [
             "attached",
             "other_activity_same_day",
             "athlete_reported",
+            "athlete_confirmed_not_trained",
             "outside_evidence_window",
             "none_found",
             "not_in_record"
@@ -527,6 +529,7 @@
             "attached",
             "other_activity_same_day",
             "athlete_reported",
+            "athlete_confirmed_not_trained",
             "outside_evidence_window",
             "none_found",
             "scheduled",

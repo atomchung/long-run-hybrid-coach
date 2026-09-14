@@ -5565,9 +5565,10 @@ class CoachGateway:
                 "retracted": result["retracted"],
                 "removed": result["removed"],
                 "record_count": result["outcome_count"],
-                # Named for the day a dated record is keyed by, and this one is not: the
-                # sessions still carrying a statement are what a caller needs instead.
-                "on_record_that_day": result["on_record"] or None,
+                # Null, like long_term_goal and training_preference and for their reason:
+                # this kind is keyed by a session rather than by a day, so there is no
+                # "that day" to hold other records. What is still on record rides `note`.
+                "on_record_that_day": None,
                 "candidates": [],
                 "note": result["note"],
             }
