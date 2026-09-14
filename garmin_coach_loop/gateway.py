@@ -147,6 +147,9 @@ from .source_intervals import (
     USER_AGENT,
     Fetcher,
     IntervalsCredentials,
+    ProviderAuthError,
+    ProviderBudgetExhaustedError,
+    ProviderPermissionError,
     authorization_header,
     count_provider_call,
     current_provider_quota,
@@ -2396,6 +2399,29 @@ class CoachGateway:
             raise _invalid(str(exc)) from exc
         except StateStoreError as exc:
             raise GatewayError(HTTPStatus.CONFLICT, "state_conflict", str(exc)) from exc
+        except ProviderAuthError as exc:
+            # Authentication failure is not optional evidence and is not a plan/delivery
+            # conflict. Forget this connection whichever endpoint observed the 401,
+            # including a delivery write. An open reservation is left in extra so a
+            # reconnect can resume the same approved set rather than author a new one.
+            self._forget_connection(token)
+            raise GatewayError(
+                HTTPStatus.BAD_GATEWAY,
+                "provider_error",
+                str(exc),
+                extra=self._auth_failure_extra(owner_id),
+                upstream_unauthorized=True,
+            ) from exc
+        except ProviderBudgetExhaustedError as exc:
+            extra = {}
+            if exc.retry_after_raw:
+                extra["retry_after"] = exc.retry_after_raw
+            raise GatewayError(
+                HTTPStatus.BAD_GATEWAY,
+                "provider_error",
+                str(exc),
+                extra=extra,
+            ) from exc
         except DeliveryError as exc:
             raise GatewayError(HTTPStatus.CONFLICT, "delivery_blocked", str(exc)) from exc
         except ContextBuildError as exc:
@@ -2410,6 +2436,9 @@ class CoachGateway:
                 HTTPStatus.BAD_GATEWAY,
                 "provider_error",
                 str(exc),
+                extra=self._auth_failure_extra(owner_id)
+                if upstream == HTTPStatus.UNAUTHORIZED
+                else {},
                 upstream_unauthorized=upstream
                 in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN},
             ) from exc
@@ -2583,6 +2612,21 @@ class CoachGateway:
             )
         except IdentityError:
             LOGGER.warning("could not record an observed provider revocation")
+
+    def _auth_failure_extra(self, owner_id: str) -> dict[str, Any]:
+        """Name an open delivery reservation so reconnect resumes it, not a new set.
+
+        Only when Intervals may already hold an effect. A 401 before any provider write
+        releases the reservation, and attaching an empty view here would tell the athlete
+        to retry a delivery that did not happen.
+        """
+        try:
+            view = _unresolved_delivery_view(self._state_dir(owner_id))
+        except StateStoreError:
+            return {}
+        if view is None or not view.get("provider_effects_outstanding"):
+            return {}
+        return {"unresolved_delivery": view}
 
     def _state_dir(self, owner_id: str) -> Path:
         return resolve_state_dir(owner_id, state_root=self.config.state_root)
@@ -4129,6 +4173,10 @@ class CoachGateway:
         day = self._now().astimezone(dt.timezone.utc).date().isoformat()
         try:
             transport.list_events(day)
+        except ProviderAuthError:
+            return "invalid_or_expired"
+        except ProviderPermissionError:
+            return "denied"
         except DeliveryError as exc:
             cause = exc.__cause__
             if isinstance(cause, urllib.error.HTTPError):
@@ -4664,7 +4712,7 @@ class CoachGateway:
             # client follows on its own, 403 reported as the durable permission fact it is
             # (``ProviderPermissionError``). Everything else -- a 5xx, a timeout, an
             # exhausted quota -- is still a bad minute and still degrades below.
-            if exc.upstream_status in _CREDENTIAL_REFUSED:
+            if isinstance(exc, ProviderAuthError) or exc.upstream_status in _CREDENTIAL_REFUSED:
                 raise
             unknowns.append(f"recent_training unavailable: {exc}")
         else:
@@ -6386,7 +6434,7 @@ class CoachGateway:
             )
         except ContextBuildError as exc:
             upstream = getattr(exc, "upstream_status", None)
-            if upstream == HTTPStatus.UNAUTHORIZED:
+            if isinstance(exc, ProviderAuthError) or upstream == HTTPStatus.UNAUTHORIZED:
                 # The same sign-out every other route performs on a refused credential,
                 # performed even though this request is not failing on it: a revoked
                 # connection must be challenged on the next call rather than survive
