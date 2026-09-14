@@ -188,6 +188,12 @@ FIELD_BUDGETS: dict[str, int] = {
 # once, which is the case a per-field budget cannot see. A new field is paid for out of
 # this, not beside it.
 #
+# This number is the retained build's shape, not a client result. A client-facing read
+# is measured on the serialized gateway payload (issue #441 residual):
+# ``MAX_CLIENT_RESULT_CHARACTERS`` in ``mcp_transport.py``, the same 66,000, compared
+# after envelope, context_id, as_of and plan_state are in. The quality-cadence fixture
+# below is over this number on purpose and is not truncated to fit.
+#
 # For scale: the owner's live account on 2026-08-23 produced a 55,174-character context
 # before this issue's cuts and roughly 33,000 after, against a 62,253-character fixture.
 # The fixture is a maximal athlete -- six weeks at ten sessions a week, a year of
@@ -903,11 +909,28 @@ class ContextBudgetTests(unittest.TestCase):
         Every field inside its own budget still adds up to a response nobody can read
         if the number of fields keeps growing, so the total is held separately -- a new
         field is paid for out of this, not beside it.
+
+        This is the retained-build early warning on the heavy fixture. The runtime
+        owner of the client-facing 66,000 is ``MAX_CLIENT_RESULT_CHARACTERS`` in
+        ``mcp_transport.py``; a real athlete over that number is refused there, not
+        caught here.
         """
         self.assertLessEqual(
             _size(self.context), MAX_CONTEXT_CHARACTERS,
             "the whole CoachContext is over budget; a new field costs an old one",
         )
+
+    def test_the_quality_cadence_build_is_not_cut_to_fit_a_client_result(self):
+        """Issue #441 residual: the retained build may exceed 66,000; that is not a
+        reason to drop sessions. The client-facing ceiling is a refusal, not a trim.
+        """
+        context = _quality_cadence_context()
+        self.assertGreater(_size(context), MAX_CONTEXT_CHARACTERS)
+        full = [
+            row for row in context["segment_execution"]["activities"] if "segments" in row
+        ]
+        self.assertEqual(QUALITY_CADENCE_FULL_DETAIL, len(full))
+        self.assertTrue(all(len(row["segments"]) == 20 for row in full))
 
     def test_the_total_stays_tied_to_the_budgets_that_add_up_to_it(self):
         """The total cannot drift without a budget line moving in the same diff.

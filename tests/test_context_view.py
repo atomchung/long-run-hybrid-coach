@@ -54,6 +54,10 @@ def _size(value: object) -> int:
 # for the reason the per-field budgets are: a read that grows has to say what it bought.
 # A group that gains a field moves exactly the reads that carry it, which is the change
 # worth stopping in the diff that makes it.
+#
+# These bound the projection, which is not a payload any client receives. The runtime
+# owner of the client-facing 66,000-character ceiling is ``MAX_CLIENT_RESULT_CHARACTERS``
+# in ``mcp_transport.py``.
 READ_CEILINGS: dict[tuple[str, ...], int] = {
     DEFAULT_READ: 36_000,
     ("today",): 24_500,

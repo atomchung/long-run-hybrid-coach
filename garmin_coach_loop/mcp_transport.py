@@ -37,7 +37,7 @@ from typing import Any, Callable, Sequence
 
 from . import orchestration
 from .athlete_evidence import GOAL_OPTIONAL_FIELDS, IMPORT_RESOLUTIONS
-from .context_view import ALL as READ_ALL, ALL_GROUPS, DEFAULT_READ
+from .context_view import ALL as READ_ALL, ALL_GROUPS, DEFAULT_READ, FOCUS_AXES
 from .decision_scope import DECISION_SCOPE_SCHEMA
 from .evidence_import import IMPORT_FORMATS
 from .release_identity import sha256_text
@@ -3146,6 +3146,67 @@ TOOLS: tuple[Tool, ...] = (
 TOOLS_BY_NAME: dict[str, Tool] = {tool.name: tool for tool in TOOLS}
 
 
+# The largest serialized tool result a client is known to accept. Issue #233 recorded
+# 77,166 characters actually breaking one; this is that ceiling, not a raised one.
+# Compared on the JSON `_text_content` emits -- envelope, context_id, as_of, plan_state
+# and every other field in -- never on the context build, the projection, or the
+# retained snapshot. Raising it is not the repair: an oversized read refuses and names
+# the group or focus to ask for instead (issue #441).
+MAX_CLIENT_RESULT_CHARACTERS = 66_000
+
+
+def client_result_json(payload: dict[str, Any]) -> str:
+    """The JSON a client is handed for one result.
+
+    Same encoding as the gateway's HTTP body: UTF-8 JSON, default separators, the
+    athlete's language unescaped. The 66,000-character ceiling is this string's length.
+    """
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def client_result_characters(payload: dict[str, Any]) -> int:
+    return len(client_result_json(payload))
+
+
+def model_facing_read_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """The object `_text_content` will serialize for this read, redactions applied."""
+    tool = next(tool for tool in TOOLS if tool.kind == kind)
+    return _redact(payload, tool.redactions)
+
+
+def oversized_read_refusal(
+    *, characters: int, context_id: str | None
+) -> tuple[str, dict[str, Any]]:
+    """The small refusal an oversized read returns instead of the result.
+
+    Names the groups and focus axes the model can pass on the retry, so the next call
+    is the one extra tool call this exists to spend rather than a guess. Does not carry
+    the oversized payload -- a warning inside that payload would be discarded with it.
+    """
+    groups = ", ".join(ALL_GROUPS)
+    axes = ", ".join(f"focus.{axis}" for axis in FOCUS_AXES)
+    if isinstance(context_id, str) and context_id:
+        where = (
+            f"The snapshot is held; call readCoachEvidence with context_id {context_id} "
+        )
+    else:
+        where = "Call startCoachSession "
+    detail = (
+        f"this read is {characters} characters, over the {MAX_CLIENT_RESULT_CHARACTERS} "
+        f"a client can accept in one result. {where}for the group the answer turns on "
+        f"({groups}), or add {axes} for one session, day, or movement. "
+        'Do not retry with read: ["all"].'
+    )
+    extra: dict[str, Any] = {
+        "ceiling": MAX_CLIENT_RESULT_CHARACTERS,
+        "characters": characters,
+        "try": {"read": list(ALL_GROUPS), "focus": list(FOCUS_AXES)},
+    }
+    if isinstance(context_id, str) and context_id:
+        extra["context_id"] = context_id
+    return detail, extra
+
+
 def tool_catalogue_sha256(tools: Sequence[Tool] = TOOLS) -> str:
     """One digest over the catalogue ``tools/list`` actually serves.
 
@@ -3196,9 +3257,19 @@ def _text_content(payload: dict[str, Any]) -> dict[str, Any]:
     """One tool response, rendered exactly as the gateway's own JSON body is.
 
     ``ensure_ascii=False`` so the athlete's own language survives the encoding rather
-    than reaching the model as escape sequences.
+    than reaching the model as escape sequences. ``client_result_characters`` measures
+    this same string.
+
+    The 66,000-character guard is *not* here on purpose. This function serializes
+    every tool result, including ``applyCoachDecision`` and ``exportOwnerData``; a
+    ceiling that fired on a confirmation the athlete already approved, or on the
+    archive they asked for, would be worse than an oversized read. It also
+    serializes the refusal itself, which must not re-enter a guard. The check
+    lives in ``CoachGateway.route`` for ``session`` and ``evidence_read`` only,
+    on the redacted payload this function would emit, and raises before that
+    payload is handed here.
     """
-    return {"type": "text", "text": json.dumps(payload, ensure_ascii=False)}
+    return {"type": "text", "text": client_result_json(payload)}
 
 
 def _call_tool(

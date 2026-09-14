@@ -8,6 +8,7 @@ where the OAuth discovery contract lives.
 from __future__ import annotations
 
 import base64
+import copy
 import datetime as dt
 import hashlib
 import http.client
@@ -36,6 +37,8 @@ from garmin_coach_loop import (
 )
 from garmin_coach_loop.gateway import (
     AUTHORIZATION_CODE_TTL_SECONDS,
+    CONTEXT_RETENTION_SECONDS,
+    HELD_SESSION_READ,
     CoachGateway,
     INTERVALS_AUTHORIZE_URL,
     INTERVALS_OAUTH_SCOPES,
@@ -57,7 +60,14 @@ from garmin_coach_loop.identity import (
     owner_for_provider_athlete,
     token_fingerprint,
 )
-from garmin_coach_loop.mcp_transport import PROTOCOL_VERSION, TOOLS, TOOLS_BY_NAME
+from garmin_coach_loop.mcp_transport import (
+    MAX_CLIENT_RESULT_CHARACTERS,
+    PROTOCOL_VERSION,
+    TOOLS,
+    TOOLS_BY_NAME,
+    client_result_characters,
+    client_result_json,
+)
 from garmin_coach_loop.store import canonical_hash, init_store, read_current_plan
 
 # `test_gateway`'s harness -- a real loopback server over one injected fetcher --
@@ -5206,6 +5216,104 @@ class McpJourneyTests(McpTestCase):
             delivery_set["proposal_hash"],
             set_hash({**delivery_set, "direction": "withdraw"}),
         )
+
+
+class OversizedReadRefusalMcpTests(McpTestCase):
+    """The same ceiling, on the bytes an MCP client actually receives."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from tests.test_context_budget import _quality_cadence_context
+
+        cls.quality = _quality_cadence_context()
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+    def _retain_quality(self) -> str:
+        context = copy.deepcopy(self.quality)
+        context_id = context["context_id"]
+        until = self.gateway._now() + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS)
+        self.gateway._retain_context(self.owner_id, context, until=until)
+        self.gateway._hold(
+            self.owner_id,
+            HELD_SESSION_READ,
+            key=context_id,
+            digest=canonical_hash({"read": []}),
+            payload={"read": []},
+            until=until,
+        )
+        return context_id
+
+    def test_read_all_over_mcp_is_an_error_result_not_an_empty_read(self):
+        context_id = self._retain_quality()
+
+        result = self.tool_result(
+            "readCoachEvidence", {"context_id": context_id, "read": ["all"]}
+        )
+        payload = self.tool_payload(result)
+
+        self.assertTrue(result.get("isError"), result)
+        self.assertNotIn("structuredContent", result)
+        self.assertEqual("blocked", payload["status"])
+        self.assertEqual("result_too_large", payload["error"])
+        self.assertNotIn("evidence", payload)
+        self.assertLess(client_result_characters(payload), 4_000)
+        self.assertIn("today", payload["try"]["read"])
+        self.assertIn("session_detail", payload["detail"])
+        self.assertEqual(context_id, payload["context_id"])
+
+    def test_the_measured_string_is_the_mcp_text_block(self):
+        """The ceiling compares `content[0].text` length, not compact JSON of a
+        projection. Compact separators would under-count the bytes a client reads."""
+        payload = {"status": "passed", "x": "你好"}
+        text = client_result_json(payload)
+        self.assertEqual(text, json.dumps(payload, ensure_ascii=False))
+        self.assertEqual(len(text), client_result_characters(payload))
+        compact = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        self.assertLess(len(compact), len(text))
+        self.assertLessEqual(MAX_CLIENT_RESULT_CHARACTERS, 66_000)
+        self.assertEqual(66_000, MAX_CLIENT_RESULT_CHARACTERS)
+
+    def test_an_ordinary_startCoachSession_all_still_answers_over_mcp(self):
+        result = self.tool_result("startCoachSession", {"read": ["all"], "all_clear": True})
+
+        self.assertNotEqual(True, result.get("isError"), result)
+        payload = self.tool_payload(result)
+        self.assertEqual("passed", payload["status"])
+        self.assertLessEqual(client_result_characters(payload), MAX_CLIENT_RESULT_CHARACTERS)
+
+    def test_the_access_line_names_the_refusal(self):
+        context_id = self._retain_quality()
+        bearer = self.mcp_bearer(TOKEN_A)
+        before = self.log_handler.emitted
+
+        status, _, body = self.post_mcp(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "readCoachEvidence",
+                    "arguments": {"context_id": context_id, "read": ["all"]},
+                },
+            },
+            bearer=bearer,
+        )
+
+        self.assertEqual(200, status)
+        result = json.loads(body)["result"]
+        self.assertTrue(result["isError"])
+        self.log_handler.wait_for_last("POST /mcp -> 200", after=before)
+        line = next(
+            entry
+            for entry in self.log_handler.records
+            if "POST /mcp -> 200" in entry
+        )
+        self.assertIn("tool=readCoachEvidence", line)
+        self.assertIn("outcome=blocked:result_too_large", line)
 
 
 if __name__ == "__main__":  # pragma: no cover
