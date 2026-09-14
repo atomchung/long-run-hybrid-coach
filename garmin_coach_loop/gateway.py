@@ -5827,13 +5827,20 @@ class CoachGateway:
         stored = read_confirmed_delivery(self._state_dir(owner_id), approval_key=_proposal_key(proposal), claims=claims)
         if stored is None:
             return None
-        return self._complete_calendar(owner_id, token, stored["plan"], stored["confirmed_delivery"], {
+        state_dir = self._state_dir(owner_id)
+        response = {
             "status": "passed", **self._envelope(), "plan_id": stored["plan"]["plan_id"],
-            "plan_version": read_current_plan(self._state_dir(owner_id))["current_version"],
+            "plan_version": read_current_plan(state_dir)["current_version"],
             "event_id": stored["receipt"].get("event_id"), "idempotent_replay": True,
             "validation": {"status": "passed", "errors": [], "warnings": []},
-        }, red_flags=self._current_red_flags(owner_id),
-           account=self._replayed_calendar_account(owner_id, token))
+        }
+        if claims.get("kind") == "initialization":
+            warnings = self._store_initial_availability(state_dir)
+            if warnings:
+                response["warnings"] = warnings
+        return self._complete_calendar(owner_id, token, stored["plan"], stored["confirmed_delivery"], response,
+                                       red_flags=self._current_red_flags(owner_id),
+                                       account=self._replayed_calendar_account(owner_id, token))
 
     def prepare_initialization(
         self, owner_id: str, token: str, body: dict[str, Any]
@@ -5950,9 +5957,13 @@ class CoachGateway:
         if (state_dir / "store.json").is_file():
             current = read_current_plan(state_dir)
             if current["current_version"] == 1 and canonical_hash(current["current_plan"]) == claims.get("plan_hash"):
-                return {"status": "passed", **self._envelope(), "plan_id": current["plan_id"],
-                        "plan_version": current["current_version"], "idempotent_replay": True,
-                        "validation": {"status": "passed", "errors": [], "warnings": []}}
+                response = {"status": "passed", **self._envelope(), "plan_id": current["plan_id"],
+                            "plan_version": current["current_version"], "idempotent_replay": True,
+                            "validation": {"status": "passed", "errors": [], "warnings": []}}
+                warnings = self._store_initial_availability(state_dir)
+                if warnings:
+                    response["warnings"] = warnings
+                return response
             raise self._plan_state_exists(current)
         opened = self._held_transaction(owner_id, proposal, kind="initialization", confirmed=body.get("confirmed"))
         record = opened["record"]
@@ -5965,24 +5976,55 @@ class CoachGateway:
                                                  today=dt.date.fromisoformat(metadata["today"]))
         confirmed_delivery = self._transaction_calendar(proposal, record)
         account = self._calendar_account_for_apply(owner_id, token, confirmed_delivery)
-        init_store(state_dir, plan, proposal_claims=claims, confirmed_delivery=confirmed_delivery)
+        init_store(
+            state_dir,
+            plan,
+            proposal_claims=claims,
+            confirmed_delivery=confirmed_delivery,
+            initialization_availability=self._initialization_availability_intent(
+                state_dir, record["recovery_inputs"]["initialization_request"]
+            ),
+        )
         response = {"status": "passed", **self._envelope(), "plan_id": plan["plan_id"],
                     "plan_version": plan["version"], "idempotent_replay": False,
                     "validation": _validation_summary(validation),
                     "warnings": list(validation.get("warnings") or [])}
-        timezone_name, _ = self._settings(owner_id)
-        response["warnings"].extend(self._store_initial_availability(
-            state_dir, record["recovery_inputs"]["initialization_request"],
-            timezone_name=timezone_name,
-        ))
+        response["warnings"].extend(self._store_initial_availability(state_dir))
         if not response["warnings"]:
             response.pop("warnings")
         return self._complete_calendar(owner_id, token, plan, confirmed_delivery, response,
                                        red_flags=red_flags, account=account)
 
-    def _store_initial_availability(
-        self, state_dir: Path, request: dict[str, Any], *, timezone_name: str
-    ) -> list[str]:
+    @staticmethod
+    def _initialization_availability_days(request: dict[str, Any]) -> list[Any] | None:
+        availability = request.get("availability")
+        days = availability.get("days") if isinstance(availability, dict) else None
+        if not isinstance(days, list) or not days:
+            return None
+        return list(days)
+
+    def _initialization_availability_intent(
+        self, state_dir: Path, request: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Days to recover after init_store, plus the availability fingerprint at commit.
+
+        Bound to the initial receipt rather than to PlanState: the days are the
+        post-commit side effect, and the fingerprint is how a retry tells "this write
+        never finished" from "the athlete changed availability later" (issue #281).
+        """
+        days = self._initialization_availability_days(request)
+        if days is None:
+            return None
+        try:
+            before_hash = athlete_evidence.availability_fingerprint(state_dir)
+        except StateStoreError:
+            # Unreadable evidence still has to reach the post-commit write so the
+            # warning names it. The empty fingerprint is only a fallback for the
+            # receipt; settle will fail the same way record_availability would.
+            before_hash = athlete_evidence.empty_availability_fingerprint()
+        return {"days": days, "before_hash": before_hash}
+
+    def _store_initial_availability(self, state_dir: Path) -> list[str]:
         """Keep the days the athlete named while setting up their first plan (issue #28).
 
         ``initialization_request.availability`` was previously echoed into the preview and
@@ -5995,16 +6037,32 @@ class CoachGateway:
         successful initialization over a failed note would be the worse trade by a wide
         margin. A failure is reported as a warning instead, naming what was not kept, so
         the coach can simply ask once more.
+
+        The days and the before-image live on the initial commit receipt, so an exact
+        confirmed retry can finish this write after a crash without the ephemeral
+        prepare record and without replaying over a later athlete statement (issue #281).
         """
-        availability = request.get("availability")
-        days = availability.get("days") if isinstance(availability, dict) else None
+        if not (state_dir / "store.json").is_file():
+            return []
+        receipt = read_current_plan(state_dir)["receipt"]
+        intent = receipt.get("initialization_availability")
+        if not isinstance(intent, dict):
+            return []
+        days = intent.get("days")
+        before_hash = intent.get("before_hash")
+        plan_hash = receipt.get("plan_hash")
         if not isinstance(days, list) or not days:
             return []
+        if not isinstance(before_hash, str) or not before_hash:
+            return []
+        if not isinstance(plan_hash, str) or not plan_hash:
+            return []
         try:
-            athlete_evidence.record_availability(
+            athlete_evidence.settle_initialization_availability(
                 state_dir,
-                recurring={"available_days": days},
-                timezone_name=timezone_name,
+                plan_hash=plan_hash,
+                days=days,
+                before_hash=before_hash,
                 now=self._now(),
             )
         except (AthleteEvidenceError, StateStoreError) as exc:
