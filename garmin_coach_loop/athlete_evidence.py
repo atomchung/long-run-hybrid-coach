@@ -212,14 +212,10 @@ __all__ = [
     "ATHLETE_EVIDENCE_VERSION",
     "ATHLETE_REPORTED_SOURCE",
     "BODY_MEASUREMENT_BOUNDS",
-    "LONG_TERM_GOAL_FIELDS",
     "PRESCRIBED_CONFIRMED_SOURCE",
-    "PROFILE_FIELDS",
     "REPORTABLE_SPORTS",
-    "SUBJECTIVE_STATE_FIELDS",
     "SUBJECTIVE_STATE_MAX_CHARS",
     "SUBJECTIVE_STATE_WINDOW_DAYS",
-    "TRAINING_PREFERENCE_FIELDS",
     "WEEKDAYS",
     "AthleteEvidenceError",
     "all_body_measurements",
@@ -325,31 +321,12 @@ _WEEKDAY_ALIASES = {
     "sunday": "sun",
 }
 
-# What a stored profile holds. ``timezone`` and ``language`` are independent statements
-# that happen to live in one record: an athlete may state where they are without saying
-# what they read, and stating one later must not erase the other.
-PROFILE_FIELDS = ("timezone", "language", "recorded_at", "source")
-
 _AVAILABILITY_DAY_FIELDS = ("available_days", "unavailable_days")
 
 # What a week statement may carry beyond the two day lists above. ``only_days`` is the
 # exhaustive form ("this week I can only do Tue/Thu"); it cannot be combined with the
 # day lists, which are changes measured against the recurring default.
 _WEEK_FIELDS = (*_AVAILABILITY_DAY_FIELDS, "only_days", "week_start", "note")
-
-# One long-term goal: what the athlete is aiming at past the end of any one cycle.
-# ``target`` is text on purpose. "50", "80 kg", "sub-25:00" and "a bodyweight pull-up" are
-# one kind of sentence to the athlete and four schemas to a product that parsed them, and
-# the comparison against where they stand today is the coach's reading of evidence this
-# file does not hold (AGENTS.md 4). Nothing here records a *current* value: a target is
-# intent, and the measurement of it belongs to the provider and to the athlete's own
-# reported measurements, never to a second copy kept beside them (issue #163).
-LONG_TERM_GOAL_FIELDS = ("metric", "target", "target_date", "note", "recorded_at", "source")
-
-# One training habit, in the athlete's own words. No frequency field, no weekday field, no
-# structure at all -- the moment a habit is machine-readable something starts checking
-# plans against it, and a preference that can fail a plan has become a constraint.
-TRAINING_PREFERENCE_FIELDS = ("topic", "statement", "recorded_at", "source")
 
 _STRENGTH_SET_FIELDS = ("set", "weight_kg", "assist_kg", "reps", "rpe")
 
@@ -384,12 +361,6 @@ _ACTIVITY_SUMMARY_FIELDS = (
     "subjective_feel",
     "note",
 )
-
-# One day's subjective state: the athlete's own sentence and the day it is about. No
-# scale, no score, no category -- a subjective state that is machine-readable is one
-# something starts computing with, and the whole reason this exists is that a number
-# standing in for "很累" was the thing the product already refused to store.
-SUBJECTIVE_STATE_FIELDS = ("date", "note", "recorded_at", "source")
 
 # How long one note may be. A cap rather than no cap, because this file is read into every
 # session context and an unbounded field is an unbounded context (AGENTS.md 13); generous

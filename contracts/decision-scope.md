@@ -9,7 +9,8 @@ The mapping is owned by `garmin_coach_loop.decision_scope.DECISION_SCOPE_MODES`.
   other cycle field, including the 28-day dates.
 - `cycle` maps to `review_cycle`. A goal or cycle reassessment may also change the
   executable current week in one preview and one confirmed, atomic application.
-- A first plan declares `cycle` and creates a `plan_cycle` event.
+- A first plan declares `cycle` when scope is present. `init_store` writes sequence 1
+  with no DecisionEvent; it does not create a `plan_cycle` event.
 
 The preview returns the effective `decision_scope` beside the before/after values.
 The existing proposal binds that preview and event. Changing scope after preview
@@ -29,8 +30,9 @@ catalogue. Omission follows the existing conservative rule: changed cycle dates
 map to `review_cycle`; otherwise a changed week maps to `review_week`; otherwise a
 goal/cycle change maps to `review_cycle`. A combined goal/cycle and week change
 within the same 28-day window remains refused on that legacy path. An omitted
-scope on a first plan retains its existing `plan_cycle` behavior. Explicit null,
-unknown values and week-scoped first plans are invalid, not omissions.
+scope on a first plan is accepted for older catalogues and the preview still
+reports `cycle`; no DecisionEvent is written. Explicit null, unknown values and
+week-scoped first plans are invalid, not omissions.
 
 ## Boundary and cost
 

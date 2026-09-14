@@ -54,7 +54,6 @@ from pathlib import Path
 from typing import Iterator
 
 
-IDENTITY_SCHEMA_VERSION = "1.4"
 _CONNECT_TIMEOUT_SECONDS = 10
 
 # `client_disclosures` is the one identity table an athlete can own rows in that a
