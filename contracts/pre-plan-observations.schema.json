@@ -97,6 +97,8 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "window_start",
+        "window_end",
         "availability",
         "strength_reports",
         "body_measurements",
@@ -106,11 +108,21 @@
         "subjective_states"
       ],
       "properties": {
+        "window_start": {
+          "description": "First day the four dated groups below were read over. They are the last 42 days, not everything on record: an athlete who uploaded a year of training would otherwise be handed a first answer too large for the client to accept. An empty group means nothing inside this window, never that the athlete has not trained.",
+          "type": "string",
+          "format": "date"
+        },
+        "window_end": {
+          "description": "Last day of that window, inclusive.",
+          "type": "string",
+          "format": "date"
+        },
         "availability": {
           "$ref": "#/$defs/availability"
         },
         "strength_reports": {
-          "description": "Whole reports rather than a count. There are a handful at most before a plan exists, and a count would only prompt a second call to read them.",
+          "description": "Whole reports rather than a count, for the days inside the window. A count would only prompt a second call to read them.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/strength_report"

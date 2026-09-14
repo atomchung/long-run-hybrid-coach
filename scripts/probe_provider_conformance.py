@@ -164,6 +164,11 @@ def _plan_for(probe_kind: str, plan_body: dict[str, Any], day: str) -> dict[str,
     plan["week"]["start"] = week_start.isoformat()
     plan["cycle"]["start"] = week_start.isoformat()
     plan["cycle"]["end"] = (week_start + dt.timedelta(days=27)).isoformat()
+    # The outlook moves with the week it follows. `_validate_outlook` computes each entry
+    # from `plan.week.start`, so a rebased week with the fixture's original outlook dates
+    # is an invalid plan and `prepare_delivery_set` refuses before a probe is ever built.
+    for index, entry in enumerate(plan["cycle"].get("outlook", [])):
+        entry["week_start"] = (week_start + dt.timedelta(days=7 * (index + 1))).isoformat()
     session = next(
         item for item in plan["week"]["sessions"] if item["session_id"] == "run-quality-01"
     )

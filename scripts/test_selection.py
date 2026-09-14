@@ -112,6 +112,9 @@ def select_test_paths(changed_paths: list[str] | tuple[str, ...]) -> dict[str, o
             "scripts/release_bundle.py": ("tests/test_release_bundle.py",),
             "scripts/verify_registry_release.py": ("tests/test_registry_release.py",),
             "scripts/render_plan_preview.py": ("tests/test_render_preview.py",),
+            "scripts/probe_provider_conformance.py": (
+                "tests/test_probe_provider_conformance.py",
+            ),
             "scripts/test_selection.py": ("tests/test_process_gates.py",),
             "scripts/change_gates.py": ("tests/test_process_gates.py",),
             "scripts/verify_production_promotion.py": ("tests/test_process_gates.py",),

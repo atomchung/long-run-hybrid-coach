@@ -180,11 +180,19 @@ Both entry points can make this read. The hosted OAuth authorize request now car
 
 ## Keeping this checked
 
-`scripts/probe_provider_conformance.py` writes one probe per shape the delivery boundary can emit — open/time, open/distance, absolute pace on a distance step, absolute pace inside a repeat, absolute BPM ceiling — to an empty date on a live account, verifies each with the product's own `verify_readback`, reports whether Intervals ran its own analysis over it, and deletes them again. `--keep` leaves them for a device check.
+`scripts/probe_provider_conformance.py` writes one probe per shape the delivery boundary can emit — open target on a time step, open target on a distance step, absolute pace on a distance step, absolute pace inside a repeat, and a heart-rate ceiling on each of a time step and a distance step — to an empty date on a live account, verifies each with the product's own `verify_readback`, reports whether Intervals ran its own analysis over it, and deletes them again. `--keep` leaves them for a device check. The ceiling probes leave as `% LTHR` workout text, because since issue #22 that is the only encoding the product emits for a ceiling it holds in bpm.
 
 It builds every payload through the real `prepare_delivery_set` and `_provider_payload` rather than restating them, so it cannot drift from what the product actually sends. Adding an execution model means adding a probe, or this stops describing the boundary. It is manual and opt-in: it writes to a real calendar, so it is never run in CI.
 
-Last full run, 2026-08-16: all six shapes exact. Provider analysis present for both pace probes and both heart-rate-ceiling probes, absent for the open probes (correct — no intensity to analyse). The ceiling probes moving from absent to present is the whole of issue #22 in one column: Intervals now parses the target instead of storing an opaque document.
+Last full run, 2026-09-14: all six shapes exact. Provider analysis present for both pace probes and both heart-rate-ceiling probes, absent for the open probes (correct — no intensity to analyse). Same result as the 2026-08-16 run, where the ceiling probes moving from absent to present was the whole of issue #22 in one column: Intervals now parses the target instead of storing an opaque document.
+
+### The probe was dead for 28 days, and nothing said so
+
+Between those two runs it could not run at all. `_plan_for` rebases the fixture's week and cycle onto the probe date; the outlook validation added on 2026-08-17 (#127) then required `cycle.outlook[i].week_start` to follow the rebased week, and the rebase had never touched those three dates. So `prepare_delivery_set` refused an invalid plan and every invocation died there — including the read-only listing, which writes nothing and needs no account.
+
+Nothing caught it because the probe was the one script in `scripts/` with no test. For those 28 days the live-provider-smoke gate was a gate with no working tool behind it: `change_gates.py` kept asking for a run that could not be performed, and a release could only record it as owed.
+
+`tests/test_probe_provider_conformance.py` now builds every probe payload offline and asserts each probe plan is one the product would accept, so the next validator change breaks a test instead of a gate. It cannot check what Intervals does with the payloads; only the live run does that, and only a person holding the watch checks the hop after it.
 
 ## Compatibility risk: provider acceptance is not device semantic success
 

@@ -108,9 +108,9 @@ Any coaching question starts here, not a questionnaire.
 ## Connection diagnostics
 
 - `inspectIntervalsPermissions` has no PlanState or coaching-session prerequisite.
-  Explain `settings_read` and `calendar_read`: `readable` = 200, `denied` = 403,
-  `invalid_or_expired` = 401; reconnect Intervals for denied permissions. Never show
-  Settings values, tokens, fingerprints, athlete ids, or owner ids.
+  Explain `settings_read` and `calendar_read`: `readable` = 200; `invalid_or_expired`
+  = 401, reconnect Intervals; `denied` = 403, an unticked consent box -- name it.
+  Never show Settings values, tokens, fingerprints, athlete ids, or owner ids.
 
 ## Their own data
 
@@ -122,8 +122,8 @@ Any coaching question starts here, not a questionnaire.
 ## Errors
 
 - 409 `proposal_superseded`: show the returned updated preview and obtain its own
-  confirmation. For `stale_plan_version`, `proposal_mismatch`, `proposal_expired`, or
-  `proposal_hash_mismatch`, follow the detail; never invent or edit an approval.
+  confirmation. For `stale_plan_version`, `proposal_mismatch` or `proposal_expired`,
+  follow the detail; never invent or edit an approval.
 - 409 `plan_state_exists`: re-run `startCoachSession`; change it with
   `prepareCoachDecision`, not initialization.
 - Any other blocked response: explain its actual `error`/`detail`; never guess.

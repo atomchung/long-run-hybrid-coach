@@ -287,6 +287,26 @@ class FirstPlanShowsFourWeeksTests(unittest.TestCase):
                     project_initialization_request(broken, issued_at=ISSUED_AT)
                 self.assertIn("2026-08-24, 2026-08-31, 2026-09-07", str(raised.exception))
 
+    def test_a_cycle_that_never_mentions_the_outlook_is_refused_by_name(self):
+        """The hole the empty list above does not cover: no ``outlook`` key at all.
+
+        An outlook sent as ``[]`` is caught by the date check, which only runs on a key
+        that is present; an absent one parses to ``[]`` further down and says nothing.
+        So the required-key list is the entire difference between "this first plan owes
+        three more weeks" and a committed 28-day direction whose last three weeks are
+        blank -- which is #61 back, in the one turn the athlete decides whether any of
+        this is worth using. The refusal names the field, because sending it is the fix.
+        """
+        broken = copy.deepcopy(initialization_request())
+        broken["cycle"].pop("outlook")
+
+        with self.assertRaises(ChangeRequestError) as raised:
+            project_initialization_request(broken, issued_at=ISSUED_AT)
+
+        self.assertIn(
+            "initialization_request.cycle is missing outlook", str(raised.exception)
+        )
+
     def test_the_outlined_weeks_must_be_the_ones_that_follow_the_first(self):
         broken = copy.deepcopy(initialization_request())
         broken["cycle"]["outlook"][2]["week_start"] = "2026-09-14"

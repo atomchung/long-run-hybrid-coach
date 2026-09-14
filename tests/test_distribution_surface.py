@@ -425,6 +425,46 @@ class PublishedCountTests(unittest.TestCase):
             f"{len(modes)}: {sorted(modes)}.",
         )
 
+    def test_the_release_inventory_summary_line_matches_its_own_headings(self):
+        """The inventory publishes one summary count and four section headings.
+
+        Every one of those five numbers went stale separately. A section was renumbered
+        from five to three and the summary kept saying five; a group table grew from
+        fourteen rows to sixteen and its heading kept saying fourteen. Both survived
+        because the document is the only thing that knows its own shape, and nothing
+        read it back.
+
+        This reads all five out of the file and holds them to each other, and holds the
+        group heading to the rows actually in its table -- so the next renumbering fails
+        here instead of reaching a reader.
+        """
+        text = RELEASE_INVENTORY.read_text(encoding="utf-8")
+        summary = re.search(
+            r"current count is \*\*(\d+) / (\d+) / (\d+) / (\d+)\*\*",
+            re.sub(r"\s+", " ", text),
+        )
+        self.assertIsNotNone(
+            summary,
+            "docs/release-inventory.md no longer states its summary count in the form "
+            "this test reads.",
+        )
+        headings = {
+            number: int(count)
+            for number, count in re.findall(r"^## (\d)\. [^(\n]+\((\d+)\)$", text, re.M)
+        }
+        self.assertEqual(
+            [headings.get(section) for section in ("1", "3", "4", "6")],
+            [int(value) for value in summary.groups()],
+            "the summary line and the section headings of docs/release-inventory.md "
+            "disagree.",
+        )
+        rows = re.findall(r"^\| (\d+) \| ", text.split("## 6.")[1].split("## 7.")[0], re.M)
+        self.assertEqual(
+            headings.get("6"),
+            len(rows),
+            "the workflow-group heading and the number of rows in its table disagree.",
+        )
+
     def test_every_published_count_is_the_real_one(self):
         for path, patterns in self.PATTERNS.items():
             # Markdown wraps, and a wrapped sentence is still one statement.

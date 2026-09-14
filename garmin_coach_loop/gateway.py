@@ -195,7 +195,7 @@ API_VERSION = "1.0"
 # the release identity's hashes. AGENTS.md owns version policy: MINOR is an owner-declared
 # product release; PATCH may move model-facing surfaces. Changed digests still require
 # a new reviewed surface and affected clients to refresh, regardless of the number.
-PRODUCT_VERSION = "1.4.8"
+PRODUCT_VERSION = "1.4.9"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 INTERVALS_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
@@ -829,6 +829,44 @@ def _profile_unknowns(profile: dict[str, Any] | None) -> list[str]:
     return [
         "athlete_profile.timezone is not stated; dates are being read in "
         f"{DEFAULT_TIMEZONE}"
+    ]
+
+
+def _unreadable_availability_warnings(request: Any) -> list[str]:
+    """Days in a first plan's availability that will not survive the write, said early.
+
+    ``availability.days`` is free prose the coach transcribed, and only the seven English
+    weekday names and the seven three-letter tokens parse. "週一晚上", "週一",
+    "Monday evening" -- the ordinary transcription in this product's own primary language
+    and in ordinary English -- all fail. The write runs after the plan is committed and
+    deliberately does not unwind it, so the failure used to surface as a warning the
+    athlete only reached *after* confirming: their days were stored as null, and the next
+    conversation opened by asking again. Issue #28 exists to stop exactly that.
+
+    So the same parse runs here, where the answer costs nothing: the model re-sends the
+    request with `["mon","wed","sat"]` and keeps the athlete's own words in
+    ``availability.note``. It stays a warning rather than a refusal -- a first plan is
+    still a correct plan without its availability note, and blocking one over a
+    transcription would be the shadow coach AGENTS.md 5 forbids. Nothing is guessed at:
+    an unrecognised day is named back, never mapped.
+    """
+    availability = request.get("availability") if isinstance(request, dict) else None
+    days = availability.get("days") if isinstance(availability, dict) else None
+    if not isinstance(days, list):
+        return []
+    unreadable = [
+        str(day)
+        for day in days
+        if athlete_evidence.normalize_weekday(day) is None
+    ]
+    if not unreadable:
+        return []
+    named = ", ".join(repr(day) for day in unreadable)
+    return [
+        f"availability.days will not be stored: {named} "
+        + ("is not a weekday" if len(unreadable) == 1 else "are not weekdays")
+        + " this reads. Send mon, tue, wed, thu, fri, sat, sun (or the full English "
+        "names) and put what the athlete actually said in availability.note."
     ]
 
 
@@ -2450,8 +2488,17 @@ class CoachGateway:
                 extra=self._auth_failure_extra(owner_id)
                 if upstream == HTTPStatus.UNAUTHORIZED
                 else {},
-                upstream_unauthorized=upstream
-                in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN},
+                # Only a 401. A 403 is a credential the provider still accepts while
+                # refusing one capability, and `_forget_connection` already says why that
+                # matters: re-authorizing blindly is not the fix when the athlete left one
+                # box unticked, and a bare challenge is the one answer that cannot say
+                # which box. This used to include 403, so the athlete was handed a
+                # reconnect prompt identical to a revoked credential, reconnected without
+                # ticking anything different, and arrived back at the same blank 401 --
+                # with no turn in which the coach could read the permission fact aloud.
+                # As a `provider_error` tool result the model can explain it and call
+                # `inspectIntervalsPermissions`, which is what names the box.
+                upstream_unauthorized=upstream == HTTPStatus.UNAUTHORIZED,
             ) from exc
         except IdentityError as exc:
             raise GatewayError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error") from exc
@@ -4666,22 +4713,75 @@ class CoachGateway:
         evidence = athlete_evidence.load_evidence(state_dir)
         recurring = (evidence.get("availability") or {}).get("recurring")
         overrides = (evidence.get("availability") or {}).get("week_overrides") or []
-        reports = evidence.get("strength_reports") or []
-        measurements = evidence.get("body_measurements") or []
-        activities = evidence.get("reported_activities") or []
+        # The four dated families are read over the 42-day window the context path's own
+        # groups are built from -- the widest any reader of this evidence uses, so nothing
+        # a shorter one would have shown is lost -- and the view below names it. They used to be handed over
+        # whole, on the assumption -- written into the comment that stood here -- that
+        # "there are a handful at most before a plan exists". `importAthleteHistory` is
+        # built to break that: its own description invites "a long history in parts, by
+        # year", and one year of running at three sessions a week is 156 rows. Past about
+        # 130 of them `reported_activities` alone crosses MAX_CLIENT_RESULT_CHARACTERS,
+        # and this answer is `no_plan_state` rather than `passed`, so the oversized-result
+        # guard never measures it: the client is handed a result it discards, with no
+        # error, and every retry is the same size. There is no narrower read to fall back
+        # to either, because `evidence_index` and `context` are both null before a plan.
+        # Issue #233 chose windowing for the other reader of this same field
+        # (`context_builder._reported_group`); this is that choice applied to the reader
+        # it missed.
+        def within_window(rows: Any) -> list[dict[str, Any]]:
+            """The rows of ``rows`` dated inside the 42-day window, shape untouched.
+
+            A filter rather than one of ``athlete_evidence``'s readers, deliberately: those
+            return context shapes, and this view's rows are the stored ones -- a strength
+            report here carries its ``report_id``, which the session shape does not. The
+            decision was to read less, not to say it differently.
+
+            A row whose date cannot be read is left out, which is what every other reader
+            of this evidence does with one: it cannot be placed in time, so it cannot be
+            placed in a window either.
+            """
+            kept = []
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    day = dt.date.fromisoformat(str(row.get("date")))
+                except ValueError:
+                    continue
+                if window.window42_start <= day <= window.window42_end:
+                    kept.append(row)
+            return kept
+
+        stored_reports = evidence.get("strength_reports") or []
+        stored_measurements = evidence.get("body_measurements") or []
+        stored_activities = evidence.get("reported_activities") or []
+        stored_states = evidence.get("subjective_states") or []
+        reports = within_window(stored_reports)
+        measurements = within_window(stored_measurements)
+        activities = within_window(stored_activities)
+        states = within_window(stored_states)
+        # Not windowed, and not for want of trying: a long-term goal and a stated habit
+        # are keyed by name and carry no date, so there is no window to read them over.
+        # They are also few by nature, and re-asking for one is what this view exists to
+        # stop (issue #164).
         goals = evidence.get("long_term_goals") or []
         preferences = evidence.get("training_preferences") or []
-        states = evidence.get("subjective_states") or []
         athlete_evidence_view: dict[str, Any] | None = None
+        # Whether the athlete has stated anything is asked of everything on record, not of
+        # the window. Null here means the container is absent -- the contract says so in
+        # the field's own description -- and an athlete whose statements are all older than
+        # the window has stated plenty. Deciding from the windowed lists would hand the
+        # first conversation a null, which reads as "they have never trained": the exact
+        # thing the window was added to stop, arrived at from the other side.
         if (
             recurring is not None
             or overrides
-            or reports
-            or measurements
-            or activities
+            or stored_reports
+            or stored_measurements
+            or stored_activities
             or goals
             or preferences
-            or states
+            or stored_states
         ):
             athlete_evidence_view = {
                 "availability": {
@@ -4690,11 +4790,14 @@ class CoachGateway:
                         evidence, week_start=athlete_evidence.week_start_for(window.as_of.date())
                     ),
                 },
-                # Whole reports, not a count: there are a handful at most before a plan
-                # exists, and a count would only prompt a second call to read them. The
-                # same goes for a weight stated in the first conversation and a session
-                # the athlete trained before deciding what to train -- re-asking for
-                # either is the thing this whole view exists to stop.
+                # The span the four dated families were selected over, stated rather than
+                # assumed -- whatever window the rows came from has to be the window the
+                # envelope names, or the coach reads "nothing since" over a period nobody
+                # looked at. Whole rows inside it, not a count: a count would only prompt
+                # a second call to read them, and re-asking for a weight the athlete
+                # already stated is the thing this view exists to stop.
+                "window_start": window.window42_start.isoformat(),
+                "window_end": window.window42_end.isoformat(),
                 "strength_reports": list(reports),
                 "body_measurements": list(measurements),
                 "reported_activities": list(activities),
@@ -5334,6 +5437,7 @@ class CoachGateway:
             format_name=reading["format"],
             recognised_as=reading["recognised_as"],
             digest=reading["digest"],
+            mapping_digest=reading["mapping_digest"],
             source_name=body.get("source_name"),
             resolutions=body.get("resolutions"),
             now=self._now(),
@@ -6025,7 +6129,10 @@ class CoachGateway:
             "confirmation_required": True,
             "preview": projection["preview"],
             "validation": _validation_summary(validation),
-            "warnings": list(validation.get("warnings") or []),
+            "warnings": [
+                *(validation.get("warnings") or []),
+                *_unreadable_availability_warnings(request),
+            ],
             "unknowns": [*_profile_unknowns(profile), *projection["unknowns"]],
             "athlete_profile": profile,
         }

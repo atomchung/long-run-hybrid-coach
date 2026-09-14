@@ -3508,6 +3508,77 @@ class McpAuthorizationServerTests(McpTestCase):
         self.assertTrue(result["isError"])
         self.assertEqual("provider_error", self.tool_payload(result)["error"])
 
+    def test_an_unticked_permission_stays_a_tool_result_rather_than_a_blank_challenge(self):
+        """A 403 is the athlete's own consent page, and only a tool result can say so.
+
+        intervals.icu has the athlete tick each permission separately, so arriving without
+        `ACTIVITY:READ` is an ordinary first-use outcome rather than a broken connection.
+        This used to be restated as a 401 challenge indistinguishable from a revoked
+        credential: the client offered a one-click reconnect, the athlete reconnected
+        without ticking anything different, and the loop had no exit inside the product,
+        because no turn ever carried the permission fact to the model.
+
+        `_forget_connection` states the rule this holds the transport to -- only a 401 --
+        and the connection has to survive, or reconnecting is the only thing left again.
+        """
+        init_store(self.owner_dir(
+            lookup_or_create_owner(self.identity_db, "intervals", "i1")
+        ), publishable_plan())
+        bearer = self.connect()
+        self.fake.read_status = 403
+
+        result = self.tool_result("startCoachSession", {"all_clear": True}, bearer=bearer)
+
+        self.assertTrue(result["isError"])
+        payload = self.tool_payload(result)
+        self.assertEqual("provider_error", payload["error"])
+        self.assertIn("403", payload["detail"])
+        # The diagnostic that names the box is reachable on the same connection.
+        self.fake.read_status = None
+        permissions = self.tool_payload(
+            self.tool_result("inspectIntervalsPermissions", {}, bearer=bearer)
+        )
+        self.assertIn("settings_read", permissions)
+
+    def test_a_first_conversation_401_is_the_same_challenge_over_the_real_transport(self):
+        """The account with no store at all, which is the one that cannot afford a hole.
+
+        The revoked-token test above seeds a plan first, and the store-less 401 is
+        asserted through `GatewayTestCase.route`, which by its own docstring never reaches
+        `_mcp_tool_call` -- so what an athlete connecting for the first time actually
+        receives, headers and body, was asserted nowhere. It is the turn where a broken
+        connection costs the most: there is no plan to fall back on, so a client shown a
+        server error rather than a challenge has nothing to offer but "try again", and
+        the athlete decides this product does not work.
+
+        The body stays the closed pair. Why the provider refused belongs in the security
+        log, not in an unauthenticated response.
+        """
+        bearer = self.connect()
+        self.assertFalse(
+            (self.owner_dir(
+                owner_for_fingerprint(
+                    self.identity_db, token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
+                )
+            ) / "store.json").exists()
+        )
+        self.fake.read_status = 401
+
+        status, headers, body = self.post_mcp(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "startCoachSession", "arguments": {"all_clear": True}},
+            },
+            bearer=bearer,
+        )
+
+        self.assertEqual(401, status)
+        self.assertEqual({"status": "blocked", "error": "unauthorized"}, json.loads(body))
+        self.assertIn("resource_metadata=", headers["WWW-Authenticate"])
+        self.assertNotIn("Intervals", body.decode("utf-8"))
+
     def test_the_route_itself_still_reports_a_revoked_token_as_a_provider_error(self):
         """The restatement is the transport's, not the coach's.
 

@@ -1833,11 +1833,12 @@ def _activity_summary_position(
     summary land on an imported session, and then only on one it agrees with -- which is
     the caller's check, not this one's.
     """
-    positions = _activity_positions(activities, day, sport)
-    spoken = [index for index in positions if not activities[index].get("import")]
-    if spoken:
-        return spoken[0]
-    return positions[0] if len(positions) == 1 else None
+    spoken = [
+        index
+        for index in _activity_positions(activities, day, sport)
+        if not activities[index].get("import")
+    ]
+    return spoken[0] if spoken else None
 
 
 def same_reported_session(
@@ -3492,6 +3493,7 @@ def import_reported_evidence(
     format_name: str,
     recognised_as: str | None = None,
     digest: str,
+    mapping_digest: str | None = None,
     source_name: Any = None,
     resolutions: Any = None,
     now: dt.datetime | None = None,
@@ -3534,8 +3536,19 @@ def import_reported_evidence(
     with _exclusive_lock(root, operation="importing reported evidence"):
         _refuse_when_handed_off(root, "importing reported evidence")
         evidence = load_evidence(root)
+        # The same bytes read the same way. `mapping_digest` is part of the identity and
+        # `digest` deliberately is not (see `payload_digest`): re-sending a file with the
+        # `column_mapping` its own dropped-column reason asked for is a different read of
+        # it, and answering `already_imported` there is how a Garmin export's distances
+        # became permanently unreachable.
         finished = next(
-            (item for item in evidence["imports"] if item.get("digest") == digest), None
+            (
+                item
+                for item in evidence["imports"]
+                if item.get("digest") == digest
+                and item.get("mapping_digest") == mapping_digest
+            ),
+            None,
         )
         if finished is not None:
             return {
@@ -3616,6 +3629,26 @@ def import_reported_evidence(
                 keys = list(stored[target].get("dedup_keys") or [])
                 keys.append(key)
                 stored[target]["dedup_keys"] = keys
+                # A field the standing record holds as unknown is not a value being
+                # defended (AGENTS.md 3), so a file may fill one -- but only in a record
+                # that already came from a file. The case this answers is the Garmin
+                # Connect export, whose Distance column states no unit: the first read
+                # drops every distance and prints "re-send with column_mapping naming
+                # distance_unit", and before this the re-send merged into records that
+                # stayed `distance_km: null` forever, with no path through the product
+                # surface that could get the kilometres in. Those records are always
+                # imported ones, so the narrower rule fixes it whole.
+                #
+                # A *spoken* record is left alone, and that is the point of the check.
+                # Filling one from a file would put an export's distance and title into a
+                # row whose `source` says the athlete stated them and whose `imported_from`
+                # says no upload was involved -- and `source` exists precisely so a coach
+                # reading a progression can tell a device's export from somebody
+                # remembering the session.
+                if stored[target].get("import"):
+                    for field in _ACTIVITY_SUMMARY_FIELDS:
+                        if stored[target].get(field) is None and row.get(field) is not None:
+                            stored[target][field] = row[field]
                 held_keys.add(key)
                 written_here.add(target)
                 merged.append(
@@ -3668,6 +3701,7 @@ def import_reported_evidence(
                 {
                     "import_id": import_id,
                     "digest": digest,
+                    "mapping_digest": mapping_digest,
                     "format": format_name,
                     "recognised_as": recognised_as,
                     "source_name": label,

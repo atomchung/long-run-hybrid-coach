@@ -2592,6 +2592,13 @@ class PartialDeliveryTests(unittest.TestCase):
 
         self.assertEqual(401, refused.exception.upstream_status)
         self.assertIn("retry this same approved set", str(refused.exception))
+        # And the half of that sentence only a refused credential earns. "Retry this
+        # same approved set" is in the generic suffix too, so asserting it alone let the
+        # auth branch be deleted without a single test noticing -- and the athlete was
+        # told to retry a delivery that cannot succeed until Intervals is reconnected,
+        # with no word about reconnecting it.
+        self.assertIn("reconnect Intervals", str(refused.exception))
+        self.assertIn("do not prepare a new delivery set", str(refused.exception))
         attempt = pending_delivery_attempt(self.state_dir)
         self.assertIsNotNone(attempt)
         first_session = proposal_set["items"][0]["session_id"]
@@ -3473,8 +3480,20 @@ class SupersededDeliveryTests(unittest.TestCase):
             retry()
 
         self.assertIn("stays open", str(blocked.exception))
+        # The control for the auth sentence above: a provider that simply stopped
+        # answering is not a credential to repair, and advice to reconnect would send the
+        # athlete to re-consent a connection that is working.
+        self.assertIn("retry this same approved set", str(blocked.exception))
+        self.assertNotIn("reconnect Intervals", str(blocked.exception))
+        self.assertNotIn("do not prepare a new delivery set", str(blocked.exception))
         self.assertEqual([superseded], self.transport.deleted)
         attempt = pending_delivery_attempt(self.state_dir)
+        # What direction this reservation is, recorded by the run that opened it. A
+        # withdrawal that says "delivery" is one a later conversation is invited to
+        # resume by attempt id -- and resuming a withdrawal is the one thing the route
+        # refuses, because recording one drops the superseded event id the set was
+        # derived from. Nothing else in the store can tell the two apart afterwards.
+        self.assertEqual("withdrawal", attempt["kind"])
         outstanding = unresolved_delivery_operations(attempt)
         self.assertEqual("delete", outstanding[0]["operation"])
         self.assertEqual("mutated_unverified", outstanding[0]["state"])

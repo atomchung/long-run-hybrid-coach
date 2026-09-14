@@ -2683,6 +2683,51 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
         self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
+    def test_the_same_days_are_warned_about_at_preview_while_it_still_costs_nothing(self):
+        """The same failure as above, said one turn earlier -- the turn that can act on it.
+
+        The warning above arrives after the athlete has confirmed, so the only repair left
+        is to ask them again in the next conversation, which is what issue #28 exists to
+        stop. The stock onboarding fixture is the case: 週一晚上 / 週三晚上 / 週六早上 is an
+        ordinary transcription in this product's primary language, and so is
+        "Monday evening" in English. Neither parses, and nothing the model reads says so.
+
+        At preview it costs nothing: the model re-sends with mon/wed/sat and keeps the
+        athlete's own words in the note. Still a warning and not a refusal -- a first plan
+        without its availability note is still a correct first plan.
+        """
+        _, prepared = self.prepare()
+
+        warned = [
+            warning for warning in prepared["warnings"]
+            if warning.startswith("availability.days will not be stored")
+        ]
+
+        self.assertEqual(1, len(warned), prepared["warnings"])
+        self.assertIn("週一晚上", warned[0])
+        self.assertIn("mon, tue, wed, thu, fri, sat, sun", warned[0])
+        self.assertIn("availability.note", warned[0])
+
+    def test_days_already_in_the_form_that_stores_are_not_warned_about(self):
+        """The false-positive control: a request that will store cleanly says nothing."""
+        request = {
+            **copy.deepcopy(ONBOARDING),
+            "availability": {
+                **copy.deepcopy(ONBOARDING["availability"]),
+                "days": ["mon", "wed", "sat"],
+            },
+        }
+
+        _, prepared = self.prepare(request)
+
+        self.assertEqual(
+            [],
+            [
+                warning for warning in prepared["warnings"]
+                if warning.startswith("availability.days will not be stored")
+            ],
+        )
+
     # -- what the server owns ----------------------------------------------------------
 
     def test_every_mechanical_field_is_derived_from_the_request(self):
@@ -4870,6 +4915,33 @@ class GatewayDecisionTests(GatewayTestCase):
                 self.assertTrue(any("week-scoped decision" in error
                                     for error in refused["validation"]["errors"]))
                 self.assertEqual(initial, self.snapshot(self.state_dir))
+
+    def test_a_401_on_the_apply_time_evidence_read_commits_and_still_signs_the_client_out(self):
+        """Issue #278 on the one route that deliberately does not fail on the 401.
+
+        Every other endpoint answers a refused credential by failing, so forgetting the
+        connection travels with the failure. A confirmation does not: the evidence re-read
+        is optional, the athlete already said yes, and refusing here would cost them the
+        whole authoring turn for a reason that has nothing to do with their training. So
+        the change commits -- and the sign-out has to happen anyway, or a revoked grant
+        survives because one call chose not to depend on it, and every later turn repeats
+        a refusal no reconnect prompt was ever raised for.
+        """
+        status, prepared = self.prepare()
+        self.assertEqual(200, status, prepared)
+        self.fake.read_status = 401
+
+        status, applied = self.apply(prepared["proposal"])
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+        self.assertEqual(2, read_current_plan(self.state_dir)["current_plan"]["version"])
+
+        # The provider is answering again, and this client still is not recognised: the
+        # bearer resolves to nobody, which is what starts the re-authorization.
+        self.fake.read_status = None
+        status, refused = self.route("session", body={"read": "all"}, token=TOKEN_A)
+        self.assertEqual(401, status, refused)
 
     def test_a_coaching_decision_cannot_reach_what_the_athlete_stated(self):
         """Issue #164: the coach reads the athlete's own aims and habits, never writes them.
@@ -7136,6 +7208,54 @@ class ProviderErrorTaxonomyGatewayTests(GatewayTestCase):
             ]
         )
 
+    def test_a_429_on_a_delivery_is_a_rate_limit_rather_than_a_delivery_conflict(self):
+        """The clause order is the whole behaviour, and nothing else held it.
+
+        Intervals refusing a delivery call with 429 raises ``DeliveryBudgetExhaustedError``,
+        which is a ``ProviderBudgetExhaustedError`` *and* a ``DeliveryError`` -- so whichever
+        of the two ``except`` clauses comes first decides the answer. Read as a delivery
+        conflict it becomes a 409 with no ``Retry-After``, which tells the athlete their
+        confirmed set is blocked and gives the client nothing to wait on; the quota is
+        application-wide and recovers on its own, so the only true answer is how long.
+        """
+        self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
+        status, prepared = self.route(
+            "delivery_prepare",
+            body={
+                "plan_id": self.plan["plan_id"],
+                "plan_version": self.plan["version"],
+                "session_ids": ["run-quality-01"],
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+        original = self.fake
+
+        def fetch(request: urllib.request.Request) -> ProviderResponse:
+            if "/events" in request.full_url:
+                raise urllib.error.HTTPError(
+                    request.full_url, 429, "too many", {"Retry-After": "9"}, None
+                )
+            return FakeIntervals.__call__(original, request)
+
+        self.gateway.fetch = fetch
+        status, payload = self.route(
+            "delivery_apply",
+            body={"proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(502, status, payload)
+        self.assertEqual("provider_error", payload["error"])
+        self.assertEqual("9", payload.get("retry_after"))
+        self.assertEqual([], self.fake.bulk_calls)
+
+        # And the credential is untouched. A shared pool says nothing about this
+        # athlete's grant, so the next call is answered rather than challenged.
+        self.gateway.fetch = original
+        status, session = self.route("session", body={"read": "all"}, token=TOKEN_A)
+        self.assertEqual(200, status, session)
+
     def test_a_429_is_classified_as_rate_limit_with_retry_after(self):
         original = self.fake
 
@@ -9196,6 +9316,71 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         self.assertEqual("confirmation_required", payload["error"])
         self.assertEqual([], self.fake.deleted)
 
+    def test_an_interrupted_withdrawal_is_never_offered_the_resume_it_would_refuse(self):
+        """The next conversation reads the reservation, and must not be sent at a 400.
+
+        ``resume_by_attempt_id`` re-derives an approved set from the plan the reservation
+        is bound to, which a withdrawal cannot survive: recording one drops the superseded
+        event id the set was derived from. The route refuses it by name -- so if the
+        reservation ever said ``delivery``, the session view would offer the resume, the
+        conversation that never saw the confirmation would follow it in good faith, and
+        the only route out of an open fence would answer ``invalid_request``.
+        """
+        self._publish_one()
+        self._supersede()
+        current = read_current_plan(self.state_dir)
+        _, prepared = self.route(
+            "delivery_prepare",
+            body={
+                "plan_id": current["plan_id"],
+                "plan_version": current["current_version"],
+                "session_ids": ["run-quality-01"],
+                "withdraw": True,
+            },
+            token=TOKEN_A,
+        )
+        original = self.fake
+        deleted: list[str] = []
+
+        def fetch(request: urllib.request.Request) -> ProviderResponse:
+            # The delete lands and the read that would prove it landed does not: the one
+            # shape an interrupted withdrawal takes, and the reason the reservation is
+            # still open to be read at all.
+            if deleted and request.get_method() == "GET" and "/events/" in request.full_url:
+                raise _http_error(request.full_url, 503)
+            answer = FakeIntervals.__call__(original, request)
+            if request.get_method() == "DELETE":
+                deleted.append(request.full_url)
+            return answer
+
+        self.gateway.fetch = fetch
+        status, blocked = self.route(
+            "delivery_apply",
+            body={"proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(409, status, blocked)
+        self.gateway.fetch = original
+
+        _, payload = self.route("session", body={"read": "all"}, token=TOKEN_A)
+        outstanding = payload["delivery"]["unresolved_delivery"]
+
+        self.assertEqual("withdrawal", outstanding["kind"])
+        self.assertEqual(
+            ["retry_same_set", "clear_delivery_attempt"], outstanding["next_actions"]
+        )
+        self.assertIsNone(outstanding["resume"])
+        self.assertIn("cannot be re-derived", outstanding["resume_unavailable"])
+        # And the route agrees with the view: what is withheld is withheld because it
+        # would be refused.
+        status, refused = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(400, status, refused)
+        self.assertEqual("invalid_request", refused["error"])
+
     def test_the_divergence_is_visible_before_anyone_asks_to_withdraw(self):
         delivered_id = self._publish_one()
         self._supersede()
@@ -10937,6 +11122,86 @@ class PrePlanObservationTests(GatewayTestCase):
         }
         self.assertIs(True, rows["running"]["provider_actual_same_day"])
         self.assertIs(False, rows["swimming"]["provider_actual_same_day"])
+
+    def test_a_year_of_uploaded_history_still_fits_in_the_first_answer(self):
+        """The upload route out of an empty Intervals account, at the size it invites.
+
+        `importAthleteHistory` tells the athlete to send a long history in parts, by year,
+        and a year of running at three sessions a week is 156 rows. Carried whole, past
+        about 130 of them `reported_activities` alone crossed
+        MAX_CLIENT_RESULT_CHARACTERS -- and this answer is `no_plan_state`, not `passed`,
+        so `_refuse_oversized_read` never measured it. The client discarded the whole
+        result with no error, every retry was the same size, and nothing narrower was
+        reachable: `evidence_index` and `context` are both null before a plan exists.
+
+        Issue #233 windowed the other reader of this same evidence. This holds the
+        pre-plan reader to the same 42 days, and to stating them, so the coach cannot read
+        an empty list as "they have never trained" when it means "not in this window".
+        """
+        for index in range(200):
+            day = dt.date(2026, 8, 12) - dt.timedelta(days=index)
+            self.route(
+                "activity_summary_record",
+                body={
+                    "date": day.isoformat(),
+                    "sport": "running",
+                    "duration_minutes": 40 + (index % 20),
+                },
+                token=TOKEN_A,
+            )
+
+        status, payload = self.route("session", body={"read": "all"}, token=TOKEN_A)
+
+        self.assertEqual(200, status)
+        self.assertEqual("no_plan_state", payload["status"])
+        evidence = payload["pre_plan_observations"]["athlete_evidence"]
+        # The window the rows were selected over is the window the envelope names.
+        window_start = dt.date.fromisoformat(evidence["window_start"])
+        window_end = dt.date.fromisoformat(evidence["window_end"])
+        self.assertEqual(41, (window_end - window_start).days)
+        for row in evidence["reported_activities"]:
+            self.assertLessEqual(window_start.isoformat(), row["date"])
+            self.assertLessEqual(row["date"], window_end.isoformat())
+        self.assertTrue(evidence["reported_activities"], "the recent rows must survive")
+        self.assertLessEqual(
+            client_result_characters(payload),
+            MAX_CLIENT_RESULT_CHARACTERS,
+            "a first answer the client will discard is a first answer that never happens",
+        )
+
+    def test_evidence_older_than_the_window_still_says_the_athlete_stated_something(self):
+        """The window decides what is read, never whether anything was stated.
+
+        An athlete who imported a history and is coming back after a layoff has every
+        stated session outside the last 42 days. Deciding the container's presence from
+        the windowed lists hands that first conversation `athlete_evidence: null`, which
+        the contract reserves for an athlete who has stated nothing at all -- so the coach
+        reads "they have never trained" about somebody with a year on record. That is the
+        exact misreading the window was added to prevent, arrived at from the other side.
+
+        What they should get is the envelope with its window named and the in-window lists
+        empty, which says "nothing in these 42 days" and nothing more.
+        """
+        for index in range(20):
+            day = dt.date(2026, 6, 1) - dt.timedelta(days=index)
+            self.route(
+                "activity_summary_record",
+                body={
+                    "date": day.isoformat(),
+                    "sport": "running",
+                    "duration_minutes": 40,
+                },
+                token=TOKEN_A,
+            )
+
+        _, payload = self.route("session", body={"read": "all"}, token=TOKEN_A)
+
+        evidence = payload["pre_plan_observations"]["athlete_evidence"]
+        self.assertIsNotNone(
+            evidence, "stated sessions outside the window are still stated sessions"
+        )
+        self.assertEqual([], evidence["reported_activities"])
+        self.assertTrue(evidence["window_start"] > "2026-06-01")
 
     def test_an_account_that_already_has_a_plan_carries_no_such_field(self):
         self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
