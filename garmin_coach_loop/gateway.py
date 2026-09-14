@@ -1700,10 +1700,11 @@ def _guidance_answer(
 ) -> dict[str, Any]:
     """``coaching_guidance`` and the digest that names it, for one read.
 
-    Three answers, and which one arrives is decided by what the caller says it holds:
+    The answer depends on what the caller can identify as held:
 
     * nothing claimed -- the full text, plus the digest to quote back later;
-    * claimed, and either unnamed or named as this text -- the naming sentence;
+    * claimed but unnamed -- unverified, with the current digest for comparison;
+    * claimed and named as this text -- the naming sentence;
     * claimed and named as something else -- the full text, saying it was replaced.
 
     The digest ships with the full text on purpose. Before this, the only place it
@@ -1713,6 +1714,16 @@ def _guidance_answer(
     digest = guidance_digest(judgment)
     if not received:
         return {"coaching_guidance": judgment, "guidance_digest": digest}
+    if not held_digest:
+        return {
+            "coaching_guidance": (
+                "The held coaching_guidance is unverified: no guidance_digest was "
+                f"supplied. Current sha256 {digest}. Compare with the earlier "
+                "response; if its digest differs or is unavailable, call "
+                "startCoachSession without guidance_received for the current text."
+            ),
+            "guidance_digest": digest,
+        }
     # A first-plan conversation can hold this same judgment plus the empty-account
     # paragraph. Once that paragraph no longer applies, its removal is not a release
     # change. Compare with the current text composed the same way it was sent: a real

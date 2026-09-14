@@ -9,9 +9,9 @@ rather than by the wording that is supposed to produce it.
 This does not call an LLM API ([AGENTS.md](../AGENTS.md)), and it does not grade
 product mechanics that code and tests already own.
 
-The case format and the discipline around it are in force now. Suites, recorded
-verdicts and run comparison arrive with the harness in #86; this file is the contract
-it lands into, so that what already exists here is not rebuilt beside it.
+The case format and discipline are in force. [`ab/`](ab) already provides frozen
+packets, immutable answers, repeated samples and side-by-side reports. Issue #86
+tracks the remaining measurement evidence, not a harness still to be built.
 
 ## Where things live
 
@@ -116,25 +116,22 @@ reason does not pass, because the next turn will not repeat it.
 
 ## Running
 
-Running, freezing, recording and comparing runs belong to the harness in #86, together
-with the run-store layout above. One thing it owes the rest of this file: a run must
-freeze its own suite and the exact Skill and reference text it ran against, or a later
-edit rewrites what a historical result meant.
+Use the existing [`ab/` run and repeat protocol](ab/README.md#running-one) for
+packet-bound answers and comparisons; single-arm suites are supported. It does not
+automatically execute or grade all behavior cases. The fallback suite demonstrates
+binding specific cases to anonymous scenario reads and recording independent answers.
+Freeze the suite, exact served texts and inputs, retain every answer and name its
+executor, then score the case manually. Never infer a behavioral pass from a schema
+check or the existence of a harness.
 
-Until it lands, a run is manual and unrecorded — give the case's `scenario` and `given`
-to the Coach as a turn and score the answer by hand. That is the gap. A manual run
-cannot be replayed, so it cannot show whether a change improved anything or only moved
-it, which is what a prompt change most needs to prove.
+The [issue #25 rubric calibration](baselines/issue-25-compliant-calibration.md)
+retains deliberately wrong answers and a valid control. These are authored calibration
+examples, not sampled model outputs or evidence of a model's failure rate.
 
-[`ab/`](ab) closes that gap for one narrower question, and only that one: it asks a fixed
-turn of several *context builds* at once, freezes each packet by hash, and records the
-answers immutably beside the model that gave them. It does not run the behaviour cases
-above and it does not replace the harness in #86 — it borrows the discipline that harness
-owes (freeze the run, name the executor, never edit a recorded answer) for the one
-comparison a context change needs.
-
-`python3 -m unittest discover -s tests -p 'test_*.py'` checks only that cases are well
-formed and still name real contract fields.
+`python3 -m unittest discover -s tests -p 'test_*.py'` checks deterministic case binding,
+anonymous scenario builds, packet integrity and recording/report mechanics. Stochastic
+coaching answers are collected outside unit CI and reviewed separately; neither their
+variance nor a live LLM verdict is a hard unit-test gate.
 
 ## What does not belong here
 

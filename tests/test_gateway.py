@@ -3899,7 +3899,10 @@ class ReadingByPurposeTests(GatewayTestCase):
         _, first = self.read({"all_clear": True})
         judgment = first["coaching_guidance"]
 
-        _, again = self.read({"all_clear": True, "guidance_received": True})
+        _, again = self.read({
+            "all_clear": True, "guidance_received": True,
+            "guidance_digest": first["guidance_digest"],
+        })
 
         self.assertNotEqual(judgment, again["coaching_guidance"])
         self.assertLess(len(again["coaching_guidance"]) * 20, len(judgment))
@@ -3909,6 +3912,28 @@ class ReadingByPurposeTests(GatewayTestCase):
             sha256_text(judgment)[:12], again["coaching_guidance"]
         )
         self.assertIn("guidance_received", again["coaching_guidance"])
+
+    def test_unnamed_held_guidance_is_unverified_even_after_the_text_changes(self):
+        """A receipt flag alone cannot establish which release's text is held."""
+        _, first = self.read({"all_clear": True})
+        changed = first["coaching_guidance"] + "\nA changed reference."
+        for judgment in (first["coaching_guidance"], changed):
+            for digest in (None, ""):
+                with self.subTest(changed=judgment == changed, digest=digest):
+                    body = {"all_clear": True, "guidance_received": True}
+                    if digest is not None:
+                        body["guidance_digest"] = digest
+                    with mock.patch.object(orchestration, "training_judgment", return_value=judgment):
+                        status, response = self.read(body)
+                    self.assertEqual(200, status, response)
+                    notice = response["coaching_guidance"]
+                    self.assertIn("unverified", notice)
+                    self.assertNotIn("Unchanged", notice)
+                    self.assertNotIn("earlier release", notice)
+                    self.assertEqual(sha256_text(judgment)[:12], response["guidance_digest"])
+                    self.assertIn(response["guidance_digest"], notice)
+                    self.assertIn("without guidance_received", notice)
+                    self.assertLess(len(notice), 400)
 
     def test_a_conversation_that_says_nothing_still_receives_the_whole_judgment(self):
         """The default is the safe one: a client that never heard of the flag is unchanged."""

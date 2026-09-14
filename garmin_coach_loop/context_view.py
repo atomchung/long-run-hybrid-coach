@@ -462,10 +462,9 @@ def _matches(row: Any, spec: dict[str, Any], focus: dict[str, tuple[str, ...]],
             day.startswith(value) for day in focus.get("dates", ())
         ):
             return True
-        # A session's own day. Asking for a session and getting the lifts, the segments
-        # and the readings of the day it was trained on is the point: those rows carry
-        # no session id, and a coach that has to ask again for each of them is paying
-        # three calls for one session's evidence.
+        # Include the session's day so lifts, segments and recovery arrive together,
+        # including rows without a session id. This also includes other sessions on
+        # that day in cycle_sessions and current_calendar; their own ids remain intact.
         if value in session_dates:
             return True
     for key in spec.get("movements", ()):
