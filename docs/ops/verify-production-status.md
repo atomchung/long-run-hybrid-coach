@@ -1,22 +1,55 @@
 # Verifying production status
 
-Latest recorded release: [1.4.2 production receipts](../releases/1.4.2.md).
-Live `/readyz` remains authoritative.
-
 `deploy-gateway.md` is the runbook for standing the service up or promoting a release. This
-file is for the narrower, more frequent question that follows: **is what's already standing
-up actually healthy right now.** Reach for this before re-deriving a check from scratch --
-this exact sequence was worked out the hard way once already (2026-08-16) and shouldn't need
+file is for the narrower, more frequent question that follows: **what is already standing
+up, and is it healthy.** Reach for this before re-deriving a check from scratch -- this
+exact sequence was worked out the hard way once already (2026-08-16) and shouldn't need
 redoing.
 
-## Start here: curl the health endpoints directly
+Dated promotion receipts live in [`docs/releases/`](../releases/). A receipt records what
+was verified on a date. It is not current production.
 
-No login, no tooling beyond `curl`, works from anywhere:
+## Who owns which fact
+
+| Fact | Owner | Not the owner |
+| --- | --- | --- |
+| What production is serving right now (version, commit, `release_id`, content digests, deployment environment) | Live `/readyz`, read back as a **dated observation** | Issue bodies, this runbook's prose, chat summaries |
+| Whether that live identity matches a bundle built here | `python3 scripts/release_bundle.py verify` | `/readyz` alone; an issue comment quoting an old digest |
+| Whether a SHA may be promoted | `scripts/verify_production_promotion.py` | A green pull request |
+| Whether the MCP Registry may publish this checkout | `scripts/verify_registry_release.py` | `server.json` sitting on `main` |
+| What a past promotion verified on a date | Dated files in `docs/releases/` | Live `/readyz` (a receipt is history) |
+| OpenAI Portal review status | A dated comment naming the date and what the Portal showed | Issue bodies in the present tense. This repository cannot query the Portal |
+
+Issue bodies keep stable responsibility, decisions, and links. They must not copy a
+version, commit, digest, Registry "latest", or Portal status that can change without
+anyone editing the issue.
+
+## Start here: what is live right now
+
+The named command is:
 
 ```bash
-curl -s https://mcp.paceandstaystrong.com/healthz | python3 -m json.tool
+python3 scripts/release_bundle.py observe
+```
+
+It fetches `https://mcp.paceandstaystrong.com/readyz`, validates a ready release identity,
+and prints a JSON object with `observed_at`. It does **not** compare the answer to this
+checkout, `PRODUCT_VERSION`, or `server.json`. That comparison is `verify`, a different
+question.
+
+If you need a durable note, paste the JSON into a comment as a dated observation. Do not
+rewrite an issue body to say those numbers "are" production.
+
+No login and no private files. To read the raw endpoint without this checkout:
+
+```bash
 curl -s https://mcp.paceandstaystrong.com/readyz | python3 -m json.tool
 ```
+
+`/healthz` returns the same JSON body; `/readyz` is the operator question because it is
+HTTP 503 when the process is up but the release identity is not ready, and HTTP 200 when
+it is. `observe` reads `/readyz` and still records a blocked body instead of stopping at
+the status code.
 
 Use the custom domain, not the generated `*.up.railway.app` one. Both resolve to the same
 service, but the custom domain is what `release_id` binds and what every connected client
@@ -32,9 +65,9 @@ actually meant to ship:
 git log origin/production --oneline -1
 ```
 
-If the two match, production is serving the release everyone thinks it's serving. This one
-check answers "is it up right now" on its own -- try it before anything below, and stop here
-if it comes back `ok`.
+If the two match, the live process is the commit the `production` pointer names. That is a
+comparison you run, not a sentence to copy. Try `observe` before anything below, and stop
+here if it comes back `"status": "ok"`.
 
 For a new promotion, the preceding GitHub check is intentionally different from this live
 read-back. `.github/workflows/ci.yml`'s production job verifies the exact SHA is the current

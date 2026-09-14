@@ -142,6 +142,18 @@ def select_test_paths(changed_paths: list[str] | tuple[str, ...]) -> dict[str, o
             _add(selected, reasons, "tests/test_process_gates.py", f"workflow changed: {path}")
             continue
 
+        # The production-truth runbook is the ownership contract for live facts.
+        # A docs-only edit that re-copies a version into it must still hit the test
+        # that refuses a present-tense live version in that file.
+        if path == "docs/ops/verify-production-status.md":
+            _add(
+                selected,
+                reasons,
+                "tests/test_release_bundle.py",
+                "production-truth runbook",
+            )
+            continue
+
         # Documentation and release notes do not exercise product code. Any other
         # source/configuration file is unknown and therefore keeps the conservative
         # full-suite fallback.

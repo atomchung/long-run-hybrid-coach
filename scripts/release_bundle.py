@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """What this release *is*, and whether the gateway serving traffic is actually it.
 
-Three subcommands, none of them about any one client:
+Four subcommands, none of them about any one client:
 
 - ``build`` hashes the commit's own orchestration prompt, MCP tool catalogue, canonical
   Agent Skill and package into one ``release_id`` bound to the domain it will be served
@@ -10,11 +10,14 @@ Three subcommands, none of them about any one client:
   the same deployment must report.
 - ``verify`` reads ``/healthz`` on the live domain and refuses unless the release and
   deployment identity it reports are the ones built here.
+- ``observe`` reads live ``/readyz`` and prints a dated observation. It answers "what is
+  serving right now" without comparing that answer to this checkout.
 
-It once carried a fourth step -- comparing the bundle against text a human had pasted
-into a client's console -- and the release identity once bound a rendered API document
-rather than the artifacts. Both are gone (issue #117). What remains is what ``/readyz``
-is polled for on every deploy, whichever entry the athlete reaches the gateway through.
+It once compared the bundle against text a human had pasted into a client's console,
+and the release identity once bound a rendered API document rather than the artifacts.
+Both are gone (issue #117). ``observe`` is not that comparison returning: it is the
+read-back ``/readyz`` already was, with a timestamp so the result can be quoted as an
+observation instead of copied into an issue body as present-tense truth.
 """
 from __future__ import annotations
 
@@ -26,7 +29,9 @@ import stat
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +49,7 @@ from garmin_coach_loop.release_identity import (  # noqa: E402
     normalise_gateway_domain,
     package_artifact_sha256,
     predates_release_identity_change,
+    production_observation,
     release_identity,
     sha256_text,
 )
@@ -71,6 +77,7 @@ _CATALOGUE_PROGRAM = (
     "print(tool_catalogue_sha256())"
 )
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
+DEFAULT_GATEWAY_DOMAIN = "https://mcp.paceandstaystrong.com"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -248,6 +255,27 @@ def write_private_json(path: Path, value: dict) -> None:
         output.chmod(0o600)
 
 
+def _read_runtime_json(response: object, expected_url: str, *, redirected: str) -> dict:
+    actual = response.geturl() if hasattr(response, "geturl") else None
+    if actual != expected_url:
+        raise ReleaseIdentityError(redirected)
+    try:
+        raw = response.read()
+    finally:
+        closer = getattr(response, "close", None)
+        if callable(closer):
+            closer()
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ReleaseIdentityError("gateway health must be a JSON object") from exc
+    if not isinstance(payload, dict):
+        raise ReleaseIdentityError("gateway health must be a JSON object")
+    return payload
+
+
 def fetch_runtime_health(
     gateway_domain: str,
     *,
@@ -255,12 +283,54 @@ def fetch_runtime_health(
 ) -> dict:
     health_url = gateway_domain + "/healthz"
     with opener(health_url, timeout=15) as response:
-        if response.geturl() != health_url:
-            raise ReleaseIdentityError("gateway health redirected away from the release origin")
-        health = json.loads(response.read().decode("utf-8"))
-    if not isinstance(health, dict):
-        raise ReleaseIdentityError("gateway health must be a JSON object")
-    return health
+        return _read_runtime_json(
+            response,
+            health_url,
+            redirected="gateway health redirected away from the release origin",
+        )
+
+
+def fetch_runtime_readyz(
+    gateway_domain: str,
+    *,
+    opener=_open_without_redirects,
+) -> dict:
+    """Read live ``/readyz``. A 503 still carries the observation payload."""
+    ready_url = gateway_domain + "/readyz"
+    try:
+        with opener(ready_url, timeout=15) as response:
+            return _read_runtime_json(
+                response,
+                ready_url,
+                redirected="production readiness redirected away from the release origin",
+            )
+    except urllib.error.HTTPError as exc:
+        return _read_runtime_json(
+            exc,
+            ready_url,
+            redirected="production readiness redirected away from the release origin",
+        )
+
+
+def observe_live(
+    *,
+    gateway_domain: str = DEFAULT_GATEWAY_DOMAIN,
+    opener=_open_without_redirects,
+    now: datetime | None = None,
+) -> dict:
+    """What production is serving right now, as a dated observation.
+
+    This is not a promotion gate. It does not build a bundle, read ``server.json``,
+    or compare the live identity to this checkout.
+    """
+    domain = normalise_gateway_domain(gateway_domain)
+    endpoint = domain + "/readyz"
+    payload = fetch_runtime_readyz(domain, opener=opener)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ReleaseIdentityError("observation timestamp must be timezone-aware")
+    observed_at = current.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return production_observation(payload, observed_at=observed_at, endpoint=endpoint)
 
 
 def verify_release(
@@ -321,13 +391,19 @@ def verify_release(
     return receipt
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     build = sub.add_parser("build"); build.add_argument("--gateway-domain", required=True); build.add_argument("--output", required=True); build.add_argument("--git-commit")
     verify = sub.add_parser("verify"); verify.add_argument("--bundle", required=True); verify.add_argument("--receipt", required=True); verify.add_argument("--expected-deployment-identity", required=True)
     expected = sub.add_parser("deployment-identity"); expected.add_argument("--env-file", required=True); expected.add_argument("--output", required=True)
-    args = parser.parse_args()
+    observe = sub.add_parser("observe")
+    observe.add_argument("--gateway-domain", default=DEFAULT_GATEWAY_DOMAIN)
+    observe.add_argument(
+        "--output",
+        help="optional dated observation written outside the repository",
+    )
+    args = parser.parse_args(argv)
     try:
         if args.command == "build":
             domain = normalise_gateway_domain(args.gateway_domain); commit = args.git_commit or commit_at_head()
@@ -339,6 +415,15 @@ def main() -> int:
             )
             write_private_json(Path(args.output), identity)
             print(identity["configuration_binding"])
+            return 0
+        if args.command == "observe":
+            observation = observe_live(gateway_domain=args.gateway_domain)
+            text = json.dumps(observation, indent=2, sort_keys=True) + "\n"
+            if args.output:
+                output = outside_repo(Path(args.output))
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(text, encoding="utf-8")
+            sys.stdout.write(text)
             return 0
         receipt = verify_release(
             bundle_path=Path(args.bundle),

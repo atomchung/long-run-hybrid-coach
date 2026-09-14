@@ -1,20 +1,26 @@
 from __future__ import annotations
 
 import dataclasses
+import inspect
+import io
 import json
 import shutil
 import subprocess
 import tempfile
 import unittest
+import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+from garmin_coach_loop.gateway import PRODUCT_VERSION
 from garmin_coach_loop.mcp_transport import TOOLS, tool_catalogue_sha256
 from garmin_coach_loop.release_identity import (
     DEPLOYMENT_ENVIRONMENT_ENV_VAR,
     DEPLOYMENT_INSTANCE_ID_ENV_VAR,
     EXPECTED_DEPLOYMENT_IDENTITY_FILE_ENV_VAR,
     PREDATES_RELEASE_IDENTITY_CHANGE,
+    PRODUCTION_OBSERVATION_KIND,
     RELEASE_CONTENT_FIELDS,
     ReleaseIdentityError,
     deployment_identity,
@@ -23,6 +29,7 @@ from garmin_coach_loop.release_identity import (
     normalise_gateway_domain,
     package_artifact_sha256,
     predates_release_identity_change,
+    production_observation,
     release_identity,
     sha256_text,
     skill_tree_sha256,
@@ -30,10 +37,12 @@ from garmin_coach_loop.release_identity import (
 from scripts.release_bundle import (
     SKILL,
     expected_deployment_identity_from_env,
+    observe_live,
     outside_repo,
     read_private_env,
     verify_release,
 )
+from scripts import release_bundle as release_bundle_module
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -475,3 +484,231 @@ class ReleaseIdentityTests(unittest.TestCase):
             symlink.symlink_to(ROOT / "garmin_coach_loop" / "orchestration.md")
             with self.assertRaises(ReleaseIdentityError):
                 outside_repo(symlink)
+
+
+class ProductionObservationTests(unittest.TestCase):
+    """Live production facts are a dated /readyz observation, not a checkout comparison."""
+
+    def test_a_ready_payload_is_stamped_without_matching_this_checkout(self):
+        """The failure this catches: treating PRODUCT_VERSION or an issue body as live.
+
+        An observation of 0.0.1 must survive even though this checkout is not 0.0.1.
+        Comparing would turn "what is live" into "does live match us", which is verify.
+        """
+        identity = _release()
+        payload = {
+            "status": "ok",
+            "product_version": "0.0.1",
+            "source_git_commit": identity["git_commit"],
+            "release_identity": identity,
+            "deployment_identity": {
+                "environment": "production",
+                "instance_id": "gateway-primary-1",
+                "configuration_binding": "c" * 64,
+            },
+            "error": None,
+        }
+        observed = production_observation(
+            payload,
+            observed_at="2026-09-14T03:07:18Z",
+            endpoint="https://mcp.paceandstaystrong.com/readyz",
+        )
+        self.assertEqual(PRODUCTION_OBSERVATION_KIND, observed["kind"])
+        self.assertEqual("2026-09-14T03:07:18Z", observed["observed_at"])
+        self.assertEqual("0.0.1", observed["product_version"])
+        self.assertEqual("production", observed["deployment_environment"])
+        self.assertEqual(identity, observed["release_identity"])
+        self.assertNotEqual(PRODUCT_VERSION, observed["product_version"])
+        self.assertIsNone(observed["error"])
+
+    def test_ok_status_with_a_malformed_identity_is_refused_not_quoted(self):
+        """A ready endpoint that cannot prove its identity is not a production fact."""
+        with self.assertRaises(ReleaseIdentityError):
+            production_observation(
+                {
+                    "status": "ok",
+                    "product_version": "1.4.2",
+                    "release_identity": {"release_id": "gclr-" + "0" * 64},
+                },
+                observed_at="2026-09-14T03:07:18Z",
+                endpoint="https://mcp.paceandstaystrong.com/readyz",
+            )
+
+    def test_blocked_readyz_is_still_an_observation(self):
+        """Blocked is what is live. Inventing a release identity for it would be the lie."""
+        observed = production_observation(
+            {
+                "status": "blocked",
+                "product_version": "0.0.1",
+                "source_git_commit": "b" * 40,
+                "error": "missing_or_mismatched_runtime_release_deployment_or_source_identity",
+                "release_identity": None,
+                "deployment_identity": None,
+            },
+            observed_at="2026-09-14T03:07:18Z",
+            endpoint="https://mcp.paceandstaystrong.com/readyz",
+        )
+        self.assertEqual("blocked", observed["status"])
+        self.assertEqual("0.0.1", observed["product_version"])
+        self.assertIsNone(observed["release_identity"])
+        self.assertIn("missing_or_mismatched", observed["error"])
+
+    def test_a_legacy_runtime_is_named_rather_than_hash_mismatched(self):
+        legacy = {
+            "status": "ok",
+            "product_version": "1.0.0",
+            "release_identity": {
+                "release_id": "gclr-" + "0" * 64,
+                "git_commit": "a" * 40,
+                "instructions_sha256": "1" * 64,
+                "openapi_sha256": "2" * 64,
+                "gateway_artifact_sha256": "3" * 64,
+                "gateway_domain": "https://mcp.paceandstaystrong.com",
+            },
+        }
+        observed = production_observation(
+            legacy,
+            observed_at="2026-09-14T03:07:18Z",
+            endpoint="https://mcp.paceandstaystrong.com/readyz",
+        )
+        self.assertEqual(PREDATES_RELEASE_IDENTITY_CHANGE, observed["error"])
+        self.assertEqual(legacy["release_identity"], observed["release_identity"])
+
+
+class ObserveLiveTests(unittest.TestCase):
+    _Response = ReleaseIdentityTests._Response
+    def test_observe_reads_readyz_and_does_not_compare_this_checkout(self):
+        identity = _release()
+        payload = {
+            "status": "ok",
+            "product_version": "0.0.1",
+            "source_git_commit": identity["git_commit"],
+            "release_identity": identity,
+            "deployment_identity": {"environment": "staging"},
+            "error": None,
+        }
+        calls = []
+
+        def opener(url, *, timeout):
+            calls.append((url, timeout))
+            return self._Response(payload, url=url)
+
+        observed = observe_live(
+            gateway_domain="https://mcp.paceandstaystrong.com",
+            opener=opener,
+            now=datetime(2026, 9, 14, 3, 7, 18, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            [("https://mcp.paceandstaystrong.com/readyz", 15)], calls
+        )
+        self.assertEqual("0.0.1", observed["product_version"])
+        self.assertEqual("staging", observed["deployment_environment"])
+        self.assertEqual("2026-09-14T03:07:18Z", observed["observed_at"])
+        self.assertNotEqual(PRODUCT_VERSION, observed["product_version"])
+        source = inspect.getsource(observe_live)
+        self.assertNotIn("PRODUCT_VERSION", source)
+        self.assertNotIn("bundle(", source)
+
+    def test_observe_records_a_blocked_http_error_instead_of_failing_closed(self):
+        payload = {
+            "status": "blocked",
+            "product_version": "0.0.1",
+            "source_git_commit": "b" * 40,
+            "error": "missing_or_mismatched_runtime_release_deployment_or_source_identity",
+            "release_identity": None,
+        }
+
+        def opener(url, *, timeout):
+            raise urllib.error.HTTPError(
+                url,
+                503,
+                "Service Unavailable",
+                None,
+                io.BytesIO(json.dumps(payload).encode("utf-8")),
+            )
+
+        observed = observe_live(
+            gateway_domain="https://mcp.paceandstaystrong.com",
+            opener=opener,
+            now=datetime(2026, 9, 14, 3, 7, 18, tzinfo=timezone.utc),
+        )
+        self.assertEqual("blocked", observed["status"])
+        self.assertEqual("0.0.1", observed["product_version"])
+
+    def test_observe_refuses_a_redirect(self):
+        identity = _release()
+
+        def opener(url, *, timeout):
+            return self._Response(
+                {"status": "ok", "release_identity": identity},
+                url="https://other.example/readyz",
+            )
+
+        with self.assertRaisesRegex(ReleaseIdentityError, "redirected"):
+            observe_live(gateway_domain="https://mcp.paceandstaystrong.com", opener=opener)
+
+    def test_observe_cli_prints_json_without_a_bundle_or_deployment_file(self):
+        identity = _release()
+        observation = production_observation(
+            {
+                "status": "ok",
+                "product_version": "0.0.1",
+                "source_git_commit": identity["git_commit"],
+                "release_identity": identity,
+                "deployment_identity": {"environment": "production"},
+                "error": None,
+            },
+            observed_at="2026-09-14T03:07:18Z",
+            endpoint="https://mcp.paceandstaystrong.com/readyz",
+        )
+        with mock.patch.object(
+            release_bundle_module, "observe_live", return_value=observation
+        ):
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                code = release_bundle_module.main(["observe"])
+        self.assertEqual(0, code)
+        printed = json.loads(stdout.getvalue())
+        self.assertEqual("0.0.1", printed["product_version"])
+        self.assertEqual(PRODUCTION_OBSERVATION_KIND, printed["kind"])
+
+    def test_observe_cli_will_not_write_an_observation_into_the_repository(self):
+        identity = _release()
+        observation = production_observation(
+            {
+                "status": "ok",
+                "product_version": "0.0.1",
+                "source_git_commit": identity["git_commit"],
+                "release_identity": identity,
+                "error": None,
+            },
+            observed_at="2026-09-14T03:07:18Z",
+            endpoint="https://mcp.paceandstaystrong.com/readyz",
+        )
+        inside = ROOT / "docs" / "ops" / "would-be-stale.json"
+        with mock.patch.object(
+            release_bundle_module, "observe_live", return_value=observation
+        ):
+            with mock.patch("sys.stdout", new_callable=io.StringIO):
+                with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                    code = release_bundle_module.main(
+                        ["observe", "--output", str(inside)]
+                    )
+        self.assertEqual(2, code)
+        self.assertIn("outside the repository", stderr.getvalue())
+        self.assertFalse(inside.exists())
+
+
+class ProductionTruthRunbookTests(unittest.TestCase):
+    def test_runbook_names_observe_and_does_not_claim_a_live_version(self):
+        """The failure this catches: this file copying 'Production is 1.4.2' again.
+
+        The runbook is allowed to name the command and the receipts directory. A
+        present-tense version in it is the same stale-copy bug the issue bodies had.
+        """
+        text = (ROOT / "docs" / "ops" / "verify-production-status.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("python3 scripts/release_bundle.py observe", text)
+        self.assertIn("dated observation", text.lower())
+        self.assertNotRegex(text, r"(?i)production is \d+\.\d+")
+        self.assertNotRegex(text, r"(?im)^latest recorded release\b")
