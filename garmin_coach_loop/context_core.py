@@ -3046,11 +3046,21 @@ def assemble_context(
                 # evidence and is reported as it stands; their standing statement is
                 # named here instead of being quietly dropped, or quietly overwriting
                 # what the provider and the plan both hold.
+                # Named with the action that actually exists. Retracting the statement
+                # is reachable for any session; making a past week's session read
+                # `completed` is not -- reconciliation only writes into the current week
+                # (`reconcile.propose_reconciliation`), so a late sync onto an elapsed
+                # week leaves the activity attached and readable beside a session that
+                # stays `planned`. Saying "only they can say which stands" and stopping
+                # there would imply a correction the athlete cannot make.
                 unknowns.append(
                     f"cycle_sessions.{session_id}: the athlete recorded "
                     f"this session as not trained, and it reads {match_status} with "
                     + ("an activity attached" if activity is not None else "no activity attached")
-                    + "; only they can say which stands"
+                    + "; only they can say which stands. If the statement was wrong, "
+                    "retractAthleteRecord kind session_not_trained removes it and the "
+                    "attached activity is read on its own; the session's own status is "
+                    "not rewritten for a week that has already elapsed"
                 )
         record: dict[str, Any] = {
             "session_id": session.get("session_id"),

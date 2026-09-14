@@ -1849,7 +1849,10 @@ TOOLS: tuple[Tool, ...] = (
             "are reachable, which is where this is usually needed; today and later are "
             "refused, and a session already recorded as completed is refused. No "
             "PlanState change, no calendar effect, and repeating it is the same record. "
-            "retractAthleteRecord with kind session_not_trained takes it back."
+            "retractAthleteRecord with kind session_not_trained takes it back. Taking it "
+            "back restores what the evidence alone says -- for a week that has already "
+            "elapsed that is the session reading planned with any attached activity "
+            "beside it, not completed; nothing rewrites an elapsed week's own status."
         ),
         input_schema={
             "type": "object",

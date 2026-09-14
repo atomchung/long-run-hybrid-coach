@@ -42,7 +42,7 @@
     ]
   },
   "fails_if": [
-    "The answer folds the two claims into one and reports the whole question as unknown because no measurement was run — the failure this case exists for, reproduced in a real session on 2026-09-15.",
+    "The answer folds the two claims into one and reports the whole question as unknown because no measurement was run — the failure this case exists for, recorded from a real coaching session in issue #467 on 2026-09-14.",
     "The answer reads the execution trend as the outcome and tells the athlete their 5K has improved.",
     "The answer states the trend without saying the outcome is still unmeasured, leaving the athlete to infer the cycle succeeded."
   ]

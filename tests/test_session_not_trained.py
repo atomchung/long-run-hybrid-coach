@@ -495,6 +495,96 @@ LATE_SYNC_SESSION = "run-easy-01"
 LATE_SYNC_DATE = "2026-08-11"
 
 
+class LateSyncAfterTheWeekRolledTests(SessionNotTrainedTestCase):
+    """What the athlete can and cannot repair once the week has elapsed.
+
+    The adversarial case: they say "I did not train that day", three weekly reviews roll
+    the session out of `week.sessions`, and only then does the watch sync that day's run.
+    The claim worth pinning is the honest one -- the statement is removable and the
+    activity is readable, and the session's `match_status` is **not** correctable to
+    `completed`, because reconciliation only ever writes into the current week
+    (`reconcile.propose_reconciliation`). That limit predates this route; what this test
+    fixes is that the limit is stated rather than implied away.
+    """
+
+    now = dt.datetime(2026, 9, 4, 0, 30, tzinfo=dt.timezone.utc)
+
+    LATE_SESSION = "run-easy-01"
+    LATE_DATE = "2026-08-11"
+
+    def setUp(self):
+        super().setUp()
+        shutil.rmtree(self.state_dir)
+        plan = plan_with_an_unmatched_elapsed_session()
+        for session in plan["week"]["sessions"]:
+            if session["session_id"] == self.LATE_SESSION:
+                session["match_status"] = "planned"
+        self.plan = plan
+        init_store(self.state_dir, copy.deepcopy(plan))
+        self.confirm(self.LATE_SESSION)
+        roll_the_week_to_the_measurement_week(
+            self.state_dir, copy.deepcopy(plan), self.now
+        )
+        self.fake.activities = [
+            activity_row(
+                "late-1", self.LATE_DATE, minutes=48, distance_m=8000, avg_speed=2.78
+            )
+        ]
+
+    def test_the_attachment_wins_and_the_statement_is_named_with_the_action_that_exists(self):
+        response = self.session()
+        row = next(
+            item
+            for item in response["context"]["cycle_sessions"]
+            if item["session_id"] == self.LATE_SESSION
+        )
+
+        self.assertEqual("attached", row["activity_evidence"])
+        self.assertIsNotNone(row["activity"])
+        self.assertNotEqual("missed", row["match_status"])
+        note = next(
+            item for item in response["context"]["unknowns"] if self.LATE_SESSION in item
+        )
+        # The line names the repair that is reachable, and the one that is not.
+        self.assertIn("retractAthleteRecord kind session_not_trained", note)
+        self.assertIn("not rewritten for a week that has already elapsed", note)
+
+    def test_confirm_activity_match_cannot_reach_an_elapsed_week(self):
+        """The limit itself, asserted rather than assumed.
+
+        If this ever starts succeeding, the narrowing in the release receipt and on
+        issue #468 is stale and should be revisited.
+        """
+        with self.assertRaises(GatewayError) as raised:
+            self.gateway.route(
+                "activity_match",
+                self.owner_id,
+                TOKEN_A,
+                {
+                    "session_id": self.LATE_SESSION,
+                    "activity_id": "intervals:late-1",
+                    "confirmed": True,
+                },
+            )
+        self.assertIn("not a current probable match", str(raised.exception.detail))
+
+    def test_retracting_leaves_the_activity_readable_and_the_status_uncorrected(self):
+        self.retract(self.LATE_SESSION)
+
+        row = next(
+            item
+            for item in self.session()["context"]["cycle_sessions"]
+            if item["session_id"] == self.LATE_SESSION
+        )
+
+        # What the athlete got back: the false statement is gone and the activity reads.
+        self.assertEqual("attached", row["activity_evidence"])
+        self.assertEqual(48, row["activity"]["duration_minutes"])
+        # What they did not get: the session is still not `completed`, and nothing in
+        # this product can make it so for an elapsed week.
+        self.assertEqual("planned", row["match_status"])
+
+
 class SessionNotTrainedUnderADeclaredMeasurementTests(SessionNotTrainedTestCase):
     """The cycle that declared a measurement, which is where the first cut broke.
 

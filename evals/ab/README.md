@@ -427,12 +427,16 @@ does not say they never would. The most likely case it cannot see is an athlete 
 recent peak and all-time peak are far apart with no break between them, which this
 scenario does not contain.
 
-### The 2026-09-15 runs: a served-text change, characterized
+### The 2026-09-14 runs: a served-text change, characterized
 
 `execution-trend-vs-declared-outcome` v1 is the first suite here whose arms are not two
 context builds. Issue #467 moved served text, so the comparison is **two runs of one live
 arm**, `2026-09-15-467-current` and `2026-09-15-467-candidate`, built minutes apart with
-the files swapped between them. Every packet's `start_coach_session` is byte-identical
+the files swapped between them. (**Those two run ids, and `2026-09-15-86-quantity-spread`
+and `2026-09-15-25-scorecard`, carry a date one day ahead of the day they were made.** All
+four were run on 2026-09-14; the ids were typed wrong and are left as they are rather than
+rewritten, because a run id is part of a retained record and `packet_id` is derived from
+it. Every run made after the slip was noticed is dated correctly.) Every packet's `start_coach_session` is byte-identical
 across the two runs (verified key by key at build time); only `materials.orchestration`
 and `materials.training_judgment` differ.
 
@@ -494,7 +498,7 @@ them, `9.8` and `10.8` are segment sums against the activity distance.
 say the collapse never happens — it was seen in production on another model family — and
 it does not measure the candidate text against the model that produced the failure.
 
-### The 2026-09-15 quantity-spread baseline
+### The 2026-09-14 quantity-spread baseline
 
 `normal-and-poor-recovery-week` v1, `2026-09-15-86-quantity-spread`: the two-state baseline
 issue #86 has been owed since its acceptance was written. One athlete, one week
@@ -541,7 +545,7 @@ crosses it.
 retained baseline for a later prompt or model change to be read against, not a threshold
 and not a pass.
 
-### The 2026-09-15 scoped current-coach scorecard
+### The 2026-09-14 scoped current-coach scorecard
 
 `current-coach-scorecard` v1, `2026-09-15-25-scorecard`. Issue #25's deliverable is a
 packet-bound behaviour scorecard over the existing case set; **this is not that**, and the

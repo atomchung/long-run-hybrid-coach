@@ -40,7 +40,7 @@ RELEASE_CANDIDATE_VERSION = "1.4.10"
 # What the catalogue is, at that version.
 RELEASE_CANDIDATE_TOOL_COUNT = 23
 RELEASE_CANDIDATE_TOOL_CATALOGUE_SHA256 = (
-    "90d57ad5c13c7dd4ae821a0183d7d156c45d98a046c777c292f8782e26f700a2"
+    "a92d1f4da5461a6ea47038d26614c7d2de7b11a6188b4744126bc6985bf99d2b"
 )
 
 # The other two reviewed surfaces. AGENTS.md "Version numbers": a patch that moves
