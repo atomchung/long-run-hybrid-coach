@@ -637,3 +637,61 @@ The case needs either a read whose week puts an easy run the day before the qual
 session, or a rewritten `scenario` matching the read it binds to. Recorded on #25 rather
 than repaired here: changing a case's scenario changes what the case set means, and that
 is the owner's call.
+
+### The 2026-09-14 Sonnet 5 rerun of the #467 comparison
+
+The Opus run above could not answer the question issue #467 actually asks, because #467
+recorded its collapse in a **Claude Sonnet 5** session and Opus 5 does not collapse. So
+the same two runs were built again and answered by Sonnet 5:
+`2026-09-14-467-current-sonnet` and `2026-09-14-467-candidate-sonnet`, same suite, same
+four turns, the sharp turn sampled three times per arm, one model throughout
+(anthropic/claude-sonnet-5). Arms verified at build time: the tool results are
+byte-identical, the current arm carries `origin/main`'s
+*"without the measurement, progress is unproven"* and the candidate carries the scoped
+replacement, and `hybrid_training.md`'s two-claim block is present in one arm and absent
+in the other.
+
+**The collapse did not reproduce on Sonnet 5 either.** Every sharp sample of both arms
+states the execution trend *and* says the declared 5K outcome was never measured. No
+sample answers that progress is unanswerable. One current-text sample makes the
+distinction unprompted: *"這兩者不是同一件事,不要混著看"*.
+
+**That is the finding, and it bounds what this release may claim.** The failure #467
+records is not reproducible from a frozen single-turn packet on either model. The
+incident was a live, multi-turn session in which the athlete had already pushed back —
+prior turns, the coach's own earlier answer, and the athlete's correction are all context
+a packet cannot carry. So the harness can show what the text *does* to an answer; it
+cannot show that the text was what caused that session to collapse. The change stays a
+hardening, and no run here upgrades it to a measured repair.
+
+**What the candidate text changes is where the boundary appears — 3/3 against 1/3, which
+is a tendency and not a rule.** All three candidate samples carry both claims in the
+**opening sentence**. Of the three current-text samples, one does the same and two open
+with the trend alone and reach the measurement caveat paragraphs later:
+
+| arm | sample | opening |
+| --- | --- | --- |
+| candidate | 1 | *"這個週期的主課表(threshold間歇)有穩定進步,但週期一開始設定的正式測驗…這次從頭到尾沒有排進系統"* |
+| candidate | 2 | *"門檻間歇這三週穩定變快，這部分看得到實質進步；但…5公里測驗，從頭到尾沒有真的排進去…兩件事分開講"* |
+| candidate | 3 | *"你在練的部分確實在進步；但你設定的正式驗法——用 5K 定點比較——這次循環還沒有真的跑過"* |
+| current | 1 | *"有,三次配速跑的訊號滿一致的"* — the measurement boundary arrives several paragraphs later |
+| current | 2 | *"有進步，而且是三週一致往同個方向走，不是單一次的好表現。"* — same, later |
+| current | 3 | *"有,三次 threshold 主課表的配速一路變快,方向穩定;信心中等——這個週期原本要設的 5K 對照沒有真的成立"* — **both claims in the opening, on the current text** |
+
+That matters for a reason the product already states: the served guidance tells the coach
+to lead with the answer, so an athlete who reads one line gets both claims more reliably
+under the candidate text. But the third current sample is the honest counterweight — the
+current wording reaches the same opening on its own one time in three, so this is a shift
+in tendency across six samples, not a property the text guarantees. It is a placement
+difference rather than a correctness difference, and it is worth exactly that much. Six
+samples cannot separate a real tendency from sampling noise at this margin; what they do
+establish is the negative result above, which is what the release receipt leans on.
+
+**No over-correction on the controls.** On `one-session-is-not-a-trend` both arms refuse
+to read a direction from the single attached session — the candidate says outright it is
+a data gap rather than a verdict (*"不是判定沒進步，是資料缺口太大"*).
+
+**Retained**: all six sharp samples, three per arm, plus the controls that completed. The
+two `nothing-came-back` controls were still being answered when this was written and are
+not part of any claim above.
+
