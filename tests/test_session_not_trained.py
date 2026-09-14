@@ -200,7 +200,48 @@ class SessionNotTrainedRouteTests(SessionNotTrainedTestCase):
         with self.assertRaises(GatewayError) as raised:
             self.confirm("run-easy-01")
 
-        self.assertIn("already recorded as completed", str(raised.exception.detail))
+        self.assertIn("already reads 'completed'", str(raised.exception.detail))
+
+    def test_a_session_the_coach_moved_is_refused_and_never_overwritten(self):
+        """A coach decision may not be reported back as the athlete's miss.
+
+        `moved` and `replaced` are written by `plan_change` when the coach reschedules or
+        rewrites a session. `store.cycle_sessions` already refuses to count the plan's own
+        change of mind as the athlete's miss; a statement that overwrote one of those
+        would reintroduce exactly that, from the other direction. Refused at the tool, and
+        the read path holds the line independently of the tool.
+        """
+        for status in ("moved", "replaced"):
+            with self.subTest(status=status):
+                shutil.rmtree(self.state_dir)
+                plan = plan_with_an_unmatched_elapsed_session()
+                for session in plan["week"]["sessions"]:
+                    if session["session_id"] == UNMATCHED_SESSION:
+                        session["match_status"] = status
+                init_store(self.state_dir, plan)
+
+                with self.assertRaises(GatewayError) as raised:
+                    self.confirm()
+                self.assertIn(f"already reads {status!r}", str(raised.exception.detail))
+
+                # The read path is the second reader, not the first: a record written
+                # before this guard existed must not resolve one either.
+                athlete_evidence.record_session_not_trained(
+                    self.state_dir,
+                    plan_id=self.plan["plan_id"],
+                    session_id=UNMATCHED_SESSION,
+                    date=UNMATCHED_DATE,
+                    sport="mobility",
+                    now=self.now,
+                )
+                row = self.cycle_row()
+                self.assertEqual(status, row["match_status"])
+                self.assertTrue(
+                    any(
+                        UNMATCHED_SESSION in note and "not trained" in note
+                        for note in self.session()["context"]["unknowns"]
+                    ),
+                )
 
     def test_nothing_writes_one_of_these_on_the_athletes_behalf(self):
         """AGENTS.md 3 and issue #30 Part B: an absence is never evidence of a decision.

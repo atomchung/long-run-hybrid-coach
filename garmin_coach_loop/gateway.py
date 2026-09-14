@@ -5736,11 +5736,19 @@ class CoachGateway:
                 f"this cycle holds no elapsed session {session_id!r}; read "
                 "context.cycle_sessions for the sessions this can answer for"
             )
-        if session.get("match_status") in ("completed", "partial"):
+        if session.get("match_status") != "planned":
+            # Everything else this field can hold is already an answer somebody
+            # recorded. `completed`/`partial` came from an attached actual or a coaching
+            # decision; `moved`/`replaced` were written when the coach rescheduled or
+            # rewrote the session, and reporting one of those as the athlete's miss
+            # would report the coach's own decision as theirs -- the failure
+            # `store.cycle_sessions` documents. Refused by name rather than ignored, so
+            # the athlete finds out in the turn they said it.
             raise _invalid(
-                f"session {session_id!r} is already recorded as "
-                f"{session.get('match_status')}; changing a settled outcome is a "
-                "coaching decision, not a statement about an absence"
+                f"session {session_id!r} already reads "
+                f"{session.get('match_status')!r}, not planned; only a session nothing "
+                "has resolved can be answered for, and changing a recorded outcome is a "
+                "coaching decision rather than a statement about an absence"
             )
         return {
             "status": "passed",

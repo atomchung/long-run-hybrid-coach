@@ -52,12 +52,15 @@ MATCH_STATUS_TO_CALENDAR_STATUS = {
     "missed": "missed",
 }
 
-# A session whose outcome the plan already recorded. The athlete's own statement about
-# a past session (issue #468) never overwrites one of these: a settled outcome was
-# written from an attached, completed actual or by a coaching decision, and replacing it
-# from a sentence would let a misremembered day falsify history. The disagreement is
-# reported in `unknowns` instead.
-_SETTLED_MATCH_STATUSES = frozenset({"completed", "partial"})
+# The only status the athlete's own statement about a past session (issue #468) may
+# resolve. Everything else the field can hold is already somebody's recorded answer:
+# `completed` and `partial` were written from an attached actual or by a coaching
+# decision, and `moved` and `replaced` were written by `plan_change` when the *coach*
+# rescheduled or rewrote the session. Overwriting either pair from a sentence would
+# falsify history -- and for `moved`/`replaced` specifically it would report the coach's
+# own decision as the athlete's miss, which is the failure `store.cycle_sessions`'s
+# docstring exists to prevent. A disagreement is reported in `unknowns` instead.
+_RESOLVABLE_MATCH_STATUS = "planned"
 
 # athlete_baseline shape used when PlanState carries none -- every field explicitly
 # unknown, never a guessed number. Mirrors contracts/coach-context.schema.json and
@@ -3011,7 +3014,7 @@ def assemble_context(
                 activity_evidence = "none_found"
         match_status = session.get("match_status")
         if session.get("session_id") in not_trained:
-            if activity is None and match_status not in _SETTLED_MATCH_STATUSES:
+            if activity is None and match_status == _RESOLVABLE_MATCH_STATUS:
                 # The statement is the outcome the plan never got to record. `missed` is
                 # already a PlanState value and already what a coach reads a skipped
                 # session as -- there is no new status here, only a way for the athlete's
