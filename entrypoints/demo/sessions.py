@@ -70,6 +70,12 @@ class DemoSession:
     # Exploratory state -- the previews this conversation asked for. Session-local by
     # construction: nothing reads it but this session's own next turn.
     previews: list[dict[str, Any]] = field(default_factory=list)
+    # Held for the whole of one turn. Two requests arriving on one session id -- a
+    # double-tapped button, a retry over a slow answer -- would otherwise each read the
+    # history, spend several seconds in the model, and write back a version that never saw
+    # the other. The second request is refused rather than queued: a demo turn takes
+    # seconds, and a caller waiting on a lock is a caller holding a worker thread.
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def fingerprint(self) -> str:
@@ -132,6 +138,18 @@ class SessionStore:
                 )
             session.turns += 1
             return session.turns
+
+    def refund_turn(self, session: DemoSession) -> None:
+        """Give back a turn that produced no answer.
+
+        A conversation is capped at a handful of turns, so a provider timeout that still
+        spends one is a visitor losing part of the demo to something that was never their
+        doing. Only called where nothing was written: the history is committed at the end
+        of a turn, so a turn that failed left none.
+        """
+        with self._lock:
+            if session.turns > 0:
+                session.turns -= 1
 
     def drop(self, session_id: str) -> None:
         with self._lock:

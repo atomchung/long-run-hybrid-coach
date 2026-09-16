@@ -145,6 +145,7 @@ def select_test_paths(changed_paths: list[str] | tuple[str, ...]) -> dict[str, o
                 "tests/test_demo_fixture.py",
                 "tests/test_demo_boundary.py",
                 "tests/test_demo_service.py",
+                "tests/test_demo_deployment.py",
             ):
                 _add(selected, reasons, test_path, f"demo entry point changed: {path}")
             continue

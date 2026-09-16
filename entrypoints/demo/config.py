@@ -22,7 +22,28 @@ API_KEY_ENV = "OPENAI_API_KEY"
 # The site the demo is embedded in. Compiled in, not configured -- see the module note.
 SITE_ORIGIN = "https://paceandstaystrong.com"
 
+# Where this service answers in production, and the two routes it answers on. Written
+# down here because three other things have to agree with it -- the site's `data-endpoint`,
+# this repository's own documentation, and the Railway custom domain -- and a constant is
+# the only version of that agreement a test can check.
+#
+# Its own host, never the gateway's. `mcp.paceandstaystrong.com` serves connected athletes
+# and their OAuth; putting anonymous demo traffic on it would put a public playground
+# inside the production failure domain and behind the reviewed MCP surface.
+PUBLIC_HOST = "demo-api.paceandstaystrong.com"
+
+RESPOND_PATH = "/demo/v1/respond"
+HEALTH_PATH = "/healthz"
+
+PUBLIC_ENDPOINT = f"https://{PUBLIC_HOST}{RESPOND_PATH}"
+
+# The local fallback. Railway injects PORT and expects the process to bind it; this is
+# only what a developer gets when nothing does.
 DEFAULT_PORT = 8433
+
+# Railway's own variable, read first. A service that ignores it binds a port nothing is
+# routed to, and the platform's health check fails on a process that is running perfectly.
+PLATFORM_PORT_ENV = "PORT"
 
 
 class ConfigError(RuntimeError):
@@ -40,6 +61,19 @@ def _int(env: dict[str, str], name: str, default: int, *, minimum: int = 1) -> i
     if value < minimum:
         raise ConfigError(f"{name} must be >= {minimum}")
     return value
+
+
+def _port(env: dict[str, str]) -> int:
+    """Railway's ``PORT`` first, then ``COACH_DEMO_PORT``, then the local fallback.
+
+    The platform assigns the port and routes to it; a service that binds its own number
+    instead is unreachable, and the health check fails against a process that is otherwise
+    working. ``COACH_DEMO_PORT`` stays for a host that injects nothing, and is deliberately
+    second so it cannot shadow the platform on a deployment that sets both.
+    """
+    if (env.get(PLATFORM_PORT_ENV) or "").strip():
+        return _int(env, PLATFORM_PORT_ENV, DEFAULT_PORT)
+    return _int(env, "COACH_DEMO_PORT", DEFAULT_PORT)
 
 
 def _origins(raw: str | None) -> tuple[str, ...]:
@@ -142,7 +176,7 @@ def from_environment(environ: dict[str, str] | None = None) -> DemoConfig:
     key = (env.get(API_KEY_ENV) or "").strip()
     return DemoConfig(
         host=env.get("COACH_DEMO_HOST", "0.0.0.0").strip() or "0.0.0.0",
-        port=_int(env, "COACH_DEMO_PORT", DEFAULT_PORT),
+        port=_port(env),
         allowed_origins=_origins(env.get("COACH_DEMO_ALLOWED_ORIGINS")),
         session_ttl_seconds=_int(env, "COACH_DEMO_SESSION_TTL_SECONDS", 900, minimum=30),
         max_sessions=_int(env, "COACH_DEMO_MAX_SESSIONS", 500),

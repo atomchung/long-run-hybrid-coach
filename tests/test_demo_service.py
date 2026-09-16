@@ -606,5 +606,251 @@ class HttpSurfaceTest(unittest.TestCase):
         self.assertNotIn(FAKE_CREDENTIAL, json.dumps(body))
 
 
+class ConcurrentTurnTest(unittest.TestCase):
+    """Two requests on one session id must not each write back a history the other never saw."""
+
+    def test_a_second_turn_on_the_same_session_is_refused_while_the_first_is_running(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        class Slow:
+            def respond(self, *, instructions, input_items, tools):
+                started.set()
+                release.wait(timeout=5)
+                return model_module.ModelTurn(text="first answer")
+
+        demo = DemoService(config(), client=Slow(), now=lambda: NOW)
+        outcome: dict[str, Any] = {}
+
+        def first():
+            outcome["first"] = ask(demo, "session-concurrent", "one").status
+
+        worker = threading.Thread(target=first)
+        worker.start()
+        self.assertTrue(started.wait(timeout=5))
+        with self.assertRaises(DemoRequestError) as raised:
+            ask(demo, "session-concurrent", "two", client_key="198.51.100.2")
+        self.assertEqual(409, raised.exception.status)
+        self.assertEqual("session_busy", raised.exception.code)
+        release.set()
+        worker.join(timeout=5)
+        self.assertEqual(200, outcome["first"])
+
+    def test_the_refused_second_turn_leaves_one_clean_history_behind(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        class Slow:
+            def respond(self, *, instructions, input_items, tools):
+                started.set()
+                release.wait(timeout=5)
+                return model_module.ModelTurn(
+                    text="first answer",
+                    output_items=({"type": "message", "role": "assistant", "content": [
+                        {"type": "output_text", "text": "first answer"}]},),
+                )
+
+        demo = DemoService(config(), client=Slow(), now=lambda: NOW)
+        worker = threading.Thread(target=lambda: ask(demo, "session-clean-hist", "one"))
+        worker.start()
+        self.assertTrue(started.wait(timeout=5))
+        with self.assertRaises(DemoRequestError):
+            ask(demo, "session-clean-hist", "two", client_key="198.51.100.3")
+        release.set()
+        worker.join(timeout=5)
+
+        session = demo.sessions.get_or_create("session-clean-hist", now=NOW)
+        self.assertEqual(1, session.turns, "the refused turn spent nothing")
+        said = [item for item in session.history if item.get("role") == "user"]
+        self.assertEqual(["one"], [item["content"] for item in said])
+
+    def test_two_different_sessions_still_run_at_the_same_time(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        class Slow:
+            def respond(self, *, instructions, input_items, tools):
+                started.set()
+                release.wait(timeout=5)
+                return model_module.ModelTurn(text="answer")
+
+        demo = DemoService(config(), client=Slow(), now=lambda: NOW)
+        worker = threading.Thread(target=lambda: ask(demo, "session-parallel-a", "one"))
+        worker.start()
+        self.assertTrue(started.wait(timeout=5))
+        release.set()
+        worker.join(timeout=5)
+        self.assertEqual(
+            200, ask(demo, "session-parallel-b", "one", client_key="198.51.100.4").status
+        )
+
+
+class FailedTurnQuotaTest(unittest.TestCase):
+    """A turn the visitor never got an answer to does not come out of their few."""
+
+    class Broken:
+        def __init__(self, error: model_module.ModelError):
+            self.error = error
+            self.calls = 0
+
+        def respond(self, *, instructions, input_items, tools):
+            self.calls += 1
+            raise self.error
+
+    def test_a_provider_failure_gives_the_turn_back(self):
+        for code, status in (
+            ("model_timeout", 504),
+            ("model_unavailable", 502),
+            ("model_rate_limited", 429),
+            ("model_output_truncated", 502),
+        ):
+            with self.subTest(code=code):
+                broken = self.Broken(model_module.ModelError(code, "no answer"))
+                demo = DemoService(config(max_turns_per_session=2), client=broken,
+                                   now=lambda: NOW)
+                with self.assertRaises(DemoRequestError) as raised:
+                    ask(demo, f"session-refund-{code}"[:60], "hello")
+                self.assertEqual(status, raised.exception.status)
+                session = demo.sessions.get_or_create(f"session-refund-{code}"[:60], now=NOW)
+                self.assertEqual(0, session.turns)
+
+    def test_a_failed_turn_writes_nothing_into_the_conversation(self):
+        broken = self.Broken(model_module.ModelError("model_timeout", "no answer"))
+        demo = DemoService(config(), client=broken, now=lambda: NOW)
+        with self.assertRaises(DemoRequestError):
+            ask(demo, "session-refund-hist", "a question nobody answered")
+        session = demo.sessions.get_or_create("session-refund-hist", now=NOW)
+        self.assertEqual([], session.history)
+
+    def test_the_conversation_can_still_be_spent_by_turns_that_did_answer(self):
+        demo = service(max_turns_per_session=1)
+        ask(demo, "session-spent-aaa", "one")
+        with self.assertRaises(DemoRequestError) as raised:
+            ask(demo, "session-spent-aaa", "two")
+        self.assertEqual("turn_limit_reached", raised.exception.code)
+
+    def test_a_failure_part_way_through_a_tool_round_also_gives_the_turn_back(self):
+        class FailsSecondRound:
+            def __init__(self):
+                self.calls = 0
+
+            def respond(self, *, instructions, input_items, tools):
+                self.calls += 1
+                if self.calls == 1:
+                    return tool_turn(boundary.READ_EVIDENCE, {"read": ["strength"]})
+                raise model_module.ModelError("model_timeout", "no answer")
+
+        demo = DemoService(config(), client=FailsSecondRound(), now=lambda: NOW)
+        with self.assertRaises(DemoRequestError):
+            ask(demo, "session-refund-mid", "what changed?")
+        session = demo.sessions.get_or_create("session-refund-mid", now=NOW)
+        self.assertEqual(0, session.turns)
+        self.assertEqual([], session.history)
+
+
+class AcceptanceCommandTest(unittest.TestCase):
+    """The command an operator runs once there is a credential, exercised without one."""
+
+    def test_it_refuses_to_run_in_process_without_a_credential(self):
+        from entrypoints.demo import acceptance
+
+        with mock.patch.dict("os.environ", {"OPENAI_API_KEY": ""}, clear=False):
+            with mock.patch("sys.stderr"):
+                self.assertEqual(2, acceptance.main([]))
+
+    def test_it_runs_the_three_committed_turns_in_three_separate_conversations(self):
+        from entrypoints.demo import acceptance
+
+        seen: list[str] = []
+
+        class Recording:
+            def respond(self, *, instructions, input_items, tools):
+                seen.append(
+                    next(item["content"] for item in input_items if item.get("role") == "user")
+                )
+                return model_module.ModelTurn(
+                    text="Preserve the anchor, sacrifice the long run. Evidence: three "
+                         "sessions. Uncertain: the measurement is unproven; I would give up "
+                         "the easy run."
+                )
+
+        demo = DemoService(config(), client=Recording(), now=lambda: NOW)
+        report = acceptance.run(acceptance._InProcess(demo))
+        self.assertEqual(3, len(report["turns"]))
+        self.assertEqual([prompt["message"] for prompt in fixture.acceptance_prompts()], seen)
+        self.assertEqual(3, len(demo.sessions), "one conversation per acceptance turn")
+        self.assertTrue(report["passed"])
+
+    def test_a_reply_claiming_a_write_fails_the_run(self):
+        from entrypoints.demo import acceptance
+
+        class Claims:
+            def respond(self, *, instructions, input_items, tools):
+                return model_module.ModelTurn(text="Done — I've saved that to your calendar.")
+
+        demo = DemoService(config(), client=Claims(), now=lambda: NOW)
+        report = acceptance.run(acceptance._InProcess(demo))
+        self.assertFalse(report["passed"])
+        self.assertTrue(any("claims_no_write" in name for name in report["hard_failures"]))
+
+    def test_a_reply_inventing_a_score_fails_the_run(self):
+        from entrypoints.demo import acceptance
+
+        class Scores:
+            def respond(self, *, instructions, input_items, tools):
+                return model_module.ModelTurn(text="Your running score is 74 this week.")
+
+        demo = DemoService(config(), client=Scores(), now=lambda: NOW)
+        report = acceptance.run(acceptance._InProcess(demo))
+        self.assertFalse(report["passed"])
+        self.assertTrue(any("invents_no_score" in name for name in report["hard_failures"]))
+
+    def test_a_provider_failure_is_reported_rather_than_raised(self):
+        from entrypoints.demo import acceptance
+
+        class Broken:
+            def respond(self, *, instructions, input_items, tools):
+                raise model_module.ModelError("model_timeout", "no answer")
+
+        demo = DemoService(config(), client=Broken(), now=lambda: NOW)
+        report = acceptance.run(acceptance._InProcess(demo))
+        self.assertFalse(report["passed"])
+        self.assertEqual("model_timeout", report["turns"][0]["error"]["code"])
+        self.assertIn("model_timeout", acceptance.render(report))
+
+    def test_it_reports_which_turns_exercised_a_tool_round(self):
+        from entrypoints.demo import acceptance
+
+        class UsesATool:
+            def __init__(self):
+                self.calls = 0
+
+            def respond(self, *, instructions, input_items, tools):
+                self.calls += 1
+                if self.calls % 2 == 1:
+                    return tool_turn(
+                        boundary.READ_EVIDENCE, {"read": ["session_detail"]},
+                        call_id=f"call-{self.calls}",
+                    )
+                return model_module.ModelTurn(
+                    text="Preserve the anchor, sacrifice the long run; uncertain: unproven "
+                         "measurement; I would give up the easy run."
+                )
+
+        demo = DemoService(config(), client=UsesATool(), now=lambda: NOW)
+        report = acceptance.run(acceptance._InProcess(demo))
+        self.assertEqual(3, len(report["turns_using_a_tool_round"]))
+        self.assertEqual(2, report["turns"][0]["rounds"])
+        self.assertIn("tool rounds ran on:", acceptance.render(report))
+
+    def test_the_report_never_carries_the_credential(self):
+        from entrypoints.demo import acceptance
+
+        demo = service()
+        report = acceptance.run(acceptance._InProcess(demo))
+        self.assertNotIn(FAKE_CREDENTIAL, json.dumps(report))
+        self.assertNotIn(FAKE_CREDENTIAL, acceptance.render(report))
+
+
 if __name__ == "__main__":
     unittest.main()

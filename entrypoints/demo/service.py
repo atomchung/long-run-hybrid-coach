@@ -31,14 +31,20 @@ from typing import Any
 from garmin_coach_loop import orchestration
 
 from . import boundary, fixture, model as model_module
-from .config import DemoConfig
+from .config import HEALTH_PATH, RESPOND_PATH, DemoConfig
 from .sessions import SessionLimit, SessionStore, session_fingerprint, valid_session_id
 
 
 LOGGER = logging.getLogger("entrypoints.demo")
 
-RESPOND_PATH = "/demo/v1/respond"
-HEALTH_PATH = "/healthz"
+__all__ = [
+    "DemoReply",
+    "DemoRequestError",
+    "DemoService",
+    "HEALTH_PATH",
+    "RESPOND_PATH",
+    "error_body",
+]
 
 _ORCHESTRATION = Path(__file__).with_name("orchestration.md")
 
@@ -245,18 +251,42 @@ class DemoService:
             )
 
         session = self._sessions.get_or_create(session_id, now=now)
+        # One turn at a time per conversation. Two requests on one session id would each
+        # read the history, spend seconds in the model, and write back a version that never
+        # saw the other -- so the second is refused rather than allowed to overwrite.
+        if not session.lock.acquire(blocking=False):
+            raise DemoRequestError(
+                409, "session_busy", "this demo conversation is already answering a turn"
+            )
+        try:
+            return self._answer(session, message.strip(), now=now, started=started)
+        finally:
+            session.lock.release()
+
+    def _answer(
+        self,
+        session: Any,
+        message: str,
+        *,
+        now: dt.datetime,
+        started: dt.datetime,
+    ) -> DemoReply:
+        """One turn, with this conversation's lock already held."""
         try:
             turn_index = self._sessions.begin_turn(session)
         except SessionLimit as limit:
             raise DemoRequestError(409, "turn_limit_reached", str(limit)) from None
 
         items = list(session.history)
-        items.append({"role": "user", "content": message.strip()})
+        items.append({"role": "user", "content": message})
 
         acts: list[str] = []
         refused: list[str] = []
         text = ""
-        for _ in range(MAX_TOOL_ROUNDS):
+        rounds = 0
+        exhausted = True
+        while rounds < MAX_TOOL_ROUNDS:
+            rounds += 1
             try:
                 turn = self._client.respond(
                     instructions=self.instructions(),
@@ -264,16 +294,25 @@ class DemoService:
                     tools=boundary.tool_definitions(),
                 )
             except model_module.ModelError as error:
+                # The visitor got no answer, so this turn does not count against the few
+                # they have. Nothing was written: the history below is committed only once
+                # the turn has finished, so a failed turn leaves the conversation as it was.
+                self._sessions.refund_turn(session)
                 status = {
                     "demo_model_unconfigured": 503,
                     "model_rate_limited": 429,
                     "model_timeout": 504,
                 }.get(error.code, 502)
                 raise DemoRequestError(status, error.code, str(error)) from None
+
+            # Everything the response produced goes into the next round's input, in order
+            # and including the reasoning item -- with `store` false the provider keeps
+            # nothing, so this list is the whole of what the next round can see.
+            items.extend(model_module.carry_forward(turn.output_items))
             text = turn.text
             if not turn.tool_calls:
+                exhausted = False
                 break
-            items.extend(dict(item) for item in turn.output_items)
             for call in turn.tool_calls:
                 result = boundary.dispatch(
                     call.name,
@@ -290,16 +329,12 @@ class DemoService:
                     # against is untouched by construction.
                     session.previews.append(result["preview"])
                     del session.previews[:-3]
-                items.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": call.call_id,
-                        "output": json.dumps(result, sort_keys=True),
-                    }
-                )
-        else:
-            # Out of rounds with the model still asking. Whatever words it produced stand,
-            # and the fallback below covers the case where it produced none.
+                items.append(model_module.function_call_output(call.call_id, result))
+
+        if exhausted:
+            # Out of rounds with the model still asking. Every call it made has its output
+            # in `items`, so the conversation is still well formed; what is missing is the
+            # answer, and the fallback below supplies one.
             LOGGER.info(
                 json.dumps({"event": "tool_rounds_exhausted", "session": session.fingerprint})
             )
@@ -309,8 +344,11 @@ class DemoService:
                 "I could not put that into an answer this time. Ask me again, or ask "
                 "something narrower about this athlete's week."
             )
+            # Not something the model said, so it is added rather than already carried
+            # forward -- the conversation has to end on a turn, or the next one opens with
+            # two questions in a row.
+            items.append(model_module.assistant_message(text))
 
-        items.append({"role": "assistant", "content": text})
         session.history = _trimmed(items)
 
         finished = self._now()
@@ -321,6 +359,7 @@ class DemoService:
                 "event": "respond",
                 "session": session.fingerprint,
                 "turn": turn_index,
+                "rounds": rounds,
                 "acts": acts,
                 "refused": refused,
                 "reply_chars": len(text),

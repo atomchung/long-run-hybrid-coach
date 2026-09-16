@@ -188,6 +188,10 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "type": "function",
             "name": READ_EVIDENCE,
+            # Strict: the schema is closed and every property is required, which is what
+            # strict validation needs, and an evidence read is worth getting right the
+            # first time rather than refusing and asking again.
+            "strict": True,
             "description": (
                 "Load evidence groups this turn did not already receive. Read-only. Names "
                 "the same groups evidence_index lists."
@@ -208,6 +212,11 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "type": "function",
             "name": PREVIEW_PLAN_CHANGE,
+            # Not strict: `change_request` is the product's own request shape, which is
+            # open, nested and validated by `plan_change` rather than by a JSON schema.
+            # Declaring it strict would mean restating that contract here, which is the
+            # second copy this whole entry point exists to avoid.
+            "strict": False,
             "description": (
                 "Project one change request against this conversation's copy of the plan "
                 "and return the preview. Nothing is saved, and no confirmation follows: "
