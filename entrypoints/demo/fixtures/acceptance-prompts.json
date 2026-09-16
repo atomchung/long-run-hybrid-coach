@@ -1,0 +1,34 @@
+{
+  "description": "The three turns this demo is built to answer, committed so the README, the tests and the operator read one copy.",
+  "prompts": [
+    {
+      "id": "allocation-under-a-time-budget",
+      "issues": [472],
+      "message": "I only have three 45-minute sessions next week. I want a faster 10K without losing strength. What are my realistic options?",
+      "expects": [
+        "two or three materially different allocation strategies, not three wordings of one week",
+        "for each: what it preserves, what it sacrifices, the evidence that makes it valid, and what stays uncertain",
+        "no running score, strength score, recovery score, or any other invented number"
+      ]
+    },
+    {
+      "id": "what-changed-and-what-is-unproven",
+      "issues": [472],
+      "message": "What changed across the comparable quality runs, and what is still unproven?",
+      "expects": [
+        "the comparable execution trend across the three threshold sessions, read as pace",
+        "the cycle's declared 10K measurement answered separately, and as not yet run",
+        "the missing per-segment heart rate on two of the three sessions left unknown rather than treated as unchanged"
+      ]
+    },
+    {
+      "id": "a-day-disappears",
+      "issues": [472],
+      "message": "Thursday is no longer available. What would you preserve and what would you give up?",
+      "expects": [
+        "a revision of this session's own exploration, naming what it preserves and what it gives up",
+        "no change to any other demo session and none to the fixture underneath them"
+      ]
+    }
+  ]
+}

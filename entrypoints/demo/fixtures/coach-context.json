@@ -1,0 +1,1310 @@
+{
+  "schema_version": "1.2",
+  "context_id": "demo-context-001",
+  "as_of": "2026-09-13T18:40:00+08:00",
+  "timezone": "Asia/Taipei",
+  "athlete_profile": {
+    "timezone": "Asia/Taipei",
+    "language": "en",
+    "recorded_at": "2026-08-24T09:00:00+08:00",
+    "source": "request"
+  },
+  "sources": [
+    {
+      "source": "demo-synthetic-fixture",
+      "mode": "offline",
+      "doctor_status": "passed",
+      "observed_at": "2026-09-13T10:38:00+00:00",
+      "data_through": "2026-09-13",
+      "sanitized": true
+    }
+  ],
+  "freshness": {
+    "activities": "fresh",
+    "recovery": "partial",
+    "calendar": "fresh"
+  },
+  "coverage": {
+    "sleep": {
+      "observed_days": 7,
+      "expected_days": 7,
+      "status": "complete",
+      "last_observed": "2026-09-13"
+    },
+    "hrv": {
+      "observed_days": 4,
+      "expected_days": 7,
+      "status": "partial",
+      "last_observed": "2026-09-13"
+    },
+    "resting_hr": {
+      "observed_days": 7,
+      "expected_days": 7,
+      "status": "complete",
+      "last_observed": "2026-09-13"
+    }
+  },
+  "goal_context": {
+    "plan_id": "demo-plan-001",
+    "plan_version": 4,
+    "primary_goal": "threshold - improve repeatable 10K performance while maintaining squat and pulling strength",
+    "maintenance_goal": "strength",
+    "measurement_protocol": "Run the same measured 10K loop in comparable conditions in the cycle's final week and compare it against the same loop run on 2026-08-24",
+    "measurement": {
+      "reference_session_id": "run-measure-ref",
+      "measurement_week_start": "2026-09-14",
+      "compare": "Same measured 10K loop at the same effort; compare elapsed time and average heart rate"
+    }
+  },
+  "review_frame": {
+    "week_start": "2026-09-07",
+    "week_end": "2026-09-13",
+    "previous_week_start": "2026-08-31",
+    "previous_week_end": "2026-09-06",
+    "cycle_start": "2026-08-24",
+    "cycle_end": "2026-09-20",
+    "cycle_day": 21,
+    "detail_horizon_start": "2026-08-24"
+  },
+  "constraints": {
+    "available_days": [
+      "tue",
+      "wed",
+      "sat"
+    ],
+    "unavailable_days": [
+      "mon",
+      "thu",
+      "fri",
+      "sun"
+    ],
+    "availability_source": "athlete_evidence",
+    "session_minutes": 45,
+    "red_flags": {
+      "pain": false,
+      "illness": false,
+      "chest_pain": false,
+      "dizziness": false,
+      "unusual_symptoms": false
+    },
+    "leg_fatigue": "normal",
+    "soreness": "normal",
+    "schedule_changed": true,
+    "equipment_changed": false,
+    "week_constraints": [
+      "Next week I only have three sessions and none of them can run past 45 minutes."
+    ]
+  },
+  "athlete_baseline": {
+    "threshold_pace_sec_per_km": 345,
+    "max_hr": 189,
+    "easy_hr_ceiling": 152,
+    "longest_recent_run_km": 15.0,
+    "weekly_volume_km_4wk_avg": 34.0,
+    "max_session_minutes": 90,
+    "strength_loads": [
+      {
+        "exercise": "back squat",
+        "load_kg": 80.0,
+        "assist_kg": null,
+        "scheme": "4x5"
+      },
+      {
+        "exercise": "pull-up",
+        "load_kg": null,
+        "assist_kg": 12.5,
+        "scheme": "3x8"
+      }
+    ]
+  },
+  "baseline_evidence": [
+    {
+      "field": "threshold_pace_sec_per_km",
+      "baseline": 345,
+      "observed": {
+        "date": "2026-09-08",
+        "distance_km": 9.6,
+        "fastest_average_pace_sec_per_km": 341
+      },
+      "observations": 3,
+      "window_start": "2026-08-03",
+      "window_end": "2026-09-13"
+    },
+    {
+      "field": "max_hr",
+      "baseline": 189,
+      "observed": null,
+      "observations": 0,
+      "window_start": "2026-08-03",
+      "window_end": "2026-09-13"
+    },
+    {
+      "field": "easy_hr_ceiling",
+      "baseline": 152,
+      "observed": {
+        "average_hr_low": 131.0,
+        "average_hr_high": 138.0
+      },
+      "observations": 4,
+      "window_start": "2026-08-03",
+      "window_end": "2026-09-13"
+    },
+    {
+      "field": "longest_recent_run_km",
+      "baseline": 15.0,
+      "observed": {
+        "date": "2026-09-05",
+        "longest_run_km": 12.6
+      },
+      "observations": 6,
+      "window_start": "2026-08-03",
+      "window_end": "2026-09-13"
+    },
+    {
+      "field": "weekly_volume_km_4wk_avg",
+      "baseline": 34.0,
+      "observed": {
+        "weeks": [
+          {
+            "week_start": "2026-09-07",
+            "through": "2026-09-13",
+            "km": 27.6,
+            "runs": 3
+          },
+          {
+            "week_start": "2026-08-31",
+            "through": "2026-09-06",
+            "km": 28.1,
+            "runs": 3
+          },
+          {
+            "week_start": "2026-08-24",
+            "through": "2026-08-30",
+            "km": 31.0,
+            "runs": 3
+          },
+          {
+            "week_start": "2026-08-17",
+            "through": "2026-08-23",
+            "km": 33.4,
+            "runs": 4
+          },
+          {
+            "week_start": "2026-08-10",
+            "through": "2026-08-16",
+            "km": 35.2,
+            "runs": 4
+          },
+          {
+            "week_start": "2026-08-03",
+            "through": "2026-08-09",
+            "km": 30.8,
+            "runs": 4
+          }
+        ]
+      },
+      "observations": 6,
+      "window_start": "2026-08-03",
+      "window_end": "2026-09-13"
+    },
+    {
+      "field": "max_session_minutes",
+      "baseline": 90,
+      "observed": {
+        "longest_session_minutes": 86,
+        "date": "2026-09-05",
+        "sport": "running"
+      },
+      "observations": 6,
+      "window_start": "2026-08-03",
+      "window_end": "2026-09-13"
+    },
+    {
+      "field": "strength_loads",
+      "exercise": "back squat",
+      "display_name": "back squat",
+      "baseline": {
+        "load_kg": 80.0,
+        "assist_kg": null,
+        "scheme": "4x5"
+      },
+      "observed": {
+        "loads": [
+          {
+            "load_kg": 80.0,
+            "assist_kg": null,
+            "sessions": 2,
+            "first": "2026-08-26",
+            "last": "2026-09-02"
+          }
+        ]
+      },
+      "observations": 2,
+      "window_start": "2026-08-03",
+      "window_end": "2026-09-13"
+    },
+    {
+      "field": "strength_loads",
+      "exercise": "pull-up",
+      "display_name": "pull-up",
+      "baseline": {
+        "load_kg": null,
+        "assist_kg": 12.5,
+        "scheme": "3x8"
+      },
+      "observed": {
+        "loads": [
+          {
+            "load_kg": null,
+            "assist_kg": 12.5,
+            "sessions": 2,
+            "first": "2026-08-26",
+            "last": "2026-09-02"
+          }
+        ]
+      },
+      "observations": 2,
+      "window_start": "2026-08-03",
+      "window_end": "2026-09-13"
+    }
+  ],
+  "recent_actuals": [
+    {
+      "activity_id": "demo-act-quality-03",
+      "date": "2026-09-08",
+      "sport": "running",
+      "planned_session_id": "run-quality-w3",
+      "match_confidence": "matched",
+      "adaptation": "threshold",
+      "body_stress": "lower",
+      "cost": "hard",
+      "duration_minutes": 61,
+      "completion": "completed",
+      "elevation_gain_m": 58.0,
+      "subjective_feel": null
+    },
+    {
+      "activity_id": "demo-act-easy-03",
+      "date": "2026-09-10",
+      "sport": "running",
+      "planned_session_id": "run-easy-w3",
+      "match_confidence": "matched",
+      "adaptation": "aerobic_base",
+      "body_stress": "lower",
+      "cost": "easy",
+      "duration_minutes": 39,
+      "completion": "completed",
+      "elevation_gain_m": 58.0,
+      "subjective_feel": null
+    },
+    {
+      "activity_id": "demo-act-long-03",
+      "date": "2026-09-12",
+      "sport": "running",
+      "planned_session_id": "run-long-w3",
+      "match_confidence": "matched",
+      "adaptation": "aerobic_base",
+      "body_stress": "lower",
+      "cost": "moderate",
+      "duration_minutes": 84,
+      "completion": "completed",
+      "elevation_gain_m": 58.0,
+      "subjective_feel": null
+    }
+  ],
+  "recovery_trends": {
+    "sleep": {
+      "status": "within_baseline",
+      "observed_days": 7,
+      "expected_days": 7
+    },
+    "hrv": {
+      "status": "unknown",
+      "observed_days": 4,
+      "expected_days": 7
+    },
+    "resting_hr": {
+      "status": "within_baseline",
+      "observed_days": 7,
+      "expected_days": 7
+    }
+  },
+  "current_calendar": [
+    {
+      "session_id": "run-quality-w3",
+      "date": "2026-09-08",
+      "sport": "running",
+      "cost": "hard",
+      "status": "completed"
+    },
+    {
+      "session_id": "strength-w3",
+      "date": "2026-09-09",
+      "sport": "strength",
+      "cost": "moderate",
+      "status": "planned"
+    },
+    {
+      "session_id": "run-easy-w3",
+      "date": "2026-09-10",
+      "sport": "running",
+      "cost": "easy",
+      "status": "completed"
+    },
+    {
+      "session_id": "run-long-w3",
+      "date": "2026-09-12",
+      "sport": "running",
+      "cost": "moderate",
+      "status": "completed"
+    }
+  ],
+  "cycle_sessions": [
+    {
+      "session_id": "run-measure-ref",
+      "date": "2026-08-24",
+      "week_start": "2026-08-24",
+      "sport": "running",
+      "cost": "hard",
+      "match_status": "completed",
+      "planned_minutes": 55,
+      "prescription": "Warm up 10 min\nMeasured 10K 10 km\nCool down 6 min",
+      "activity": {
+        "activity_id": "demo-act-10k-ref",
+        "match_confidence": "matched",
+        "duration_minutes": 62,
+        "distance_km": 10.02,
+        "average_pace_sec_per_km": 372,
+        "average_hr": null
+      },
+      "activity_evidence": "attached"
+    },
+    {
+      "session_id": "strength-w1",
+      "date": "2026-08-26",
+      "week_start": "2026-08-24",
+      "sport": "strength",
+      "cost": "moderate",
+      "match_status": "completed",
+      "planned_minutes": 50,
+      "prescription": "back squat 4x5 80 kg\npull-up 3x8 assist 12.5 kg",
+      "activity": {
+        "activity_id": "demo-act-lift-01",
+        "match_confidence": "matched",
+        "duration_minutes": 48,
+        "distance_km": null,
+        "average_pace_sec_per_km": null,
+        "average_hr": null
+      },
+      "activity_evidence": "attached"
+    },
+    {
+      "session_id": "run-quality-w1",
+      "date": "2026-08-27",
+      "week_start": "2026-08-24",
+      "sport": "running",
+      "cost": "hard",
+      "match_status": "completed",
+      "planned_minutes": 60,
+      "prescription": "Warm up 12 min pace 6:40-7:10/km\n5 rounds: Threshold 1 km pace 5:35-5:45/km, Jog 2 min\nCool down 8 min",
+      "activity": {
+        "activity_id": "demo-act-quality-01",
+        "match_confidence": "matched",
+        "duration_minutes": 58,
+        "distance_km": 9.4,
+        "average_pace_sec_per_km": 398,
+        "average_hr": null
+      },
+      "activity_evidence": "attached"
+    },
+    {
+      "session_id": "run-long-w1",
+      "date": "2026-08-29",
+      "week_start": "2026-08-24",
+      "sport": "running",
+      "cost": "moderate",
+      "match_status": "completed",
+      "planned_minutes": 80,
+      "prescription": "Long easy run 80 min pace 6:40-7:20/km",
+      "activity": {
+        "activity_id": "demo-act-long-01",
+        "match_confidence": "matched",
+        "duration_minutes": 79,
+        "distance_km": 11.6,
+        "average_pace_sec_per_km": 409,
+        "average_hr": 131.0
+      },
+      "activity_evidence": "attached"
+    },
+    {
+      "session_id": "run-quality-w2",
+      "date": "2026-09-01",
+      "week_start": "2026-08-31",
+      "sport": "running",
+      "cost": "hard",
+      "match_status": "completed",
+      "planned_minutes": 60,
+      "prescription": "Warm up 12 min pace 6:40-7:10/km\n5 rounds: Threshold 1 km pace 5:35-5:45/km, Jog 2 min\nCool down 8 min",
+      "activity": {
+        "activity_id": "demo-act-quality-02",
+        "match_confidence": "matched",
+        "duration_minutes": 59,
+        "distance_km": 9.5,
+        "average_pace_sec_per_km": 393,
+        "average_hr": null
+      },
+      "activity_evidence": "attached"
+    },
+    {
+      "session_id": "strength-w2",
+      "date": "2026-09-02",
+      "week_start": "2026-08-31",
+      "sport": "strength",
+      "cost": "moderate",
+      "match_status": "completed",
+      "planned_minutes": 50,
+      "prescription": "back squat 4x5 80 kg\npull-up 3x8 assist 12.5 kg",
+      "activity": {
+        "activity_id": "demo-act-lift-02",
+        "match_confidence": "matched",
+        "duration_minutes": 51,
+        "distance_km": null,
+        "average_pace_sec_per_km": null,
+        "average_hr": null
+      },
+      "activity_evidence": "attached"
+    },
+    {
+      "session_id": "run-easy-w2",
+      "date": "2026-09-03",
+      "week_start": "2026-08-31",
+      "sport": "running",
+      "cost": "easy",
+      "match_status": "completed",
+      "planned_minutes": 40,
+      "prescription": "Easy run 40 min pace 6:40-7:10/km",
+      "activity": {
+        "activity_id": "demo-act-easy-02",
+        "match_confidence": "matched",
+        "duration_minutes": 41,
+        "distance_km": 6.0,
+        "average_pace_sec_per_km": 412,
+        "average_hr": 138.0
+      },
+      "activity_evidence": "attached"
+    },
+    {
+      "session_id": "run-long-w2",
+      "date": "2026-09-05",
+      "week_start": "2026-08-31",
+      "sport": "running",
+      "cost": "moderate",
+      "match_status": "completed",
+      "planned_minutes": 85,
+      "prescription": "Long easy run 85 min pace 6:40-7:20/km",
+      "activity": {
+        "activity_id": "demo-act-long-02",
+        "match_confidence": "matched",
+        "duration_minutes": 86,
+        "distance_km": 12.6,
+        "average_pace_sec_per_km": 410,
+        "average_hr": 133.0
+      },
+      "activity_evidence": "attached"
+    },
+    {
+      "session_id": "run-quality-w3",
+      "date": "2026-09-08",
+      "week_start": "2026-09-07",
+      "sport": "running",
+      "cost": "hard",
+      "match_status": "completed",
+      "planned_minutes": 60,
+      "prescription": "Warm up 12 min pace 6:40-7:10/km\n5 rounds: Threshold 1 km pace 5:35-5:45/km, Jog 2 min\nCool down 8 min",
+      "activity": {
+        "activity_id": "demo-act-quality-03",
+        "match_confidence": "matched",
+        "duration_minutes": 61,
+        "distance_km": 9.6,
+        "average_pace_sec_per_km": 386,
+        "average_hr": 152.0
+      },
+      "activity_evidence": "attached"
+    },
+    {
+      "session_id": "strength-w3",
+      "date": "2026-09-09",
+      "week_start": "2026-09-07",
+      "sport": "strength",
+      "cost": "moderate",
+      "match_status": "planned",
+      "planned_minutes": 50,
+      "prescription": "back squat 4x5 80 kg\npull-up 3x8 assist 12.5 kg",
+      "activity": null,
+      "activity_evidence": "none_found"
+    },
+    {
+      "session_id": "run-easy-w3",
+      "date": "2026-09-10",
+      "week_start": "2026-09-07",
+      "sport": "running",
+      "cost": "easy",
+      "match_status": "completed",
+      "planned_minutes": 40,
+      "prescription": "Easy run 40 min pace 6:40-7:10/km",
+      "activity": {
+        "activity_id": "demo-act-easy-03",
+        "match_confidence": "matched",
+        "duration_minutes": 39,
+        "distance_km": 5.7,
+        "average_pace_sec_per_km": 415,
+        "average_hr": 137.0
+      },
+      "activity_evidence": "attached"
+    },
+    {
+      "session_id": "run-long-w3",
+      "date": "2026-09-12",
+      "week_start": "2026-09-07",
+      "sport": "running",
+      "cost": "moderate",
+      "match_status": "completed",
+      "planned_minutes": 85,
+      "prescription": "Long easy run 85 min pace 6:40-7:20/km",
+      "activity": {
+        "activity_id": "demo-act-long-03",
+        "match_confidence": "matched",
+        "duration_minutes": 84,
+        "distance_km": 12.3,
+        "average_pace_sec_per_km": 409,
+        "average_hr": 134.0
+      },
+      "activity_evidence": "attached"
+    }
+  ],
+  "measurement_evidence": {
+    "comparison_session_id": null,
+    "reference_result": "attached",
+    "comparison_result": "not_scheduled"
+  },
+  "strength_execution": {
+    "source": "athlete_reported",
+    "window_start": "2026-08-03",
+    "window_end": "2026-09-13",
+    "sessions": [
+      {
+        "date": "2026-09-02",
+        "exercise": "back squat",
+        "category": null,
+        "source": "athlete_reported",
+        "notes": [],
+        "sets": [
+          {
+            "set": 1,
+            "reps": 5,
+            "weight_kg": 80.0,
+            "assist_kg": null,
+            "rpe": null
+          },
+          {
+            "set": 2,
+            "reps": 5,
+            "weight_kg": 80.0,
+            "assist_kg": null,
+            "rpe": null
+          },
+          {
+            "set": 3,
+            "reps": 5,
+            "weight_kg": 80.0,
+            "assist_kg": null,
+            "rpe": null
+          },
+          {
+            "set": 4,
+            "reps": 5,
+            "weight_kg": 80.0,
+            "assist_kg": null,
+            "rpe": null
+          }
+        ]
+      },
+      {
+        "date": "2026-09-02",
+        "exercise": "pull-up",
+        "category": null,
+        "source": "athlete_reported",
+        "notes": [],
+        "sets": [
+          {
+            "set": 1,
+            "reps": 8,
+            "weight_kg": null,
+            "assist_kg": 12.5,
+            "rpe": null
+          },
+          {
+            "set": 2,
+            "reps": 8,
+            "weight_kg": null,
+            "assist_kg": 12.5,
+            "rpe": null
+          },
+          {
+            "set": 3,
+            "reps": 8,
+            "weight_kg": null,
+            "assist_kg": 12.5,
+            "rpe": null
+          }
+        ]
+      },
+      {
+        "date": "2026-08-26",
+        "exercise": "back squat",
+        "category": null,
+        "source": "athlete_reported",
+        "notes": [
+          "last set cut short"
+        ],
+        "sets": [
+          {
+            "set": 1,
+            "reps": 5,
+            "weight_kg": 80.0,
+            "assist_kg": null,
+            "rpe": null
+          },
+          {
+            "set": 2,
+            "reps": 5,
+            "weight_kg": 80.0,
+            "assist_kg": null,
+            "rpe": null
+          },
+          {
+            "set": 3,
+            "reps": 5,
+            "weight_kg": 80.0,
+            "assist_kg": null,
+            "rpe": null
+          },
+          {
+            "set": 4,
+            "reps": 3,
+            "weight_kg": 80.0,
+            "assist_kg": null,
+            "rpe": null
+          }
+        ]
+      },
+      {
+        "date": "2026-08-26",
+        "exercise": "pull-up",
+        "category": null,
+        "source": "athlete_reported",
+        "notes": [],
+        "sets": [
+          {
+            "set": 1,
+            "reps": 8,
+            "weight_kg": null,
+            "assist_kg": 12.5,
+            "rpe": null
+          },
+          {
+            "set": 2,
+            "reps": 8,
+            "weight_kg": null,
+            "assist_kg": 12.5,
+            "rpe": null
+          },
+          {
+            "set": 3,
+            "reps": 8,
+            "weight_kg": null,
+            "assist_kg": 12.5,
+            "rpe": null
+          }
+        ]
+      }
+    ]
+  },
+  "movement_history": {
+    "source": "athlete_reported",
+    "window_start": "2026-08-03",
+    "window_end": "2026-09-13",
+    "movements": [
+      {
+        "exercise": "back squat",
+        "display_name": "back squat",
+        "baseline": {
+          "load_kg": 80.0,
+          "assist_kg": null,
+          "scheme": "4x5"
+        },
+        "occurrences": [
+          {
+            "date": "2026-08-26",
+            "source": "athlete_reported",
+            "load_rollup": {
+              "by_load": [
+                {
+                  "reps": 18,
+                  "weight_kg": 80.0,
+                  "assist_kg": null
+                }
+              ],
+              "top_load": {
+                "weight_kg": 80.0,
+                "assist_kg": null,
+                "held_every_set": true
+              },
+              "total_reps": 18
+            },
+            "prescribed": [
+              {
+                "sets": 4,
+                "reps": 5,
+                "load_kg": 80.0,
+                "assist_kg": null,
+                "load_basis": "measured_baseline"
+              }
+            ]
+          },
+          {
+            "date": "2026-09-02",
+            "source": "athlete_reported",
+            "load_rollup": {
+              "by_load": [
+                {
+                  "reps": 20,
+                  "weight_kg": 80.0,
+                  "assist_kg": null
+                }
+              ],
+              "top_load": {
+                "weight_kg": 80.0,
+                "assist_kg": null,
+                "held_every_set": true
+              },
+              "total_reps": 20
+            },
+            "prescribed": [
+              {
+                "sets": 4,
+                "reps": 5,
+                "load_kg": 80.0,
+                "assist_kg": null,
+                "load_basis": "measured_baseline"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "exercise": "pull-up",
+        "display_name": "pull-up",
+        "baseline": {
+          "load_kg": null,
+          "assist_kg": 12.5,
+          "scheme": "3x8"
+        },
+        "occurrences": [
+          {
+            "date": "2026-08-26",
+            "source": "athlete_reported",
+            "load_rollup": {
+              "by_load": [
+                {
+                  "reps": 24,
+                  "weight_kg": null,
+                  "assist_kg": 12.5
+                }
+              ],
+              "top_load": {
+                "weight_kg": null,
+                "assist_kg": 12.5,
+                "held_every_set": true
+              },
+              "total_reps": 24
+            },
+            "prescribed": [
+              {
+                "sets": 3,
+                "reps": 8,
+                "load_kg": null,
+                "assist_kg": 12.5,
+                "load_basis": "measured_baseline"
+              }
+            ]
+          },
+          {
+            "date": "2026-09-02",
+            "source": "athlete_reported",
+            "load_rollup": {
+              "by_load": [
+                {
+                  "reps": 24,
+                  "weight_kg": null,
+                  "assist_kg": 12.5
+                }
+              ],
+              "top_load": {
+                "weight_kg": null,
+                "assist_kg": 12.5,
+                "held_every_set": true
+              },
+              "total_reps": 24
+            },
+            "prescribed": [
+              {
+                "sets": 3,
+                "reps": 8,
+                "load_kg": null,
+                "assist_kg": 12.5,
+                "load_basis": "measured_baseline"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "recovery_signals": {
+    "source": "demo-synthetic-fixture",
+    "window_start": "2026-09-07",
+    "window_end": "2026-09-13",
+    "days": [
+      {
+        "date": "2026-09-13",
+        "sleep_score": 74.0,
+        "sleep_duration_sec": 24300.0,
+        "hrv_last_night_ms": 62.0,
+        "resting_hr_bpm": 47.0
+      },
+      {
+        "date": "2026-09-12",
+        "sleep_score": 71.0,
+        "sleep_duration_sec": 23400.0,
+        "hrv_last_night_ms": null,
+        "resting_hr_bpm": 48.0
+      },
+      {
+        "date": "2026-09-11",
+        "sleep_score": 69.0,
+        "sleep_duration_sec": 22500.0,
+        "hrv_last_night_ms": null,
+        "resting_hr_bpm": 48.0
+      },
+      {
+        "date": "2026-09-10",
+        "sleep_score": 76.0,
+        "sleep_duration_sec": 25200.0,
+        "hrv_last_night_ms": 64.0,
+        "resting_hr_bpm": 47.0
+      },
+      {
+        "date": "2026-09-09",
+        "sleep_score": 70.0,
+        "sleep_duration_sec": 23400.0,
+        "hrv_last_night_ms": null,
+        "resting_hr_bpm": 48.0
+      },
+      {
+        "date": "2026-09-08",
+        "sleep_score": 78.0,
+        "sleep_duration_sec": 26100.0,
+        "hrv_last_night_ms": 66.0,
+        "resting_hr_bpm": 46.0
+      },
+      {
+        "date": "2026-09-07",
+        "sleep_score": 75.0,
+        "sleep_duration_sec": 25200.0,
+        "hrv_last_night_ms": 63.0,
+        "resting_hr_bpm": 47.0
+      }
+    ]
+  },
+  "segment_execution": {
+    "source": "demo-synthetic-fixture",
+    "window_start": "2026-08-03",
+    "window_end": "2026-09-13",
+    "full_detail_start": "2026-09-07",
+    "activities": [
+      {
+        "activity_id": "demo:demo-act-quality-01",
+        "date": "2026-08-27",
+        "sport": "running",
+        "recorded_indoors": false,
+        "segment_fields": [
+          "provider_type",
+          "distance_m",
+          "moving_time_sec"
+        ],
+        "segment_rows": [
+          [
+            "WORK",
+            2400.0,
+            990
+          ],
+          [
+            "WORK",
+            1000.0,
+            352
+          ],
+          [
+            "RECOVERY",
+            260.0,
+            120
+          ],
+          [
+            "WORK",
+            1000.0,
+            355
+          ],
+          [
+            "RECOVERY",
+            260.0,
+            120
+          ],
+          [
+            "WORK",
+            1000.0,
+            357
+          ],
+          [
+            "RECOVERY",
+            260.0,
+            120
+          ],
+          [
+            "WORK",
+            1000.0,
+            359
+          ],
+          [
+            "RECOVERY",
+            260.0,
+            120
+          ],
+          [
+            "WORK",
+            1000.0,
+            361
+          ],
+          [
+            "RECOVERY",
+            260.0,
+            120
+          ],
+          [
+            "WORK",
+            1450.0,
+            620
+          ]
+        ]
+      },
+      {
+        "activity_id": "demo:demo-act-quality-02",
+        "date": "2026-09-01",
+        "sport": "running",
+        "recorded_indoors": false,
+        "segment_fields": [
+          "provider_type",
+          "distance_m",
+          "moving_time_sec"
+        ],
+        "segment_rows": [
+          [
+            "WORK",
+            2400.0,
+            990
+          ],
+          [
+            "WORK",
+            1000.0,
+            348
+          ],
+          [
+            "RECOVERY",
+            260.0,
+            120
+          ],
+          [
+            "WORK",
+            1000.0,
+            350
+          ],
+          [
+            "RECOVERY",
+            260.0,
+            120
+          ],
+          [
+            "WORK",
+            1000.0,
+            351
+          ],
+          [
+            "RECOVERY",
+            260.0,
+            120
+          ],
+          [
+            "WORK",
+            1000.0,
+            353
+          ],
+          [
+            "RECOVERY",
+            260.0,
+            120
+          ],
+          [
+            "WORK",
+            1000.0,
+            355
+          ],
+          [
+            "RECOVERY",
+            260.0,
+            120
+          ],
+          [
+            "WORK",
+            1450.0,
+            620
+          ]
+        ]
+      },
+      {
+        "activity_id": "demo:demo-act-quality-03",
+        "date": "2026-09-08",
+        "sport": "running",
+        "recorded_indoors": false,
+        "segments": [
+          {
+            "index": 0,
+            "provider_type": "WORK",
+            "distance_m": 2400.0,
+            "moving_time_sec": 990,
+            "average_pace_sec_per_km": 412,
+            "average_hr": 131.0,
+            "max_hr": 141.0,
+            "min_hr": 118.0,
+            "elevation_gain_m": 14.0
+          },
+          {
+            "index": 1,
+            "provider_type": "WORK",
+            "distance_m": 1000.0,
+            "moving_time_sec": 341,
+            "average_pace_sec_per_km": 341,
+            "average_hr": 166.0,
+            "max_hr": 172.0,
+            "min_hr": 154.0,
+            "elevation_gain_m": 3.0
+          },
+          {
+            "index": 2,
+            "provider_type": "RECOVERY",
+            "distance_m": 260.0,
+            "moving_time_sec": 120,
+            "average_pace_sec_per_km": 462,
+            "average_hr": 148.0,
+            "max_hr": 161.0,
+            "min_hr": 139.0,
+            "elevation_gain_m": 1.0
+          },
+          {
+            "index": 3,
+            "provider_type": "WORK",
+            "distance_m": 1000.0,
+            "moving_time_sec": 343,
+            "average_pace_sec_per_km": 343,
+            "average_hr": 167.0,
+            "max_hr": 173.0,
+            "min_hr": 155.0,
+            "elevation_gain_m": 3.0
+          },
+          {
+            "index": 4,
+            "provider_type": "RECOVERY",
+            "distance_m": 260.0,
+            "moving_time_sec": 120,
+            "average_pace_sec_per_km": 462,
+            "average_hr": 148.0,
+            "max_hr": 161.0,
+            "min_hr": 139.0,
+            "elevation_gain_m": 1.0
+          },
+          {
+            "index": 5,
+            "provider_type": "WORK",
+            "distance_m": 1000.0,
+            "moving_time_sec": 344,
+            "average_pace_sec_per_km": 344,
+            "average_hr": 168.0,
+            "max_hr": 174.0,
+            "min_hr": 156.0,
+            "elevation_gain_m": 3.0
+          },
+          {
+            "index": 6,
+            "provider_type": "RECOVERY",
+            "distance_m": 260.0,
+            "moving_time_sec": 120,
+            "average_pace_sec_per_km": 462,
+            "average_hr": 148.0,
+            "max_hr": 161.0,
+            "min_hr": 139.0,
+            "elevation_gain_m": 1.0
+          },
+          {
+            "index": 7,
+            "provider_type": "WORK",
+            "distance_m": 1000.0,
+            "moving_time_sec": 346,
+            "average_pace_sec_per_km": 346,
+            "average_hr": 169.0,
+            "max_hr": 175.0,
+            "min_hr": 157.0,
+            "elevation_gain_m": 3.0
+          },
+          {
+            "index": 8,
+            "provider_type": "RECOVERY",
+            "distance_m": 260.0,
+            "moving_time_sec": 120,
+            "average_pace_sec_per_km": 462,
+            "average_hr": 148.0,
+            "max_hr": 161.0,
+            "min_hr": 139.0,
+            "elevation_gain_m": 1.0
+          },
+          {
+            "index": 9,
+            "provider_type": "WORK",
+            "distance_m": 1000.0,
+            "moving_time_sec": 348,
+            "average_pace_sec_per_km": 348,
+            "average_hr": 170.0,
+            "max_hr": 176.0,
+            "min_hr": 158.0,
+            "elevation_gain_m": 3.0
+          },
+          {
+            "index": 10,
+            "provider_type": "RECOVERY",
+            "distance_m": 260.0,
+            "moving_time_sec": 120,
+            "average_pace_sec_per_km": 462,
+            "average_hr": 148.0,
+            "max_hr": 161.0,
+            "min_hr": 139.0,
+            "elevation_gain_m": 1.0
+          },
+          {
+            "index": 11,
+            "provider_type": "WORK",
+            "distance_m": 1450.0,
+            "moving_time_sec": 620,
+            "average_pace_sec_per_km": 428,
+            "average_hr": 129.0,
+            "max_hr": 142.0,
+            "min_hr": 116.0,
+            "elevation_gain_m": 9.0
+          }
+        ]
+      }
+    ]
+  },
+  "set_structure": null,
+  "run_drift": null,
+  "subjective_states": {
+    "source": "athlete_reported",
+    "window_start": "2026-08-31",
+    "window_end": "2026-09-13",
+    "states": [
+      {
+        "date": "2026-09-09",
+        "note": "Skipped the lift, work ran late.",
+        "recorded_at": "2026-09-09T22:10:00+08:00"
+      },
+      {
+        "date": "2026-09-12",
+        "note": "Long run felt easy the whole way.",
+        "recorded_at": "2026-09-12T11:05:00+08:00"
+      }
+    ]
+  },
+  "training_preferences": {
+    "source": "athlete_reported",
+    "preferences": [
+      {
+        "topic": "quality day",
+        "statement": "I like the hard run early in the week.",
+        "recorded_at": "2026-08-24T09:02:00+08:00"
+      },
+      {
+        "topic": "strength",
+        "statement": "I want to keep lifting at least once a week.",
+        "recorded_at": "2026-08-24T09:03:00+08:00"
+      }
+    ]
+  },
+  "long_term_goals": {
+    "source": "athlete_reported",
+    "goals": [
+      {
+        "metric": "10K time",
+        "target": "sub-58:00",
+        "target_date": "2026-12-06",
+        "note": "Same loop I use for the cycle measurement.",
+        "recorded_at": "2026-08-24T09:05:00+08:00"
+      },
+      {
+        "metric": "back squat",
+        "target": "hold 80 kg for 4x5",
+        "target_date": null,
+        "note": "Not trying to add load this cycle.",
+        "recorded_at": "2026-08-24T09:06:00+08:00"
+      }
+    ]
+  },
+  "body_measurements": null,
+  "reported_activities": null,
+  "reported_recovery": null,
+  "training_history": null,
+  "training_breaks": null,
+  "evidence_expectations": {
+    "streams": [
+      {
+        "stream": "provider_activities",
+        "basis": "read_window",
+        "observations": 11,
+        "first_observed": "2026-08-24",
+        "last_observed": "2026-09-12",
+        "days_since_last": 1,
+        "window_start": "2026-08-03"
+      }
+    ]
+  },
+  "unknowns": [
+    "strength_execution: no execution evidence came back for the 2026-09-09 strength session; what was lifted that day is unrecorded, not zero",
+    "coverage.hrv: overnight HRV was observed on 4 of the last 7 days; the missing nights are unread, not normal",
+    "segment_execution: the 2026-08-27 and 2026-09-01 threshold sessions carry no per-segment heart rate, so what those repetitions cost is unknown; only their pace is comparable",
+    "athlete_baseline.max_hr: no session in the read window reached a heart rate that would confirm or move this baseline",
+    "goal_context.measurement: the cycle's declared 10K measurement is scheduled for the week beginning 2026-09-14 and has not been run; nothing yet reads the primary adaptation against the 2026-08-24 reference",
+    "training_history: no training before 2026-08-03 was imported; a multi-month trend is not observable and must not be inferred from these six weeks"
+  ],
+  "privacy": {
+    "sanitized": true,
+    "contains_raw_payloads": false,
+    "contains_credentials": false,
+    "contains_gps_tracks": false,
+    "contains_connection_state": false
+  }
+}

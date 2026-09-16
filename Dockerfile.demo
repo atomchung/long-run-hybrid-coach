@@ -1,0 +1,44 @@
+# Deployment artifact for the public demo (entrypoints/demo) -- a SECOND Railway service
+# built from this same repository, never a replacement for Dockerfile.
+#
+# Dockerfile builds the Coach Gateway: OAuth, a provider connection, a POSIX volume, and
+# every connected athlete's PlanState. This one builds a playground that has none of those
+# and must keep having none of them. They share a repository and a base image and nothing
+# else -- separate service, separate process, separate secret, separate failure domain.
+FROM python:3.11-slim
+
+# Same two OS packages the gateway image needs, for the same two stdlib reasons, and for
+# no others -- there is still no `pip install` step anywhere in this repository:
+#   - tzdata: the Debian base ships without system timezone data, so zoneinfo.ZoneInfo(...)
+#     raises for every real IANA name. The fixture and its contracts are written in
+#     Asia/Taipei, and the validators read those timestamps.
+#   - ca-certificates: without it the one outbound call this service makes -- the Responses
+#     API over HTTPS -- fails certificate verification.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Two directories, and deliberately not the rest. garmin_coach_loop/ is here because the
+# demo reuses the canonical contracts, the evidence projection and the plan-change
+# projector rather than reimplementing them; entrypoints/ is the demo itself. Nothing in
+# garmin_coach_loop/ imports entrypoints/ (tests/test_demo_boundary.py holds that), so the
+# gateway image stays exactly what it was.
+COPY garmin_coach_loop/ /app/garmin_coach_loop/
+COPY entrypoints/ /app/entrypoints/
+
+# Unbuffered so the access log reaches the platform's collector as it is written.
+ENV PYTHONUNBUFFERED=1
+
+# Documentary only -- Docker does not enforce it. The bound port is decided at startup by
+# COACH_DEMO_PORT, with 8433 (config.py DEFAULT_PORT) as the fallback.
+EXPOSE 8433
+
+# No volume and no state directory. This service holds its sessions in memory and has no
+# store to mount, which is the point: a demo with a disk is one migration away from being a
+# second source of truth for somebody's plan.
+#
+# Exec form, so python3 runs as PID 1 and SIGTERM reaches it directly rather than stopping
+# at a shell.
+CMD ["python3", "-m", "entrypoints.demo"]

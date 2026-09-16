@@ -137,6 +137,18 @@ def select_test_paths(changed_paths: list[str] | tuple[str, ...]) -> dict[str, o
                 )
             continue
 
+        # The demo entry point is a separate deployable that reuses the package. Its own
+        # tests are the direct mapping; the package's are not, because nothing in
+        # garmin_coach_loop imports it (tests/test_demo_boundary.py holds that).
+        if path.startswith("entrypoints/demo/"):
+            for test_path in (
+                "tests/test_demo_fixture.py",
+                "tests/test_demo_boundary.py",
+                "tests/test_demo_service.py",
+            ):
+                _add(selected, reasons, test_path, f"demo entry point changed: {path}")
+            continue
+
         if path.startswith(".agents/skills/"):
             _add(selected, reasons, "tests/test_distribution_surface.py", f"Skill changed: {path}")
             continue
