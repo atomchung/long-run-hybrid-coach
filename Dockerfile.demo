@@ -42,4 +42,4 @@ EXPOSE 8433
 #
 # Exec form, so python3 runs as PID 1 and SIGTERM reaches it directly rather than stopping
 # at a shell.
-CMD ["python3", "-m", "entrypoints.demo"]
+CMD ["python3", "/app/entrypoints/demo/__main__.py"]
