@@ -59,6 +59,16 @@ a release into OpenAI review for a change no reviewer can see. `dependency_pin_b
 `dependency_pin_head` are printed either way, so a receipt can quote what the decision was
 made from. A comment edit in `requirements.txt` moves neither and asks for nothing.
 
+The one case that *does* reach Scan Tools is an upgrade whose SDK changes what it puts on
+the wire for bytes this repository owns — a descriptor field dropped or renamed in
+serialization, say. `change_gates.py` cannot see that (`tool_catalogue_sha256()` is built
+from this repository's own constants, which such an upgrade leaves alone), and it does not
+have to: `scripts/mcp_contract_equivalence.py` runs on every pull request, reads the served
+surface *through the real transport* on both eras, and compares it with the base ref field
+by field. A failure there is the evidence that the reviewed contract really moved, and then
+the resubmission rules apply as they would for any catalogue change. A pass is the evidence
+that it did not.
+
 **1. Write the reason down** in the tracking issue before touching the pin: which of the
 two triggers fired, and what evidence there is for it (the revision a client needs, or the
 advisory). "2.3.0 is out" is not an entry.
