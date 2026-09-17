@@ -1,7 +1,19 @@
 # Long Run Hybrid Coach repository rules
 
-This is a Codex-native product. The repository must not call an LLM API or
-require an OpenAI API key.
+This is a Codex-native product. The **product** must not call an LLM API or require an
+OpenAI API key -- not `garmin_coach_loop/`, not the CLI, not the gateway, not `evals/`,
+not `tests/`. The model doing the coaching is the client's, and it stays the client's.
+
+One exception exists, and it is a separate deployable rather than a loophole: the public
+demo under `entrypoints/demo/`, which serves one synthetic athlete to anonymous visitors
+and needs a model of its own because there is no client on the other end of it. It runs as
+its own Railway service with its own secret, no provider credentials and no volume; it
+reuses this package's contracts and projectors instead of reimplementing them; and nothing
+in `garmin_coach_loop/` may import it or acquire its dependency. It is not an entry to
+anybody's plan -- no store, no owner and no write path is reachable from it -- so invariant
+10 below does not bind it, and what it must never become is a second way to coach a real
+athlete. `tests/test_demo_boundary.py` holds every clause of this paragraph that a test
+can hold.
 
 ## Repository invariants
 
