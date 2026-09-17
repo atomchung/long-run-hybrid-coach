@@ -7,7 +7,14 @@ request one visitor at a time.
 
 from __future__ import annotations
 
+from pathlib import Path
 import sys
+
+# Railway may invoke a custom start command from a platform-owned working directory.
+# Make direct-file execution as independent of that directory as module execution is.
+if __package__ in {None, ""}:  # pragma: no cover - exercised by the container command
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    __package__ = "entrypoints.demo"
 
 from .config import ConfigError
 from .server import StartupError, serve

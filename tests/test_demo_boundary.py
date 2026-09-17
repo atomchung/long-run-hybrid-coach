@@ -264,7 +264,7 @@ class FailureDomainTest(unittest.TestCase):
     def test_the_product_acquires_no_model_credential_and_no_model_client(self):
         # AGENTS.md scopes the no-LLM-API rule to the product; the demo is the one named
         # exception, and this is what keeps the exception from spreading back.
-        pattern = re.compile(r"OPENAI_API_KEY|api\.openai\.com|gpt-6-astra")
+        pattern = re.compile(r"OPENAI_API_KEY|api\.openai\.com|gpt-5\.6-luna")
         offenders = [
             path.relative_to(ROOT).as_posix()
             for path in sorted(PACKAGE.glob("*.*"))

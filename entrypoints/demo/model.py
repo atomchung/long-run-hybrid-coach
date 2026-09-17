@@ -22,9 +22,9 @@ conversation stateless, which is what the reasoning carry-forward below exists f
 the configuration, sent only in this request's ``Authorization`` header, and never logged,
 never echoed into an error, and never included in any response this service writes.
 
-*Reasoning effort is low.* This is a playground answering one turn about a fixture that
-fits in a single read, not a planning run; ``LOW`` keeps the visitor's wait short and the
-launch bill bounded.
+*Reasoning effort is max.* The demo uses the strongest reasoning setting supported by its
+pinned model so the visitor sees the intended luna behavior; the per-response output cap
+still bounds the launch bill.
 """
 
 from __future__ import annotations
@@ -37,10 +37,10 @@ from typing import Any
 
 
 # Pinned. See the module note -- this is not a default, and there is no other value.
-MODEL = "gpt-6-astra"
+MODEL = "gpt-5.6-luna"
 
 # One of none | minimal | low | medium | high | xhigh | max.
-REASONING_EFFORT = "low"
+REASONING_EFFORT = "max"
 
 # An upper bound on *everything* the model generates for one response, reasoning tokens
 # included -- which is why this is not the size of the answer. A three-option allocation

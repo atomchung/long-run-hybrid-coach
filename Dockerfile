@@ -1,8 +1,9 @@
 # Deployment artifact for the Coach Gateway (garmin_coach_loop/gateway.py) -- the HTTP
-# transport that serves many OAuth-connected athletes from one process. Nothing else in
-# this repository is imported at gateway runtime -- not the CLI's other commands' own
-# dependencies, not scripts/, not contracts/, not examples/ -- so nothing else is copied
-# into the image. (Confirmed by grep: no module under garmin_coach_loop/ imports scripts.)
+# transport that serves many OAuth-connected athletes from one process. The gateway does
+# not import the demo at runtime. The small demo copy below is a Railway compatibility
+# fallback: Railway's legacy root railway.toml can win over a new service's custom
+# Dockerfile path, while the demo service's explicit start command still needs its files
+# present in the resulting image. It carries no credentials, provider state, or volume.
 #
 # Platform-neutral by design (see docs/deploy-gateway.md): this file carries no
 # Fly-specific instructions. fly.toml is what makes Fly the default target; a different
@@ -28,6 +29,10 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY garmin_coach_loop/ /app/garmin_coach_loop/
+# See the file-level note above. Keep this narrow: the demo service needs only this
+# package, and the gateway never imports it.
+COPY entrypoints/__init__.py /app/entrypoints/__init__.py
+COPY entrypoints/demo/ /app/entrypoints/demo/
 
 # Unbuffered so LOGGER.info(...) output (gateway.py) reaches the platform's log collector
 # as it is written, rather than sitting in a pipe buffer until the process exits.

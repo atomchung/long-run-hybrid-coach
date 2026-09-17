@@ -57,7 +57,7 @@ In this order, because each one is cheap and rules out the next one's ambiguity.
 ```bash
 # 1. the deployment answers at all, and says whether it can coach
 curl -s https://demo-api.paceandstaystrong.com/healthz
-# {"status":"ok","model":"gpt-6-astra","model_credential":"present","fixture":"valid",...}
+# {"status":"ok","model":"gpt-5.6-luna","model_credential":"present","fixture":"valid",...}
 
 # 2. the three committed acceptance turns, against the deployed service
 python3 -m entrypoints.demo.acceptance --base-url https://demo-api.paceandstaystrong.com

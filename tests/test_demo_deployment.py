@@ -100,14 +100,14 @@ class ResponsesRequestShapeTest(unittest.TestCase):
         )
 
     def test_it_names_the_pinned_model(self):
-        self.assertEqual("gpt-6-astra", self.body["model"])
-        self.assertEqual("gpt-6-astra", model_module.MODEL)
+        self.assertEqual("gpt-5.6-luna", self.body["model"])
+        self.assertEqual("gpt-5.6-luna", model_module.MODEL)
 
     def test_nothing_is_stored_at_the_provider(self):
         self.assertIs(False, self.body["store"])
 
-    def test_it_asks_for_low_reasoning_effort(self):
-        self.assertEqual({"effort": "low"}, self.body["reasoning"])
+    def test_it_asks_for_max_reasoning_effort(self):
+        self.assertEqual({"effort": "max"}, self.body["reasoning"])
         # The values the API defines. A typo here is a 400 on the first real call.
         self.assertIn(
             model_module.REASONING_EFFORT,
