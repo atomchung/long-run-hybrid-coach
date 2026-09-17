@@ -56,15 +56,20 @@ reviewed commit), not with the candidate itself:
    Run the listed live smoke only when `live_smoke` is true. Run the real-client and OpenAI
    steps only when `client_acceptance` / `scan_tools` is true. Internal code, docs and CI-only
    changes still get `/readyz` after deployment, but do not acquire a live ceremony. The
-   detailed entry sequence remains in `accept-an-entry-after-a-surface-change.md`, and a
-   change naming `garmin_coach_loop/mcp_sdk_transport.py` -- or a moved `mcp` pin in
-   `requirements.txt` -- also needs `accept-both-protocol-eras.md`, which is the only
+   detailed entry sequence remains in `accept-an-entry-after-a-surface-change.md`, and
+   `protocol_acceptance: true` -- a change naming `garmin_coach_loop/mcp_sdk_transport.py`,
+   or a moved dependency pin -- also needs `accept-both-protocol-eras.md`, which is the only
    thing that catches a 2026-07-28 client silently falling back to 2025.
+
+   This is also where the SDK's own releases get noticed, because nothing else watches
+   them: `python3 -m pip index versions mcp`, one line, and `upgrade-the-mcp-sdk.md` for
+   what counts as a reason to move and what proving the move costs. A newer release is not
+   one.
 
 1. **Build the release bundle for the exact commit being promoted.** It reads the served
    tool catalogue out of the gateway module, which imports the MCP SDK, so the checkout
-   needs `python3 -m pip install -r requirements.txt` first -- the same one line CI and
-   the deployed image run.
+   needs `python3 -m pip install --require-hashes -r requirements.lock` first -- the same
+   one line CI and the deployed image run, hashes and all.
 
    ```bash
    python3 scripts/release_bundle.py build \

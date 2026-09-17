@@ -8,6 +8,7 @@ import datetime as dt
 import errno
 import hashlib
 import http.client
+import importlib.metadata
 import json
 import logging
 import os
@@ -7346,6 +7347,14 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         self.assertEqual(identity, payload["release_identity"])
         self.assertEqual(deployment, payload["deployment_identity"])
         self.assertEqual(commit, payload["source_git_commit"])
+        # The deployment-side read-back for whatever `requirements.lock` pinned: the pin
+        # says what the build asked for, and this says what is answering `/mcp`. Compared
+        # against the installed distribution rather than against a constant in the
+        # package, because a constant would still agree with itself after the resolution
+        # moved (docs/ops/upgrade-the-mcp-sdk.md, step 5).
+        self.assertEqual(
+            importlib.metadata.version("mcp"), payload["mcp_sdk_version"]
+        )
         serialized = json.dumps(payload, sort_keys=True)
         self.assertNotIn(str(self.state_root), serialized)
         self.assertNotIn(CLIENT_ID_VALUE, serialized)

@@ -13,3 +13,12 @@
 # rather than whatever the build host resolved that day; `/readyz` reports the resolved
 # version beside the release identity.
 mcp==2.2.0
+
+# This file is the *intent*: one name, one version, and the reason. It is not what any
+# build installs. `requirements.lock` is -- it resolves this pin to every distribution
+# that can enter the gateway image, each with the sha256 of the artifacts allowed to
+# satisfy it, and every install site passes `--require-hashes` so a substituted byte
+# fails the build instead of shipping. A version number is not an artifact identity; a
+# hash is. Regenerating the lock is step 2 of the upgrade ceremony in
+# docs/ops/upgrade-the-mcp-sdk.md, which is also where the trigger for upgrading at all
+# is written down.

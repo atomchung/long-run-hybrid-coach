@@ -13,14 +13,20 @@ from scripts.change_gates import (
     CATALOGUE_EXPORT_PATHS,
     CATALOGUE_MOVED_REASON,
     CLASSIFIED_PACKAGE_PATHS,
+    DEPENDENCY_PATHS,
+    DEPENDENCY_PIN_MOVED_REASON,
+    DEPENDENCY_PIN_UNKNOWN_REASON,
     INTERNAL_PACKAGE_PATHS,
     LIVE_SMOKE_PATHS,
     MODEL_FACING_PATHS,
     PACKAGE,
     PACKAGE_SUFFIXES,
+    PROTOCOL_SURFACE_PATH,
     SUBMISSION_ARTIFACT_PATHS,
     classify_changed_paths,
+    dependency_pin_at,
     tool_catalogue_sha256_at,
+    working_tree_dependency_pin,
     working_tree_tool_catalogue_sha256,
 )
 from scripts.test_selection import select_test_paths, unittest_command, unittest_env
@@ -312,6 +318,136 @@ class ChangeGateTests(unittest.TestCase):
         self.assertEqual(tool_catalogue_sha256_at("HEAD"), working_tree_tool_catalogue_sha256())
 
 
+class DependencyPinGateTests(unittest.TestCase):
+    """A moved pin is a transport change with no diff, and only that.
+
+    The protocol implementation behind `/mcp` belongs to the SDK. Which revisions the
+    handshake agrees to, what an `initialize` result carries and which JSON-RPC error a
+    refused batch returns can all move while every line in this repository stands still --
+    measured during the 2.2.0 migration, where all three did. What that needs is the
+    dual-era acceptance run. What it must never produce is a Scan Tools demand or an OpenAI
+    resubmission: the reviewed catalogue and `instructions` are this repository's own
+    bytes, so a dependency cannot move them, and a resubmission triggered by one would put
+    a release into review for a change no reviewer can see.
+    """
+
+    def test_a_moved_pin_asks_for_the_dual_era_run_and_nothing_else(self):
+        for path in sorted(DEPENDENCY_PATHS):
+            with self.subTest(path=path):
+                plan = classify_changed_paths([path], dependency_pin_moved=True)
+                self.assertTrue(plan["protocol_acceptance"])
+                self.assertEqual(
+                    [DEPENDENCY_PIN_MOVED_REASON], plan["protocol_acceptance_reasons"]
+                )
+                # The dual-era run is a real-client run, so it is a client acceptance too.
+                self.assertTrue(plan["client_acceptance"])
+                self.assertEqual(
+                    [DEPENDENCY_PIN_MOVED_REASON], plan["client_acceptance_reasons"]
+                )
+                self.assertFalse(plan["scan_tools"])
+                self.assertFalse(plan["plugin_resubmission"])
+                self.assertEqual([], plan["plugin_resubmission_reasons"])
+                self.assertFalse(plan["live_smoke"])
+
+    def test_a_pin_that_did_not_move_asks_for_nothing(self):
+        """Editing the prose in `requirements.txt` is not an upgrade.
+
+        The reason the dependency exists is written in that file, and rewriting it must not
+        send anybody to run a manual acceptance -- the same way a marker line does not
+        overturn a catalogue digest that proved the bytes stood still.
+        """
+        plan = classify_changed_paths(sorted(DEPENDENCY_PATHS), dependency_pin_moved=False)
+        self.assertFalse(plan["protocol_acceptance"])
+        self.assertEqual([], plan["protocol_acceptance_reasons"])
+        self.assertFalse(plan["client_acceptance"])
+        self.assertFalse(plan["scan_tools"])
+        self.assertFalse(plan["plugin_resubmission"])
+
+    def test_a_base_that_cannot_be_read_asks_conservatively(self):
+        plan = classify_changed_paths(["requirements.lock"], dependency_pin_moved=None)
+        self.assertTrue(plan["protocol_acceptance"])
+        self.assertEqual(
+            [DEPENDENCY_PIN_UNKNOWN_REASON], plan["protocol_acceptance_reasons"]
+        )
+        self.assertFalse(plan["scan_tools"])
+
+    def test_an_unrelated_change_never_acquires_the_protocol_run(self):
+        for paths, moved in (
+            (["README.md"], None),
+            (["garmin_coach_loop/store.py"], None),
+            (["garmin_coach_loop/mcp_transport.py"], True),
+        ):
+            with self.subTest(paths=paths):
+                plan = classify_changed_paths(
+                    paths, catalogue_moved=moved, dependency_pin_moved=True
+                )
+                self.assertFalse(plan["protocol_acceptance"])
+                self.assertEqual([], plan["protocol_acceptance_reasons"])
+
+    def test_the_wire_module_asks_for_the_dual_era_run_whatever_its_diff_says(self):
+        """No marker speaks for this file, so the absence of one proves nothing.
+
+        `mcp_sdk_transport.py` serves no catalogue of its own, so the MCP surface markers
+        never match it, and the failure it is capable of -- a 2026-07-28 client answered
+        `400` and falling back to 2025 -- is invisible from inside the conversation that
+        fell back.
+        """
+        for diff in ("+def _internal_helper():", "+        headers.append((b'accept', value))"):
+            with self.subTest(diff=diff):
+                plan = classify_changed_paths(
+                    [PROTOCOL_SURFACE_PATH], diffs_by_path={PROTOCOL_SURFACE_PATH: diff}
+                )
+                self.assertTrue(plan["protocol_acceptance"])
+                self.assertEqual([PROTOCOL_SURFACE_PATH], plan["protocol_acceptance_reasons"])
+                self.assertFalse(plan["scan_tools"])
+                self.assertFalse(plan["plugin_resubmission"])
+
+    def test_the_wire_module_is_also_the_live_boundary_it_is_listed_as(self):
+        self.assertIn(PROTOCOL_SURFACE_PATH, LIVE_SMOKE_PATHS)
+
+    def test_the_pin_digest_reads_what_installs_and_not_the_prose_around_it(self):
+        # Reaching for the private helper deliberately: the public entry points read Git
+        # and this checkout, and the property under test is what the digest *ignores*.
+        from scripts.change_gates import _pinned_dependency_set
+
+        pinned = {
+            "requirements.txt": "# why there is a dependency at all\nmcp==2.2.0\n",
+            "requirements.lock": "mcp==2.2.0 \\\n    --hash=sha256:" + "a" * 64 + "\n",
+        }
+        reworded = dict(pinned, **{"requirements.txt": "# a different explanation\n\nmcp==2.2.0\n"})
+        upgraded = dict(pinned, **{"requirements.txt": "mcp==2.2.1\n"})
+        rehashed = dict(
+            pinned,
+            **{"requirements.lock": "mcp==2.2.0 \\\n    --hash=sha256:" + "b" * 64 + "\n"},
+        )
+        without_lock = dict(pinned, **{"requirements.lock": None})
+
+        self.assertEqual(_pinned_dependency_set(pinned), _pinned_dependency_set(reworded))
+        for label, moved in (
+            ("version", upgraded),
+            ("artifact hash", rehashed),
+            ("absent lock", without_lock),
+        ):
+            with self.subTest(moved=label):
+                self.assertNotEqual(_pinned_dependency_set(pinned), _pinned_dependency_set(moved))
+
+    def test_the_pin_is_read_from_a_ref_and_an_unknown_ref_answers_none(self):
+        self.assertRegex(dependency_pin_at("HEAD") or "", r"^[0-9a-f]{64}$")
+        self.assertIsNone(dependency_pin_at("no-such-ref-for-a-change-gate"))
+
+    def test_a_clean_checkout_installs_what_its_head_commit_pins(self):
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", "--", *sorted(DEPENDENCY_PATHS)],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if dirty:
+            self.skipTest("uncommitted dependency edits: the working tree is not HEAD")
+        self.assertEqual(dependency_pin_at("HEAD"), working_tree_dependency_pin())
+
+
 class AffectedTestSelectionTests(unittest.TestCase):
     def test_docs_only_change_selects_no_product_tests(self):
         plan = select_test_paths(["docs/ops/roll-with-railway-cli.md"])
@@ -339,8 +475,25 @@ class AffectedTestSelectionTests(unittest.TestCase):
         self.assertEqual([], plan["test_paths"])
 
     def test_workflow_change_tests_the_gate_itself(self):
+        # Two gates read a workflow: the job/concurrency rules here, and the rule that
+        # every job installs the hashed lock rather than an unpinned resolution.
         plan = select_test_paths([".github/workflows/ci.yml"])
-        self.assertEqual(["tests/test_process_gates.py"], plan["test_paths"])
+        self.assertEqual(
+            ["tests/test_dependency_lock.py", "tests/test_process_gates.py"],
+            plan["test_paths"],
+        )
+
+    def test_a_moved_pin_selects_the_lock_and_the_recorded_wire(self):
+        plan = select_test_paths(["requirements.lock"])
+        self.assertEqual(
+            [
+                "tests/test_dependency_lock.py",
+                "tests/test_process_gates.py",
+                "tests/test_protocol_envelope.py",
+            ],
+            plan["test_paths"],
+        )
+        self.assertFalse(plan["full_suite_required"])
 
     def test_full_suite_fallback_still_uses_discovery(self):
         plan = select_test_paths(["new_runtime_component.py"])
@@ -518,10 +671,11 @@ class ProductionPromotionGateTests(unittest.TestCase):
                     continue
                 checked += 1
                 self.assertIn(
-                    "pip install --disable-pip-version-check -r requirements.txt",
+                    "pip install --disable-pip-version-check --require-hashes "
+                    "-r requirements.lock",
                     block,
                     f"{workflow.name}: the {name!r} job runs Python without "
-                    "installing requirements.txt",
+                    "installing the hashed lock",
                 )
         # Four today: ci.yml's two, and publish-mcp-registry.yml's two. A refactor that
         # drops a workflow out of this scan would otherwise pass by checking nothing.

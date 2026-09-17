@@ -43,8 +43,8 @@ jobs:
       # which imports the MCP SDK. Without this it cannot import at all -- and the
       # retry loop below used to report that as "production is not serving this
       # source yet", ten times, while production was serving it perfectly.
-      - name: Install the runtime dependency
-        run: python3 -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Install the runtime dependency from the hashed lock
+        run: python3 -m pip install --disable-pip-version-check --require-hashes -r requirements.lock
       # A crash and a negative answer are different facts, and the loop below cannot
       # tell them apart -- every non-zero exit reads as "not deployed yet". Importing
       # the gate once, before the loop starts, is what keeps a broken checkout from
@@ -87,8 +87,8 @@ jobs:
       # which imports the MCP SDK. Without this it cannot import at all -- and the
       # retry loop below used to report that as "production is not serving this
       # source yet", ten times, while production was serving it perfectly.
-      - name: Install the runtime dependency
-        run: python3 -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Install the runtime dependency from the hashed lock
+        run: python3 -m pip install --disable-pip-version-check --require-hashes -r requirements.lock
       - name: Install the pinned publisher after archive verification
         # v1.8.1 upstream registry_1.8.1_checksums.txt and release asset digest agree.
         run: |

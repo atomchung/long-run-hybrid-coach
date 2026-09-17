@@ -6,10 +6,11 @@ name: CI
 # Wait for CI does not repeat the same 2,600+ tests. No live provider credentials and
 # no private state are used here.
 #
-# One dependency is installed, and it is the same one the deployed image installs:
-# requirements.txt pins the official MCP SDK, which owns the wire format `/mcp` speaks.
-# Installing it here is what makes the transport tests and the contract-equivalence gate
-# run against the protocol implementation production actually serves, rather than skip.
+# One dependency is installed, and it is installed the way the deployed image installs
+# it: from `requirements.lock` with `--require-hashes`, so every job here resolves the
+# same artifacts the gateway image does and a substituted byte fails the run. That is
+# what makes the transport tests and the contract-equivalence gate run against the
+# protocol implementation production actually serves, rather than skip.
 
 on:
   pull_request:
@@ -49,8 +50,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install the runtime dependency
-        run: python3 -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Install the runtime dependency from the hashed lock
+        run: python3 -m pip install --disable-pip-version-check --require-hashes -r requirements.lock
 
       - name: Run the unit test suite
         run: python3 -m unittest discover -s tests -p 'test_*.py'
@@ -95,8 +96,8 @@ jobs:
       # catalogue out of the gateway module -- and that module now imports the MCP SDK.
       # Without this the gate cannot import at all, which fails safe (nothing deploys)
       # but fails every promotion rather than judging one.
-      - name: Install the runtime dependency
-        run: python3 -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Install the runtime dependency from the hashed lock
+        run: python3 -m pip install --disable-pip-version-check --require-hashes -r requirements.lock
 
       - name: Verify exact main CI and release identity
         env:

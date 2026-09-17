@@ -1,0 +1,215 @@
+{
+  "accepted_protocol_versions": {
+    "handshake": [
+      "2024-11-05",
+      "2025-03-26",
+      "2025-06-18",
+      "2025-11-25"
+    ],
+    "modern": [
+      "2026-07-28"
+    ]
+  },
+  "capture_version": 1,
+  "discover_result": {
+    "body": "jsonrpc-result",
+    "http_status": 200,
+    "result": {
+      "_meta": {
+        "io.modelcontextprotocol/serverInfo": {
+          "<keys>": [
+            "name",
+            "title",
+            "version"
+          ]
+        }
+      },
+      "cacheScope": "private",
+      "capabilities": {
+        "prompts": {
+          "listChanged": false
+        },
+        "tools": {
+          "listChanged": false
+        }
+      },
+      "instructions": "<present>",
+      "resultType": "complete",
+      "supportedVersions": [
+        "2026-07-28"
+      ],
+      "ttlMs": 0
+    }
+  },
+  "errors": {
+    "absent_protocol_version_header": {
+      "body": "jsonrpc-result",
+      "http_status": 200
+    },
+    "jsonrpc_batch": {
+      "body": "jsonrpc-error",
+      "error_code": -32602,
+      "http_status": 400
+    },
+    "malformed_json": {
+      "body": "jsonrpc-error",
+      "error_code": -32700,
+      "http_status": 400
+    },
+    "modern_request_without_envelope": {
+      "body": "jsonrpc-error",
+      "error_code": -32602,
+      "http_status": 400
+    },
+    "modern_routing_header_mismatch": {
+      "body": "jsonrpc-error",
+      "error_code": -32020,
+      "http_status": 400
+    },
+    "notification_without_id": {
+      "body": "empty",
+      "http_status": 202
+    },
+    "unacceptable_accept_header": {
+      "body": "jsonrpc-error",
+      "error_code": -32600,
+      "http_status": 406
+    },
+    "unknown_method": {
+      "body": "jsonrpc-error",
+      "error_code": -32601,
+      "http_status": 200
+    },
+    "unknown_protocol_version_header": {
+      "body": "jsonrpc-error",
+      "error_code": -32602,
+      "http_status": 400
+    }
+  },
+  "handshake_result": {
+    "body": "jsonrpc-result",
+    "http_status": 200,
+    "result": {
+      "capabilities": {
+        "experimental": {},
+        "prompts": {
+          "listChanged": false
+        },
+        "tools": {
+          "listChanged": false
+        }
+      },
+      "instructions": "<present>",
+      "protocolVersion": "2025-06-18",
+      "serverInfo": {
+        "<keys>": [
+          "name",
+          "title",
+          "version"
+        ]
+      }
+    }
+  },
+  "kind": "mcp-protocol-envelope",
+  "mcp_sdk_version": "2.2.0",
+  "negotiation": {
+    "2020-01-01": {
+      "discover": {
+        "body": "jsonrpc-error",
+        "error_code": -32022,
+        "http_status": 400
+      },
+      "initialize": {
+        "body": "jsonrpc-result",
+        "http_status": 200,
+        "protocolVersion": "2025-11-25"
+      }
+    },
+    "2024-11-05": {
+      "discover": {
+        "body": "jsonrpc-error",
+        "error_code": -32601,
+        "http_status": 200
+      },
+      "initialize": {
+        "body": "jsonrpc-result",
+        "http_status": 200,
+        "protocolVersion": "2024-11-05"
+      }
+    },
+    "2025-03-26": {
+      "discover": {
+        "body": "jsonrpc-error",
+        "error_code": -32601,
+        "http_status": 200
+      },
+      "initialize": {
+        "body": "jsonrpc-result",
+        "http_status": 200,
+        "protocolVersion": "2025-03-26"
+      }
+    },
+    "2025-06-18": {
+      "discover": {
+        "body": "jsonrpc-error",
+        "error_code": -32601,
+        "http_status": 200
+      },
+      "initialize": {
+        "body": "jsonrpc-result",
+        "http_status": 200,
+        "protocolVersion": "2025-06-18"
+      }
+    },
+    "2025-11-25": {
+      "discover": {
+        "body": "jsonrpc-error",
+        "error_code": -32601,
+        "http_status": 200
+      },
+      "initialize": {
+        "body": "jsonrpc-result",
+        "http_status": 200,
+        "protocolVersion": "2025-11-25"
+      }
+    },
+    "2026-07-28": {
+      "discover": {
+        "body": "jsonrpc-result",
+        "http_status": 200,
+        "supportedVersions": [
+          "2026-07-28"
+        ]
+      },
+      "initialize": {
+        "body": "jsonrpc-result",
+        "http_status": 200,
+        "protocolVersion": "2025-11-25"
+      }
+    },
+    "2099-12-31": {
+      "discover": {
+        "body": "jsonrpc-error",
+        "error_code": -32022,
+        "http_status": 400
+      },
+      "initialize": {
+        "body": "jsonrpc-result",
+        "http_status": 200,
+        "protocolVersion": "2025-11-25"
+      }
+    },
+    "not-a-revision": {
+      "discover": {
+        "body": "jsonrpc-error",
+        "error_code": -32022,
+        "http_status": 400
+      },
+      "initialize": {
+        "body": "jsonrpc-result",
+        "http_status": 200,
+        "protocolVersion": "2025-11-25"
+      }
+    }
+  }
+}

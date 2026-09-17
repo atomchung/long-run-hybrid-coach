@@ -36,8 +36,17 @@ WORKDIR /app
 # brings no LLM client and no provider credential, so AGENTS.md's rule that the product
 # must not call an LLM API is unaffected -- the model doing the coaching is still the
 # client's.
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+#
+# `requirements.lock`, not `requirements.txt`: the lock names every distribution this
+# pin resolves to with the sha256 of the artifacts allowed to satisfy it, and
+# `--require-hashes` makes a substituted byte fail the build instead of entering the
+# image that holds every connected athlete's Intervals credential. `requirements.txt`
+# is copied beside it because the lock is generated from it and the two are read
+# together; nothing installs from it. There is no second, unhashed install path here or
+# in any workflow, on purpose -- one would be the path an upgrade takes when the hashes
+# are inconvenient. Regenerating the lock: docs/ops/upgrade-the-mcp-sdk.md.
+COPY requirements.txt requirements.lock /app/
+RUN pip install --no-cache-dir --require-hashes -r /app/requirements.lock
 
 COPY garmin_coach_loop/ /app/garmin_coach_loop/
 # See the file-level note above. Keep this narrow: the demo service needs only this
