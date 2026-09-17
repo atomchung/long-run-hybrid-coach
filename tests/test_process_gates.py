@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -407,6 +408,41 @@ class ProductionPromotionGateTests(unittest.TestCase):
         promotion = text.split("\n  promotion:", 1)[1]
         self.assertIn("verify_production_promotion.py", promotion)
         self.assertNotIn("unittest discover", promotion)
+
+    def test_every_ci_job_that_runs_python_installs_the_dependency(self):
+        """A gate that cannot import is not a gate, however safely it fails.
+
+        `release_bundle.py` imports the gateway to read the served tool catalogue, and
+        the gateway imports the MCP SDK. A promotion job without the install step
+        therefore fails every promotion on `ModuleNotFoundError` rather than judging
+        one -- and it fails identically for a release that was fine and one that was
+        not, which is the shape of a gate nobody can act on. A shallow scan, not a YAML
+        parse: the question is which jobs run Python at all.
+        """
+        text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        jobs: dict[str, list[str]] = {}
+        current: str | None = None
+        for line in text.split("\njobs:", 1)[1].splitlines():
+            header = re.fullmatch(r"  ([A-Za-z][\w-]*):", line)
+            if header is not None:
+                current = header.group(1)
+                jobs[current] = []
+            elif current is not None:
+                jobs[current].append(line)
+        checked = 0
+        for name, lines in jobs.items():
+            block = "\n".join(lines)
+            if "python3 " not in block:
+                continue
+            checked += 1
+            self.assertIn(
+                "pip install --disable-pip-version-check -r requirements.txt",
+                block,
+                f"the {name!r} job runs Python without installing requirements.txt",
+            )
+        # Both jobs run Python. A refactor that leaves one of them out of this scan
+        # would otherwise pass by checking nothing.
+        self.assertEqual(2, checked)
 
 
 if __name__ == "__main__":

@@ -91,6 +91,13 @@ jobs:
         with:
           python-version: "3.11"
 
+      # The promotion gate builds a release identity, which reads the served tool
+      # catalogue out of the gateway module -- and that module now imports the MCP SDK.
+      # Without this the gate cannot import at all, which fails safe (nothing deploys)
+      # but fails every promotion rather than judging one.
+      - name: Install the runtime dependency
+        run: python3 -m pip install --disable-pip-version-check -r requirements.txt
+
       - name: Verify exact main CI and release identity
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
