@@ -289,16 +289,22 @@ def dependency_pin_at(ref: str) -> str | None:
             ["git", "show", f"{ref}:{name}"], cwd=ROOT, capture_output=True, text=True
         )
         if shown.returncode != 0:
-            # A ref that predates the lock file is a real answer; a ref that does not
-            # resolve at all is not. `git show` fails the same way for both, so the ref
-            # itself is what separates them.
-            resolved = subprocess.run(
-                ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+            # A ref that predates the lock file is a real answer -- the file was not there
+            # yet -- and a read that failed for any other reason is not an answer at all.
+            # `git show` exits non-zero for both, so the tree is asked directly: a path it
+            # does not list is genuinely absent, and anything else (an unresolvable ref, an
+            # unreadable object, git missing) is `None`, which the classification reads as
+            # "not measured" and answers conservatively. Guessing "absent" there would turn
+            # a broken read into the claim that the pin stood still.
+            listed = subprocess.run(
+                ["git", "ls-tree", "-r", "--name-only", f"{ref}^{{tree}}", "--", name],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
             )
-            if resolved.returncode != 0:
+            if listed.returncode != 0:
+                return None
+            if listed.stdout.strip():
                 return None
             contents[name] = None
             continue
@@ -422,6 +428,12 @@ def classify_changed_paths(
         protocol_reasons.append(PROTOCOL_SURFACE_PATH)
 
     if any(path in DEPENDENCY_PATHS for path in paths):
+        # The path check is load-bearing rather than belt-and-braces. `--base` compares
+        # this checkout against the *base ref's* files, while the change list is what this
+        # branch touched, so a lock that moved on `main` after the branch point makes the
+        # two digests differ over a change the branch never made. Asking whether one of
+        # these files is in the change is what keeps that from billing this branch for
+        # somebody else's upgrade.
         if dependency_pin_moved is None:
             protocol_reasons.append(DEPENDENCY_PIN_UNKNOWN_REASON)
         elif dependency_pin_moved:

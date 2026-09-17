@@ -330,12 +330,35 @@ def _serialize(recorded: dict[str, Any]) -> str:
 
 
 def _read(path: Path) -> dict[str, Any]:
+    """A stored capture, or a refusal.
+
+    The shape is checked rather than trusted, because the failure this guards against is
+    the one that looks like success: two files that are not captures compare equal, and
+    "envelope unchanged" is exactly what a comparison of two empty documents would print.
+    A capture that cannot be read has to be an error, never a clean answer.
+    """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        loaded = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise SystemExit(f"no capture at {path}")
     except ValueError as invalid:
         raise SystemExit(f"{path} is not a capture: {invalid}")
+    if not isinstance(loaded, dict) or loaded.get("kind") != CAPTURE_KIND:
+        raise SystemExit(f"{path} is not a {CAPTURE_KIND} capture")
+    missing = [
+        member
+        for member in ("capture_version", "mcp_sdk_version", "negotiation", "errors")
+        if member not in loaded
+    ]
+    if missing:
+        raise SystemExit(f"{path} is missing {', '.join(missing)}")
+    if loaded["capture_version"] != CAPTURE_VERSION:
+        raise SystemExit(
+            f"{path} was written by capture_version {loaded['capture_version']}; "
+            f"this script writes {CAPTURE_VERSION}. Re-record it rather than comparing "
+            f"two different documents."
+        )
+    return loaded
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -383,14 +406,20 @@ def _report(found: list[str], base: dict[str, Any], candidate: dict[str, Any]) -
     was = base.get("mcp_sdk_version", "unknown")
     now = candidate.get("mcp_sdk_version", "unknown")
     if not found:
-        print(f"MCP protocol envelope unchanged: mcp {was} and mcp {now} answer identically.")
+        # `mcp_sdk_version` is inside the compared document, so no difference means the two
+        # versions are the same one. Naming both here would print a sentence that can only
+        # ever say a version answers like itself.
+        print(f"MCP protocol envelope unchanged: mcp {now} answers as recorded.")
         return 0
     print(f"MCP protocol envelope differs (mcp {was} -> mcp {now}):\n")
     for difference in found:
         print(f"  - {difference}")
+    # No ordering imposed here: the ceremony's order lives in one place
+    # (docs/ops/upgrade-the-mcp-sdk.md), and a second copy of it in this message is a
+    # second copy that can disagree -- which it did.
     print(
-        "\nRun the dual-era acceptance before deploying this "
-        "(docs/ops/accept-both-protocol-eras.md), then record it with --update."
+        "\nThis is the upgrade's wire delta. Record it with --update and run the dual-era "
+        "acceptance before deploying: docs/ops/upgrade-the-mcp-sdk.md"
     )
     return 1
 

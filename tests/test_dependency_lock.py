@@ -37,6 +37,10 @@ UPGRADE_RUNBOOK = ROOT / "docs" / "ops" / "upgrade-the-mcp-sdk.md"
 
 PINNED = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)==(?P<version>[^\s;]+)")
 HASH = re.compile(r"--hash=sha256:[0-9a-f]{64}")
+# `pip install`, `pip3 install`, `pip3.11 install`, `python3 -m pip install`, `uv pip
+# install` -- one spelling matched literally would leave the others as the unhashed path
+# this file exists to forbid.
+INSTALL = re.compile(r"\bpip[0-9.]*\s+install\b")
 
 
 def _requirements(text: str) -> dict[str, dict[str, object]]:
@@ -69,19 +73,51 @@ def _requirements(text: str) -> dict[str, dict[str, object]]:
     return found
 
 
+def _joined(text: str) -> list[str]:
+    """Logical lines: a trailing backslash continues onto the next one, as a shell reads it.
+
+    Without this, `pip install \\` on one line and `-r requirements.txt` on the next is two
+    lines that each look harmless, and the scan below would pass over the one install path
+    this whole file exists to forbid.
+    """
+    lines: list[str] = []
+    pending = ""
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if stripped.endswith("\\"):
+            pending += stripped[:-1].strip() + " "
+            continue
+        lines.append((pending + stripped).strip())
+        pending = ""
+    if pending:
+        lines.append(pending.strip())
+    return lines
+
+
 def _install_lines(text: str) -> list[str]:
-    """Lines that run an install, not lines that talk about one.
+    """Commands that run an install, not lines that talk about one.
 
     A `#` comment is prose wherever it appears -- the Dockerfile explains its own install
     directly above it -- and a rule that read comments would be asserting about wording.
     """
-    lines = []
-    for raw in text.splitlines():
-        line = raw.strip()
-        if line.startswith("#") or "pip install" not in line:
-            continue
-        lines.append(line)
-    return lines
+    return [
+        line
+        for line in _joined(text)
+        if not line.startswith("#") and INSTALL.search(line)
+    ]
+
+
+def _shell_tokens(text: str, starting: str) -> list[str] | None:
+    """The first command in ``text`` that starts with ``starting``, as tokens.
+
+    Continuations are joined first, so a command wrapped across lines for width compares
+    equal to the same command written on one.
+    """
+    for line in _joined(text):
+        stripped = line.lstrip("#").strip()
+        if stripped.startswith(starting):
+            return stripped.split()
+    return None
 
 
 def _tracked_text_files() -> list[Path]:
@@ -125,12 +161,19 @@ class LockContentTests(unittest.TestCase):
         the file was actually made with.
         """
         header = "\n".join(LOCK.read_text(encoding="utf-8").splitlines()[:5])
-        self.assertIn("uv pip compile", header)
-        self.assertIn("--generate-hashes", header)
-        self.assertIn("requirements.lock", header)
+        recorded = _shell_tokens(header, "uv pip compile")
+        self.assertIsNotNone(recorded, "requirements.lock does not record its own command")
+        self.assertIn("--generate-hashes", recorded)
+        self.assertIn("requirements.lock", recorded)
 
         runbook = UPGRADE_RUNBOOK.read_text(encoding="utf-8")
-        self.assertIn("uv pip compile requirements.txt --generate-hashes", runbook)
+        published = _shell_tokens(runbook, "uv pip compile")
+        self.assertIsNotNone(published, "the runbook does not print the command")
+        # Token for token, not two independent substring checks: a runbook that drops
+        # `--universal` or moves `--python-version` still contains "uv pip compile
+        # requirements.txt --generate-hashes", and would have passed that weaker test while
+        # telling the next upgrade to generate a different lock than this one.
+        self.assertEqual(recorded, published)
         self.assertIn("--require-hashes", runbook)
 
     def test_the_lock_covers_what_the_pinned_sdk_itself_requires(self):
@@ -196,6 +239,41 @@ class InstallPathTests(unittest.TestCase):
                 elif "requirements.lock" in line and "--require-hashes" not in line:
                     offenders.append(f"{path.relative_to(ROOT)}: {line}")
         self.assertEqual([], offenders)
+
+
+class InstallScanTests(unittest.TestCase):
+    """The scanner has to see the spellings somebody would actually reach for.
+
+    A scan that matched one literal spelling would report a clean repository while the
+    unhashed path sat in it under another name -- the "clean and absent look identical"
+    failure this repository treats as a defect in a gate rather than a nuisance.
+    """
+
+    PROBE = """RUN pip3 install -r requirements.txt
+RUN pip install \\
+    -r requirements.txt
+RUN uv pip install -r requirements.txt
+RUN python3 -m pip install --require-hashes -r requirements.lock
+# pip install -r requirements.txt
+RUN apt-get install -y tzdata
+"""
+
+    def test_every_evading_spelling_is_still_seen(self):
+        seen = _install_lines(self.PROBE)
+        self.assertEqual(
+            [
+                "RUN pip3 install -r requirements.txt",
+                "RUN pip install -r requirements.txt",
+                "RUN uv pip install -r requirements.txt",
+                "RUN python3 -m pip install --require-hashes -r requirements.lock",
+            ],
+            seen,
+        )
+
+    def test_a_comment_and_an_unrelated_installer_are_left_alone(self):
+        seen = _install_lines(self.PROBE)
+        self.assertNotIn("# pip install -r requirements.txt", seen)
+        self.assertNotIn("RUN apt-get install -y tzdata", seen)
 
 
 class HashVerificationTests(unittest.TestCase):
