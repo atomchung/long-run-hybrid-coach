@@ -1,7 +1,7 @@
 """The one command that proves this demo works against the real model.
 
 Everything else in this directory is held by tests that never reach a network. What no
-test here can answer is whether `gpt-6-astra` actually produces a usable answer from this
+test here can answer is whether `gpt-5.6-luna` actually produces a usable answer from this
 fixture and this prompt, and whether the request shape this repository built is the one the
 Responses API accepts. That question needs a credential and a real call, so it lives in a
 command an operator runs deliberately:

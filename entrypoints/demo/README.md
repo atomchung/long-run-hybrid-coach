@@ -109,7 +109,7 @@ starts every conversation over, which is the correct lifetime for a playground.
 
 ## The model
 
-The OpenAI Responses API, on `gpt-6-astra`, pinned as a constant in [`model.py`](model.py).
+The OpenAI Responses API, on `gpt-5.6-luna`, pinned as a constant in [`model.py`](model.py).
 There is no environment override and no fallback to another model when a call fails: a demo
 that quietly answers from something else is a demo whose answers mean nothing, so a failure
 is reported as a failure.
@@ -119,9 +119,8 @@ carry into the next round, how a tool result is spelled, and how a failure maps 
 service's codes. `service.py` drives a conversation without naming a provider field, and
 `garmin_coach_loop` does not know the file exists.
 
-Requests carry `reasoning: {"effort": "low"}` — a playground turn over a fixture that fits
-in one read, not a planning run — and `max_output_tokens: 8000`, which bounds reasoning and
-visible output together rather than just the answer.
+Requests carry `reasoning: {"effort": "max"}` and `max_output_tokens: 8000`, which bounds
+reasoning and visible output together rather than just the answer.
 
 `store` is false on every call, so nothing is retained at the provider. That makes the
 conversation stateless, which is exactly why the next round has to carry the previous one:

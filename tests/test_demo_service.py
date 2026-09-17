@@ -148,8 +148,8 @@ class PinnedModelTest(unittest.TestCase):
                 turn = client.respond(instructions="be a coach", input_items=[
                     {"role": "user", "content": "hi"}])
         self.assertEqual("hello", turn.text)
-        self.assertEqual("gpt-6-astra", model_module.MODEL)
-        self.assertEqual("gpt-6-astra", captured["body"]["model"])
+        self.assertEqual("gpt-5.6-luna", model_module.MODEL)
+        self.assertEqual("gpt-5.6-luna", captured["body"]["model"])
         self.assertFalse(captured["body"]["store"])
         self.assertTrue(captured["url"].endswith("/responses"))
 
@@ -601,7 +601,7 @@ class HttpSurfaceTest(unittest.TestCase):
         with urllib.request.urlopen(self.base + "/healthz") as response:
             body = json.loads(response.read())
         self.assertEqual("ok", body["status"])
-        self.assertEqual("gpt-6-astra", body["model"])
+        self.assertEqual("gpt-5.6-luna", body["model"])
         self.assertEqual("present", body["model_credential"])
         self.assertNotIn(FAKE_CREDENTIAL, json.dumps(body))
 
