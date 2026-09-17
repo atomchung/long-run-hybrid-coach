@@ -270,6 +270,10 @@ def classify_changed_paths(
     ``catalogue_moved`` is the digest evidence: ``True`` when ``tool_catalogue_sha256()``
     differs between the base and this checkout, ``False`` when it does not, and ``None``
     when no base could be built and the question was never asked.
+
+    It outranks the line markers whenever it is not ``None``. The digest is rebuilt from
+    the same descriptors ``tools/list`` serves, so it answers the question the markers
+    only estimate, and an estimate does not overturn the measurement it stands in for.
     """
     paths = sorted(set(_normalise_path(path) for path in changed_paths if path.strip()))
     diffs_by_path = diffs_by_path or {}
@@ -288,11 +292,27 @@ def classify_changed_paths(
             surface_reasons.append(path)
         elif path.startswith("contracts/") and path.endswith(".json"):
             surface_reasons.append(path)
-        elif not catalogue_moved and mcp_surface_changed(path, diffs_by_path.get(path)):
-            # The markers are the fallback, not the fact: they read a changed *line*, so
+        elif catalogue_moved is None and mcp_surface_changed(
+            path, diffs_by_path.get(path)
+        ):
+            # The markers are the fallback, and only that: they read a changed *line*, so
             # rewriting the text inside a description string or the inner lines of an
-            # input schema moves the served catalogue without touching one. When the
-            # digest answered, it names itself below instead of this path.
+            # input schema moves the served catalogue without touching one, and deleting
+            # code that merely mentions `inputSchema` touches one without moving the
+            # catalogue at all. Either way they are a guess about the served bytes.
+            #
+            # So they run only when the digest could not be built (`None`) and the
+            # question therefore went unanswered. A digest that answered outranks them in
+            # both directions: `True` names itself below, and `False` is proof -- it is
+            # rebuilt from the same `descriptor()` output `tools/list` serves, so two
+            # equal digests are two identical catalogues, and a marker cannot overturn
+            # that by having matched a line.
+            #
+            # Issue #352's transport migration is why this is spelled out. It deleted the
+            # hand-written protocol layer, whose removed lines contained `inputSchema`,
+            # `prompts` and `serverInfo`, and the markers asked for Scan Tools and a
+            # resubmission on a catalogue the digest proved byte-identical -- against a
+            # release that was in OpenAI review at the time.
             surface_reasons.append(path)
 
     if catalogue_moved:

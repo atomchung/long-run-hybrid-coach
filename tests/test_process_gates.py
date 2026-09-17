@@ -11,12 +11,14 @@ from pathlib import Path
 
 from scripts.change_gates import (
     CATALOGUE_EXPORT_PATHS,
+    CATALOGUE_MOVED_REASON,
     CLASSIFIED_PACKAGE_PATHS,
     INTERNAL_PACKAGE_PATHS,
     LIVE_SMOKE_PATHS,
     MODEL_FACING_PATHS,
     PACKAGE,
     PACKAGE_SUFFIXES,
+    SUBMISSION_ARTIFACT_PATHS,
     classify_changed_paths,
     tool_catalogue_sha256_at,
     working_tree_tool_catalogue_sha256,
@@ -190,34 +192,102 @@ class ChangeGateTests(unittest.TestCase):
         self.assertEqual([moved], plan["client_acceptance_reasons"])
         self.assertEqual([moved], plan["plugin_resubmission_reasons"])
 
-    def test_the_markers_still_decide_when_the_digest_answered_nothing(self):
-        # `False` is a compared pair that matched; `None` is a base that could not be
-        # built at all. Without the heuristic in the second case an unknown base would
-        # silently report "no scan needed" for a genuinely changed catalogue.
-        marker_free = '+                        "Send back on applyOwnerDeletion."'
-        for catalogue_moved in (False, None):
-            with self.subTest(catalogue_moved=catalogue_moved):
-                quiet = classify_changed_paths(
-                    ["garmin_coach_loop/mcp_transport.py"],
-                    diffs_by_path={"garmin_coach_loop/mcp_transport.py": marker_free},
-                    catalogue_moved=catalogue_moved,
-                )
-                self.assertFalse(quiet["scan_tools"])
-                self.assertFalse(quiet["client_acceptance"])
-                self.assertEqual([], quiet["client_acceptance_reasons"])
+    # The three states of the digest evidence, and what each one does to the markers.
+    # `MARKER_LINE` carries `description=`; `MARKER_FREE` carries none of the markers.
+    MARKER_LINE = '+        description="new"'
+    MARKER_FREE = '+                        "Send back on applyOwnerDeletion."'
 
-                marked = classify_changed_paths(
-                    ["garmin_coach_loop/mcp_transport.py"],
-                    diffs_by_path={
-                        "garmin_coach_loop/mcp_transport.py": '+        description="new"'
-                    },
-                    catalogue_moved=catalogue_moved,
-                )
-                self.assertTrue(marked["scan_tools"])
-                self.assertEqual(
-                    ["garmin_coach_loop/mcp_transport.py"],
-                    marked["client_acceptance_reasons"],
-                )
+    def _transport(self, diff: str, catalogue_moved):
+        return classify_changed_paths(
+            ["garmin_coach_loop/mcp_transport.py"],
+            diffs_by_path={"garmin_coach_loop/mcp_transport.py": diff},
+            catalogue_moved=catalogue_moved,
+        )
+
+    def test_a_digest_that_proves_the_catalogue_stood_still_outranks_a_marker(self):
+        """`False` is a measurement, and a marker does not overturn one.
+
+        The digest is rebuilt from the same `descriptor()` output `tools/list` serves, so
+        two equal digests are two identical catalogues. A changed line that happens to
+        mention `inputSchema` says nothing about that, and used to ask for Scan Tools and
+        a plugin resubmission anyway.
+
+        Issue #352's transport migration is the case that made it concrete: deleting the
+        hand-written protocol layer changed lines containing `inputSchema`, `prompts` and
+        `serverInfo`, moved no catalogue byte, and produced a Scan Tools demand against a
+        release that was in OpenAI review at the time.
+        """
+        plan = self._transport(self.MARKER_LINE, False)
+        self.assertFalse(plan["scan_tools"])
+        self.assertFalse(plan["client_acceptance"])
+        self.assertFalse(plan["plugin_resubmission"])
+        self.assertEqual([], plan["client_acceptance_reasons"])
+
+    def test_a_moved_digest_asks_for_the_scan_whether_or_not_a_marker_matched(self):
+        for label, diff in (("marker line", self.MARKER_LINE), ("no marker", self.MARKER_FREE)):
+            with self.subTest(diff=label):
+                plan = self._transport(diff, True)
+                self.assertTrue(plan["scan_tools"])
+                self.assertTrue(plan["client_acceptance"])
+                self.assertTrue(plan["plugin_resubmission"])
+                # The digest names itself, so an operator can tell which evidence fired.
+                self.assertEqual([CATALOGUE_MOVED_REASON], plan["client_acceptance_reasons"])
+
+    def test_the_markers_still_decide_when_the_digest_could_not_be_built(self):
+        """`None` is a base that could not be exported, so nothing was measured.
+
+        This is the one state the heuristic is for. Without it an unbuildable base would
+        report "no scan needed" for a genuinely changed catalogue, which is the failure
+        the markers were added to prevent -- and it stays.
+        """
+        marked = self._transport(self.MARKER_LINE, None)
+        self.assertTrue(marked["scan_tools"])
+        self.assertEqual(
+            ["garmin_coach_loop/mcp_transport.py"], marked["client_acceptance_reasons"]
+        )
+
+        quiet = self._transport(self.MARKER_FREE, None)
+        self.assertFalse(quiet["scan_tools"])
+        self.assertEqual([], quiet["client_acceptance_reasons"])
+
+    def test_a_model_facing_path_is_never_silenced_by_the_digest(self):
+        """The digest binds the tool catalogue and nothing else.
+
+        `instructions` and the served prompts are their own bytes in their own files, and
+        a release binds their digests separately. A catalogue that stood still says
+        nothing about them, so these paths are classified before the digest is consulted
+        and stay classified whatever it answered.
+        """
+        for path in sorted(MODEL_FACING_PATHS) + [
+            ".agents/skills/garmin-coach-loop/SKILL.md",
+            "contracts/coach-context.schema.json",
+        ]:
+            for catalogue_moved in (False, None, True):
+                with self.subTest(path=path, catalogue_moved=catalogue_moved):
+                    plan = classify_changed_paths([path], catalogue_moved=catalogue_moved)
+                    self.assertTrue(plan["client_acceptance"], path)
+                    self.assertIn(path, plan["client_acceptance_reasons"])
+
+    def test_a_submission_artifact_is_resubmitted_on_its_own_evidence(self):
+        """An edited packet is resubmitted content whatever the catalogue did."""
+        for path in sorted(SUBMISSION_ARTIFACT_PATHS):
+            with self.subTest(path=path):
+                plan = classify_changed_paths([path], catalogue_moved=False)
+                self.assertTrue(plan["plugin_resubmission"], path)
+                self.assertIn(path, plan["plugin_resubmission_reasons"])
+
+    def test_an_unclassified_package_file_is_not_silenced_by_the_digest(self):
+        """A new module is both surfaces until `change_gates.py` names it.
+
+        A digest that stood still must not turn that conservative answer off: the file is
+        unnamed precisely because nobody has decided what it is yet.
+        """
+        plan = classify_changed_paths(
+            ["garmin_coach_loop/not_named_anywhere.py"], catalogue_moved=False
+        )
+        self.assertEqual(["garmin_coach_loop/not_named_anywhere.py"], plan["unclassified_paths"])
+        self.assertTrue(plan["live_smoke"])
+        self.assertTrue(plan["client_acceptance"])
 
     def test_the_catalogue_digest_is_built_from_a_ref_and_an_unknown_ref_answers_none(self):
         # The gate calls this for whatever `--base` names. A ref that cannot be exported,
