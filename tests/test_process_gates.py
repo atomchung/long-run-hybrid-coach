@@ -409,40 +409,53 @@ class ProductionPromotionGateTests(unittest.TestCase):
         self.assertIn("verify_production_promotion.py", promotion)
         self.assertNotIn("unittest discover", promotion)
 
-    def test_every_ci_job_that_runs_python_installs_the_dependency(self):
+    def test_every_workflow_job_that_runs_python_installs_the_dependency(self):
         """A gate that cannot import is not a gate, however safely it fails.
 
         `release_bundle.py` imports the gateway to read the served tool catalogue, and
-        the gateway imports the MCP SDK. A promotion job without the install step
-        therefore fails every promotion on `ModuleNotFoundError` rather than judging
-        one -- and it fails identically for a release that was fine and one that was
-        not, which is the shape of a gate nobody can act on. A shallow scan, not a YAML
-        parse: the question is which jobs run Python at all.
+        the gateway imports the MCP SDK. A job without the install step therefore fails
+        every run on `ModuleNotFoundError` rather than judging one -- and it fails
+        identically for a release that was fine and one that was not, which is the shape
+        of a gate nobody can act on.
+
+        **Every workflow, not one file.** The first version of this test named `ci.yml`
+        and passed while the identical bug sat in `publish-mcp-registry.yml`, whose
+        retry loop then reported the crash as "production is not serving this source
+        yet" -- ten times, against a production that was serving it. A test that names
+        its own scope too narrowly is how the same defect ships twice.
+
+        A shallow scan, not a YAML parse: the question is only which jobs run Python.
         """
-        text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        jobs: dict[str, list[str]] = {}
-        current: str | None = None
-        for line in text.split("\njobs:", 1)[1].splitlines():
-            header = re.fullmatch(r"  ([A-Za-z][\w-]*):", line)
-            if header is not None:
-                current = header.group(1)
-                jobs[current] = []
-            elif current is not None:
-                jobs[current].append(line)
+        workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
+        self.assertTrue(workflows)
         checked = 0
-        for name, lines in jobs.items():
-            block = "\n".join(lines)
-            if "python3 " not in block:
+        for workflow in workflows:
+            text = workflow.read_text(encoding="utf-8")
+            if "\njobs:" not in text:
                 continue
-            checked += 1
-            self.assertIn(
-                "pip install --disable-pip-version-check -r requirements.txt",
-                block,
-                f"the {name!r} job runs Python without installing requirements.txt",
-            )
-        # Both jobs run Python. A refactor that leaves one of them out of this scan
-        # would otherwise pass by checking nothing.
-        self.assertEqual(2, checked)
+            current: str | None = None
+            jobs: dict[str, list[str]] = {}
+            for line in text.split("\njobs:", 1)[1].splitlines():
+                header = re.fullmatch(r"  ([A-Za-z][\w-]*):", line)
+                if header is not None:
+                    current = header.group(1)
+                    jobs[current] = []
+                elif current is not None:
+                    jobs[current].append(line)
+            for name, lines in jobs.items():
+                block = "\n".join(lines)
+                if "python3 " not in block:
+                    continue
+                checked += 1
+                self.assertIn(
+                    "pip install --disable-pip-version-check -r requirements.txt",
+                    block,
+                    f"{workflow.name}: the {name!r} job runs Python without "
+                    "installing requirements.txt",
+                )
+        # Four today: ci.yml's two, and publish-mcp-registry.yml's two. A refactor that
+        # drops a workflow out of this scan would otherwise pass by checking nothing.
+        self.assertEqual(4, checked)
 
 
 if __name__ == "__main__":

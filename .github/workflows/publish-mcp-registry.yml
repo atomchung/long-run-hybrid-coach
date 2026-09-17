@@ -35,6 +35,25 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      # The registry gate reads the served tool catalogue out of the gateway module,
+      # which imports the MCP SDK. Without this it cannot import at all -- and the
+      # retry loop below used to report that as "production is not serving this
+      # source yet", ten times, while production was serving it perfectly.
+      - name: Install the runtime dependency
+        run: python3 -m pip install --disable-pip-version-check -r requirements.txt
+      # A crash and a negative answer are different facts, and the loop below cannot
+      # tell them apart -- every non-zero exit reads as "not deployed yet". Importing
+      # the gate once, before the loop starts, is what keeps a broken checkout from
+      # being reported as a slow deployment. An import, deliberately, rather than a
+      # `--help` run: `test_registry_release.py` holds that this workflow invokes the
+      # gate exactly twice, and a probe is not one of those invocations.
+      - name: Confirm the registry gate is importable before polling with it
+        run: python3 -c "import scripts.verify_registry_release"
+
       - name: Verify production serves this commit, version and release digests
         # The success status can land seconds before /readyz answers for the new
         # container, so the gate is asked up to ten times, thirty seconds apart. The loop
@@ -60,6 +79,16 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      # The registry gate reads the served tool catalogue out of the gateway module,
+      # which imports the MCP SDK. Without this it cannot import at all -- and the
+      # retry loop below used to report that as "production is not serving this
+      # source yet", ten times, while production was serving it perfectly.
+      - name: Install the runtime dependency
+        run: python3 -m pip install --disable-pip-version-check -r requirements.txt
       - name: Install the pinned publisher after archive verification
         # v1.8.1 upstream registry_1.8.1_checksums.txt and release asset digest agree.
         run: |
