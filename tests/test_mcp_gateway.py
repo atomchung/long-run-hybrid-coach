@@ -29,6 +29,7 @@ from typing import Any
 from garmin_coach_loop import (
     athlete_evidence,
     gateway,
+    mcp_sdk_transport,
     mcp_transport,
     orchestration,
     owner_data,
@@ -62,12 +63,29 @@ from garmin_coach_loop.identity import (
 )
 from garmin_coach_loop.mcp_transport import (
     MAX_CLIENT_RESULT_CHARACTERS,
-    PROTOCOL_VERSION,
     TOOLS,
     TOOLS_BY_NAME,
     client_result_characters,
     client_result_json,
 )
+from mcp_types.jsonrpc import INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR
+from mcp_types.version import (
+    HANDSHAKE_PROTOCOL_VERSIONS,
+    LATEST_HANDSHAKE_VERSION,
+    MODERN_PROTOCOL_VERSIONS,
+)
+
+# The 2025-era revision every client this product is actually reached from negotiates --
+# claude.ai's connector, ChatGPT's, Codex, the local MCP client in `hosted.py`. Written
+# out rather than read from the SDK's registry because these tests are about what those
+# clients see, and the newest revision the SDK *could* negotiate is a different question
+# (`LATEST_HANDSHAKE_VERSION`, used where that is what a test means).
+PROTOCOL_VERSION = "2025-06-18"
+
+# A value no MCP revision will ever be. The refusal tests need one, and every date-shaped
+# placeholder they used to use -- 2026-07-28 most of all -- is now a revision this server
+# serves.
+UNSERVED_VERSION = "not-a-version"
 from garmin_coach_loop.store import canonical_hash, init_store, read_current_plan
 
 # `test_gateway`'s harness -- a real loopback server over one injected fetcher --
@@ -492,10 +510,16 @@ class McpProtocolTests(McpTestCase):
         self.assertEqual(1, response["id"])
         result = response["result"]
         self.assertEqual(PROTOCOL_VERSION, result["protocolVersion"])
-        # Tools, and the one prompt that says how to sequence them (issue #125). Nothing
+        # Tools, and the prompts that say how to sequence them (issue #125). Nothing
         # else: resources, sampling and logging would each be a second way to the same
-        # state, and a capability advertised is a capability a client will call.
-        self.assertEqual({"tools": {}, "prompts": {}}, result["capabilities"])
+        # state, and a capability advertised is a capability a client will call. The SDK
+        # states each one's `listChanged` rather than leaving it to the specification's
+        # default, which is the same claim written out; what matters to this assertion is
+        # the *set*, and that nothing joined it.
+        self.assertEqual({"experimental", "prompts", "tools"}, set(result["capabilities"]))
+        self.assertEqual({"listChanged": False}, result["capabilities"]["tools"])
+        self.assertEqual({"listChanged": False}, result["capabilities"]["prompts"])
+        self.assertEqual({}, result["capabilities"]["experimental"])
         self.assertEqual("garmin-coach-loop", result["serverInfo"]["name"])
         # The identifier stays what connected clients already key on; the published
         # brand travels in `title`, the display field 2025-06-18 added for exactly this
@@ -505,11 +529,42 @@ class McpProtocolTests(McpTestCase):
         # what is live, so a client and /readyz must state the same one.
         self.assertEqual(PRODUCT_VERSION, result["serverInfo"]["version"])
 
-    def test_an_older_protocol_version_is_negotiated_to_the_one_this_server_speaks(self):
-        for requested in ("2025-03-26", "2024-11-05", "not-a-version"):
+    def _initialize(self, requested: str) -> dict[str, Any]:
+        return self.rpc(
+            "initialize",
+            {
+                "protocolVersion": requested,
+                "capabilities": {},
+                "clientInfo": {"name": "test-client", "version": "0"},
+            },
+        )["result"]
+
+    def test_every_handshake_revision_the_sdk_serves_is_agreed_to_as_asked(self):
+        """A revision this server speaks is answered with itself, not counter-offered.
+
+        This is one of the two behaviours the SDK migration changed, and it changed
+        towards the specification: the hand-written transport answered 2024-11-05 and
+        2025-03-26 with 2025-06-18, because it did not implement them. The SDK does, so
+        agreeing is now the truthful answer -- and a client that asked for an older
+        revision no longer has to decide whether it can live with a newer one.
+        """
+        for requested in HANDSHAKE_PROTOCOL_VERSIONS:
             with self.subTest(requested=requested):
-                result = self.rpc("initialize", {"protocolVersion": requested})["result"]
-                self.assertEqual(PROTOCOL_VERSION, result["protocolVersion"])
+                self.assertEqual(requested, self._initialize(requested)["protocolVersion"])
+
+    def test_a_revision_the_handshake_cannot_reach_is_counter_offered_the_newest_one(self):
+        """Including 2026-07-28, which is a real revision but not a handshake one.
+
+        A client that asks for it here has already failed to use the era it belongs to,
+        so the answer is the newest revision this handshake does reach. It is a real
+        offer either way: the client disconnects if it cannot live with it, which is the
+        protocol's own resolution.
+        """
+        for requested in ("2026-07-28", UNSERVED_VERSION):
+            with self.subTest(requested=requested):
+                self.assertEqual(
+                    LATEST_HANDSHAKE_VERSION, self._initialize(requested)["protocolVersion"]
+                )
 
     def test_a_notification_is_accepted_with_no_body(self):
         status, _, body = self.post_mcp(
@@ -529,30 +584,39 @@ class McpProtocolTests(McpTestCase):
 
     def test_an_unknown_method_is_a_json_rpc_error(self):
         response = self.rpc("resources/list")
-        self.assertEqual(mcp_transport.METHOD_NOT_FOUND, response["error"]["code"])
+        self.assertEqual(METHOD_NOT_FOUND, response["error"]["code"])
         self.assertNotIn("result", response)
 
     def test_a_body_that_is_not_json_is_a_parse_error(self):
         status, _, body = self.post_mcp(raw=b"{not json")
         self.assertEqual(400, status)
-        self.assertEqual(mcp_transport.PARSE_ERROR, json.loads(body)["error"]["code"])
+        self.assertEqual(PARSE_ERROR, json.loads(body)["error"]["code"])
 
     def test_an_empty_body_is_a_parse_error_rather_than_a_silent_success(self):
         status, _, body = self.post_mcp(raw=b"")
         self.assertEqual(400, status)
-        self.assertEqual(mcp_transport.PARSE_ERROR, json.loads(body)["error"]["code"])
+        self.assertEqual(PARSE_ERROR, json.loads(body)["error"]["code"])
 
     def test_a_batch_is_refused_rather_than_partly_answered(self):
+        """Batching left the protocol in 2025-06-18, and nothing here answers one.
+
+        The code moved from `INVALID_REQUEST` to `INVALID_PARAMS` when the SDK took the
+        wire over -- it reads a batch as a body that is not one of the four JSON-RPC
+        shapes. The answer a client acts on is the same: a `400`, and not one element
+        answered while the rest are dropped.
+        """
         status, _, body = self.post_mcp(
             [{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}]
         )
         self.assertEqual(400, status)
-        self.assertEqual(mcp_transport.INVALID_REQUEST, json.loads(body)["error"]["code"])
+        self.assertEqual(INVALID_PARAMS, json.loads(body)["error"]["code"])
+        self.assertNotIn("result", json.loads(body))
 
     def test_a_message_that_is_not_json_rpc_is_refused(self):
         status, _, body = self.post_mcp({"method": "tools/list", "id": 1})
         self.assertEqual(400, status)
-        self.assertEqual(mcp_transport.INVALID_REQUEST, json.loads(body)["error"]["code"])
+        self.assertIn(json.loads(body)["error"]["code"], (INVALID_REQUEST, INVALID_PARAMS))
+        self.assertNotIn("result", json.loads(body))
 
 
 class McpTransportHeaderTests(McpTestCase):
@@ -646,16 +710,51 @@ class McpTransportHeaderTests(McpTestCase):
         self.assertEqual([], self._protocol_events())
 
     def test_the_revisions_this_server_speaks_over_http_are_accepted(self):
-        for version in mcp_transport.HTTP_PROTOCOL_VERSIONS:
+        for version in mcp_sdk_transport.HTTP_PROTOCOL_VERSIONS:
             with self.subTest(version=version):
-                status, _, _ = self.list_tools(headers={"MCP-Protocol-Version": version})
+                # A 2026-07-28 request is a different message, not the same one with a
+                # different header on it: its `params._meta` carries the protocol version
+                # and the client's capabilities, and the routing headers have to agree
+                # with the body. `tests/test_mcp_sdk_transport.py` exercises that era in
+                # full; here it is one member of the accepted set like any other.
+                modern = version in MODERN_PROTOCOL_VERSIONS
+                message: dict[str, Any] = {
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/list"
+                }
+                headers = {"MCP-Protocol-Version": version}
+                if modern:
+                    message["params"] = {
+                        "_meta": {
+                            "io.modelcontextprotocol/protocolVersion": version,
+                            "io.modelcontextprotocol/clientCapabilities": {},
+                        }
+                    }
+                    headers["Mcp-Method"] = "tools/list"
+                status, _, _ = self.post_mcp(message, headers=headers)
                 self.assertEqual(200, status)
                 self.assertEqual([], self._protocol_events())
-        self.assertIn("2025-03-26", mcp_transport.HTTP_PROTOCOL_VERSIONS)
-        self.assertIn(PROTOCOL_VERSION, mcp_transport.HTTP_PROTOCOL_VERSIONS)
+        # Both eras, from one endpoint, which is what the migration was for. 2026-07-28
+        # used to be this class's example of a revision that gets refused; it is now one
+        # a client reaches the coach with (issue #352).
+        self.assertIn("2025-03-26", mcp_sdk_transport.HTTP_PROTOCOL_VERSIONS)
+        self.assertIn(PROTOCOL_VERSION, mcp_sdk_transport.HTTP_PROTOCOL_VERSIONS)
+        self.assertIn("2026-07-28", mcp_sdk_transport.HTTP_PROTOCOL_VERSIONS)
+
+    def test_the_accepted_set_is_the_sdk_registry_rather_than_a_local_list(self):
+        """The refusal this class tests must never again outlive the protocol.
+
+        Every 2026-07-28 connection that fell back to 2025 did so because a tuple in this
+        repository had not been edited. Reading the SDK's own registry is what stops the
+        next revision needing an edit here at all, so this holds that the set *is* that
+        registry rather than a copy that happens to match today.
+        """
+        self.assertEqual(
+            (*HANDSHAKE_PROTOCOL_VERSIONS, *MODERN_PROTOCOL_VERSIONS),
+            mcp_sdk_transport.HTTP_PROTOCOL_VERSIONS,
+        )
 
     def test_a_revision_this_server_does_not_implement_is_refused(self):
-        for version in ("2024-11-05", "not-a-version", "", "2025-06-18, 2025-03-26"):
+        for version in (UNSERVED_VERSION, "", "2025-06-18, 2025-03-26"):
             with self.subTest(version=version):
                 status, _, body = self.start_session(
                     headers={"MCP-Protocol-Version": version}
@@ -665,7 +764,7 @@ class McpTransportHeaderTests(McpTestCase):
                     {
                         "status": "blocked",
                         "error": "unsupported_protocol_version",
-                        "supported": list(mcp_transport.HTTP_PROTOCOL_VERSIONS),
+                        "supported": list(mcp_sdk_transport.HTTP_PROTOCOL_VERSIONS),
                     },
                     json.loads(body),
                 )
@@ -673,9 +772,9 @@ class McpTransportHeaderTests(McpTestCase):
 
     def test_the_refusal_names_the_revisions_a_client_could_retry_with(self):
         """A `400` saying only "not that one" leaves the client nothing to do next."""
-        _, _, body = self.start_session(headers={"MCP-Protocol-Version": "2026-07-28"})
+        _, _, body = self.start_session(headers={"MCP-Protocol-Version": UNSERVED_VERSION})
         self.assertEqual(
-            list(mcp_transport.HTTP_PROTOCOL_VERSIONS), json.loads(body)["supported"]
+            list(mcp_sdk_transport.HTTP_PROTOCOL_VERSIONS), json.loads(body)["supported"]
         )
 
     def test_an_unauthenticated_client_is_challenged_rather_than_refused_on_revision(self):
@@ -689,7 +788,7 @@ class McpTransportHeaderTests(McpTestCase):
         still there, and is answered on the next attempt once the caller can be served.
         """
         status, headers, body = self.start_session(
-            token=None, headers={"MCP-Protocol-Version": "2026-07-28"}
+            token=None, headers={"MCP-Protocol-Version": UNSERVED_VERSION}
         )
         self.assertEqual(401, status)
         self.assertIn("resource_metadata=", headers.get("WWW-Authenticate", ""))
@@ -700,7 +799,7 @@ class McpTransportHeaderTests(McpTestCase):
     def test_an_authenticated_client_still_gets_the_revision_refusal(self):
         """Reordering must not have turned the refusal off for callers it applies to."""
         status, _, body = self.start_session(
-            headers={"MCP-Protocol-Version": "2026-07-28"}
+            headers={"MCP-Protocol-Version": UNSERVED_VERSION}
         )
         self.assertEqual(400, status)
         self.assertEqual("unsupported_protocol_version", json.loads(body)["error"])
@@ -717,7 +816,7 @@ class McpTransportHeaderTests(McpTestCase):
             {
                 "status": "blocked",
                 "error": "unsupported_protocol_version",
-                "supported": list(mcp_transport.HTTP_PROTOCOL_VERSIONS),
+                "supported": list(mcp_sdk_transport.HTTP_PROTOCOL_VERSIONS),
             },
             json.loads(body),
         )
@@ -725,16 +824,16 @@ class McpTransportHeaderTests(McpTestCase):
 
     def test_a_refused_revision_is_named_in_the_security_log_only(self):
         status, _, body = self.start_session(
-            headers={"MCP-Protocol-Version": "2026-07-28"}
+            headers={"MCP-Protocol-Version": UNSERVED_VERSION}
         )
         self._assert_unchanged_protocol_refusal(status, body)
         self.assertEqual(
             [{"event": "mcp_protocol", "result": "refused",
               "reason": "unsupported_protocol_version", "origin": None,
-              "client": None, "protocol_version": "2026-07-28"}],
+              "client": None, "protocol_version": "invalid"}],
             self._protocol_events(),
         )
-        self.assertNotIn("2026-07-28", body.decode())
+        self.assertNotIn(UNSERVED_VERSION, body.decode())
 
     def test_unusable_revision_headers_leave_only_a_fixed_classification(self):
         for raw, classification in (
@@ -743,7 +842,7 @@ class McpTransportHeaderTests(McpTestCase):
             ("private-header-content-" * 500, "invalid"),
             ("2026-02-30", "invalid"),
             ("2026-07-28\x01", "invalid"),
-            ("2026-07-28, private-second-value", "duplicate"),
+            (UNSERVED_VERSION + ", private-second-value", "duplicate"),
         ):
             with self.subTest(classification=classification, length=len(raw)):
                 self.log_handler.records.clear()
@@ -759,8 +858,8 @@ class McpTransportHeaderTests(McpTestCase):
 
     def test_duplicate_headers_are_diagnosed_without_changing_the_acceptance_rule(self):
         for versions, expected_status, expected_events in (
-            (("2026-07-28", "private-second-value"), 400, 1),
-            (("2026-07-28", "2026-07-28"), 400, 1),
+            ((UNSERVED_VERSION, "private-second-value"), 400, 1),
+            ((UNSERVED_VERSION, UNSERVED_VERSION), 400, 1),
             ((PROTOCOL_VERSION, "private-second-value"), 200, 0),
         ):
             with self.subTest(versions=versions):
@@ -795,20 +894,25 @@ class McpTransportHeaderTests(McpTestCase):
     def test_a_logging_failure_cannot_replace_the_protocol_refusal(self):
         with mock.patch.object(security_log.LOGGER, "info", side_effect=OSError("log unavailable")):
             status, _, body = self.start_session(
-                headers={"MCP-Protocol-Version": "2026-07-28"}
+                headers={"MCP-Protocol-Version": UNSERVED_VERSION}
             )
         self._assert_unchanged_protocol_refusal(status, body)
 
     def test_the_header_is_checked_separately_from_the_initialize_handshake(self):
-        # The handshake still answers 2025-03-26 with the one revision this server
-        # implements; the header still accepts it, because that is what the spec assumes
-        # of a client that sends no header at all.
+        # Two checks, one connection: the handshake settles which revision is in use and
+        # the header states it on every request after. 2025-03-26 passes both -- it is a
+        # revision the SDK serves, and it is what the specification assumes of a client
+        # that sends no header at all.
         result = self.rpc(
             "initialize",
-            {"protocolVersion": "2025-03-26"},
+            {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "test-client", "version": "0"},
+            },
             headers={"MCP-Protocol-Version": "2025-03-26"},
         )["result"]
-        self.assertEqual(PROTOCOL_VERSION, result["protocolVersion"])
+        self.assertEqual("2025-03-26", result["protocolVersion"])
 
 
 # --------------------------------------------------------------------------------------
@@ -1259,12 +1363,12 @@ class McpToolTests(McpTestCase):
 
     def test_an_unknown_tool_name_is_a_protocol_error_not_a_tool_result(self):
         response = self.rpc("tools/call", {"name": "deleteEverything", "arguments": {}})
-        self.assertEqual(mcp_transport.INVALID_PARAMS, response["error"]["code"])
+        self.assertEqual(INVALID_PARAMS, response["error"]["code"])
         self.assertNotIn("result", response)
 
     def test_arguments_that_are_not_an_object_are_refused_before_any_route(self):
         response = self.rpc("tools/call", {"name": "startCoachSession", "arguments": []})
-        self.assertEqual(mcp_transport.INVALID_PARAMS, response["error"]["code"])
+        self.assertEqual(INVALID_PARAMS, response["error"]["code"])
         self.assertEqual([], self.fake.calls)
 
     def test_a_write_still_needs_its_confirmation_through_this_entry(self):
@@ -1801,10 +1905,16 @@ class McpPromptTests(McpTestCase):
         self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
 
     def test_the_server_advertises_prompts_alongside_tools(self):
-        capabilities = self.rpc("initialize", {"protocolVersion": PROTOCOL_VERSION})[
-            "result"
-        ]["capabilities"]
-        self.assertEqual({"tools": {}, "prompts": {}}, capabilities)
+        capabilities = self.rpc(
+            "initialize",
+            {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "test-client", "version": "0"},
+            },
+        )["result"]["capabilities"]
+        self.assertEqual({"experimental", "prompts", "tools"}, set(capabilities))
+        self.assertEqual({"listChanged": False}, capabilities["prompts"])
 
     def test_both_layers_are_listed_and_neither_is_the_other(self):
         """Sequencing and coaching, served side by side and never merged.
@@ -1876,7 +1986,7 @@ class McpPromptTests(McpTestCase):
 
     def test_a_prompt_name_this_server_does_not_serve_is_a_protocol_error(self):
         response = self.rpc("prompts/get", {"name": "coach_nutrition"})
-        self.assertEqual(mcp_transport.INVALID_PARAMS, response["error"]["code"])
+        self.assertEqual(INVALID_PARAMS, response["error"]["code"])
         self.assertNotIn("result", response)
 
     def test_prompts_are_still_behind_the_same_identity_check_as_tools(self):

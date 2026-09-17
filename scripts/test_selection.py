@@ -89,9 +89,20 @@ def select_test_paths(changed_paths: list[str] | tuple[str, ...]) -> dict[str, o
                 for test_path in (
                     "tests/test_mcp_gateway.py",
                     "tests/test_mcp_output_contract.py",
+                    "tests/test_mcp_sdk_transport.py",
                     "tests/test_distribution_surface.py",
                 ):
                     _add(selected, reasons, test_path, "MCP transport boundary control")
+            elif module == "mcp_sdk_transport":
+                # The wire, which both eras and every entry share. The catalogue tests
+                # ride along because this module is what puts those descriptors on it.
+                mapped = True
+                for test_path in (
+                    "tests/test_mcp_sdk_transport.py",
+                    "tests/test_mcp_gateway.py",
+                    "tests/test_mcp_output_contract.py",
+                ):
+                    _add(selected, reasons, test_path, "MCP wire boundary control")
 
             if not mapped:
                 full_suite_required = True

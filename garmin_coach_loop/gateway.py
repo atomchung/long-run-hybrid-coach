@@ -65,6 +65,7 @@ from . import (
     athlete_evidence,
     connected_account,
     context_view,
+    mcp_sdk_transport,
     mcp_transport,
     orchestration,
     security_log,
@@ -2309,6 +2310,14 @@ class CoachGateway:
             "release_identity": self.config.release_identity,
             "deployment_identity": self.config.deployment_identity,
             "source_git_commit": self.config.deployed_git_commit,
+            # The MCP SDK this container resolved, read from the installed distribution
+            # rather than from `requirements.txt`. The pin says what the build asked for;
+            # this says what is answering `/mcp`, and those are the two facts this
+            # repository keeps apart everywhere else (the plan is not the account). It is
+            # reported, never asserted on: a mismatch is an operator's question, and
+            # failing readiness on it would take a working deployment down over a
+            # dependency resolution nobody had looked at yet.
+            "mcp_sdk_version": mcp_sdk_transport.SDK_VERSION,
             "error": (
                 None
                 if ready
@@ -7693,6 +7702,11 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         browser: BrowserResponse | None = None
         text_body: str | None = None
         payload: dict[str, Any] | None = None
+        # The MCP route alone answers in bytes the transport layer already framed: its
+        # content type is the protocol's to choose, and on the 2026-07-28 era the body is
+        # not always this gateway's own JSON object shape.
+        mcp_headers: list[tuple[str, str]] | None = None
+        mcp_body: bytes | None = None
         path = urllib.parse.urlsplit(self.path).path
         try:
             route = ROUTES.get(path)
@@ -7789,12 +7803,21 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 # the next attempt. The `400` is unreachable only for a caller this
                 # server would have refused anyway.
                 self._require_supported_protocol_version()
-                status, payload = mcp_transport.handle(
-                    self._read_body("application/json"),
+                # From here the protocol is the SDK's: which era this request belongs
+                # to, what `initialize` or `server/discover` answers, how a JSON-RPC
+                # fault maps to a status. What this line hands over is one
+                # already-authenticated caller, bound to one owner, and the raw request
+                # -- header lines rather than a folded mapping, because a routing header
+                # sent twice is a refusal the modern era owns and folding hides it.
+                status, mcp_headers, mcp_body = self.server.mcp_runtime.dispatch(
+                    method=method,
+                    path=path,
+                    headers=[(name, value) for name, value in self.headers.items()],
+                    body=self._read_body("application/json"),
                     call_tool=self._mcp_tool_call(
                         gateway, owner_id, provider_token, client_origin
                     ),
-                    server_version=PRODUCT_VERSION,
+                    quota=current_provider_quota(),
                 )
             else:
                 # `ROUTES` and this chain are one table written in two halves, and
@@ -7809,7 +7832,11 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             LOGGER.exception("unhandled gateway failure on %s %s", method, path)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
             payload = {"status": "blocked", "error": "internal_error"}
-        if browser is not None:
+        if mcp_body is not None and mcp_headers is not None:
+            # No `_challenge` here: this response carries a token that was already
+            # accepted, so there is no authentication for a challenge to start.
+            self._send_raw(int(status), mcp_headers, mcp_body)
+        elif browser is not None:
             # Set only by a browser-facing route that returned; a refusal raised out of
             # one leaves it `None` and is answered as JSON below. A route that ends in a
             # page rather than a redirect still sets no `payload`, so the access line
@@ -7919,12 +7946,20 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
     def _require_supported_protocol_version(self) -> None:
         """Refuse a header naming a protocol revision this server does not implement.
 
-        Separate from the ``initialize`` negotiation in ``mcp_transport``, and both are
+        Separate from the handshake the SDK runs inside ``initialize``, and both are
         required: the handshake settles which revision the connection uses, the header
         states it on every subsequent request so a stateless server does not have to
         remember. An absent header is accepted -- 2025-06-18 says it means 2025-03-26 --
-        and a value outside ``HTTP_PROTOCOL_VERSIONS`` is a ``400``, which the transport
-        specification requires in those words rather than leaves to judgement.
+        and a value outside ``mcp_sdk_transport.HTTP_PROTOCOL_VERSIONS`` is a ``400``,
+        which the transport specification requires in those words rather than leaves to
+        judgement.
+
+        That tuple is the SDK's own registry of every revision it serves, across both
+        eras, rather than a list maintained here. A revision this server does speak is
+        therefore never refused at this line: the 2026-07-28 refusals that sent Claude
+        Code back down to 2025 were this check reading a hand-maintained tuple that could
+        not keep up with the protocol. What remains here is the refusal for a value that
+        is genuinely unserved, and the security event that records it.
 
         The refusal names what this server does speak. A ``400`` that only says "not
         that one" leaves a client with nothing to retry with, and the revisions are
@@ -7934,7 +7969,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         raw = self.headers.get("MCP-Protocol-Version")
         if raw is None:
             return
-        if raw.strip() not in mcp_transport.HTTP_PROTOCOL_VERSIONS:
+        if raw.strip() not in mcp_sdk_transport.HTTP_PROTOCOL_VERSIONS:
             # Issue #369: name the refused revision without retaining a raw header.
             # get_all is diagnostic only; get/strip above remains the acceptance rule,
             # including its existing behaviour when the header occurs more than once.
@@ -7949,7 +7984,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             raise GatewayError(
                 HTTPStatus.BAD_REQUEST,
                 "unsupported_protocol_version",
-                extra={"supported": list(mcp_transport.HTTP_PROTOCOL_VERSIONS)},
+                extra={"supported": list(mcp_sdk_transport.HTTP_PROTOCOL_VERSIONS)},
             )
 
     def _public_base_url(self) -> str | None:
@@ -8164,6 +8199,31 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         if body and self.command != "HEAD":
             self.wfile.write(body)
 
+    def _send_raw(self, status: int, headers: list[tuple[str, str]], body: bytes) -> None:
+        """A response another layer already framed, forwarded without reshaping it.
+
+        The only caller is ``/mcp``. The MCP transport owns that body's content type --
+        which differs by protocol era and by whether the answer is a JSON-RPC result or a
+        notification acknowledgement with no body at all -- so the type is taken from what
+        it sent rather than asserted here. This gateway's own two response headers are
+        still added: neither is the transport's to decide, and an MCP result is exactly as
+        uncacheable and as un-sniffable as every other answer this server gives.
+        """
+        self._drain()
+        self.send_response(status)
+        for name, value in headers:
+            # `Content-Length` is recomputed below from the bytes actually being written;
+            # taking the transport's copy as well would send the header twice.
+            if name.lower() == "content-length":
+                continue
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        if body and self.command != "HEAD":
+            self.wfile.write(body)
+
     def _send_text(self, status: int, body: str) -> None:
         """One exact string, with nothing wrapped around it.
 
@@ -8196,7 +8256,31 @@ class CoachGatewayServer(ThreadingHTTPServer):
 
     def __init__(self, address: tuple[str, int], handler_class: type, *, gateway: CoachGateway):
         self.gateway = gateway
-        super().__init__(address, handler_class)
+        # The MCP protocol layer is asyncio and this server is threads, so the SDK's
+        # session manager runs on a loop of its own for the life of this server. Started
+        # before the socket is bound: an MCP layer that cannot come up is a broken
+        # deployment, and it should be a refused boot beside the state-root and identity
+        # checks rather than a 500 on whichever athlete's request arrives first.
+        self.mcp_runtime = mcp_sdk_transport.SdkTransport(PRODUCT_VERSION)
+        self.mcp_runtime.start()
+        try:
+            super().__init__(address, handler_class)
+        except BaseException:
+            # A port already in use must not leave a loop thread behind; this object is
+            # never returned to the caller, so nothing else can stop it.
+            self.mcp_runtime.stop()
+            raise
+
+    def server_close(self) -> None:
+        """Drain first, then close the loop -- never the other way around.
+
+        ``ThreadingHTTPServer.server_close`` joins every request thread this server
+        started (``daemon_threads = False`` above). Only once that returns is it certain
+        that no thread is still waiting on a dispatch into the loop, which is what lets
+        ``SdkTransport.dispatch`` wait without a timeout of its own.
+        """
+        super().server_close()
+        self.mcp_runtime.stop()
 
 
 def _probe_state_root_writable(state_root: Path) -> None:

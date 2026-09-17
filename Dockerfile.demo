@@ -8,7 +8,9 @@
 FROM python:3.11-slim
 
 # Same two OS packages the gateway image needs, for the same two stdlib reasons, and for
-# no others -- there is still no `pip install` step anywhere in this repository:
+# no others. This image installs no Python package at all: the gateway's one dependency is
+# the MCP SDK, and this service serves no MCP -- it is a browser-facing demo with its own
+# model, and nothing in `garmin_coach_loop/` may acquire its dependency or vice versa.
 #   - tzdata: the Debian base ships without system timezone data, so zoneinfo.ZoneInfo(...)
 #     raises for every real IANA name. The fixture and its contracts are written in
 #     Asia/Taipei, and the validators read those timestamps.

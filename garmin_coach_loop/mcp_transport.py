@@ -1,76 +1,53 @@
-"""Model Context Protocol transport over the Coach Gateway's own routes.
+"""The MCP surface this product serves: the tool catalogue, its schemas, its prompts.
 
-An MCP client -- claude.ai's custom connector, Codex, any other -- speaks JSON-RPC 2.0
-over one HTTP endpoint instead of one path per operation. That is the only difference
-this module introduces. Every tool below ends in ``CoachGateway.route``, which is where
-coaching capability lives and is deliberately not this module: the product holds exactly
-one validator, one store, one delivery boundary and one identity check, and a new entry
-changes data sources and operator tooling, never coaching capability (AGENTS.md
-invariant 10). ``CoachGateway.route_kinds`` is the list this catalogue is held against.
+An MCP client -- claude.ai's connector, ChatGPT's, Codex, any other -- speaks JSON-RPC
+over one HTTP endpoint instead of one path per operation. *How* that conversation is
+framed is not this module's any more: ``mcp_sdk_transport`` hands the official MCP Python
+SDK the wire, so protocol revisions, handshakes, envelopes and JSON-RPC faults are the
+SDK's to implement and to keep current. What stays here is what this product decided and
+a reviewer snapshots -- every tool's name, title, description, input and output schema,
+annotations and model-facing projection -- and it stays in one file because
+``tool_catalogue_sha256`` below is the digest a release binds and a review is scanned
+against.
+
+Every tool here ends in ``CoachGateway.route``, which is where coaching capability lives
+and is deliberately not this module: the product holds exactly one validator, one store,
+one delivery boundary and one identity check, and a new entry changes data sources and
+operator tooling, never coaching capability (AGENTS.md invariant 10).
+``CoachGateway.route_kinds`` is the list this catalogue is held against.
 
 Three consequences shape the code:
 
 - **Nothing here touches product state.** This module imports no store, delivery or
-  validation module and holds no owner, token or path. It reads a JSON-RPC message,
-  names a route kind, and renders whatever the gateway handed back. The one thing it
-  does own outright is ``prompts``: the orchestration layer in ``orchestration.md``,
+  validation module and holds no owner, token or path. It names a route kind and
+  describes what the gateway hands back. The one layer it owns outright is served beside
+  the tools rather than defined here: the orchestration prompt in ``orchestration.md``,
   which every entry needs (issue #125).
-- **The gateway owns identity; this module owns the protocol.** The bearer token is
-  resolved to an owner before this module sees a byte, so a message from an unknown
-  token never reaches the parser here.
+- **The gateway owns identity.** The bearer token is resolved to an owner before any
+  request reaches the protocol layer, so a message from an unknown token never reaches a
+  tool name.
 - **A refused coaching action is a tool result, not a protocol failure.** The model has
   to read a block -- a stale plan version, a missing confirmation, an open delivery
   reservation -- and act on it, which it cannot do if the transport folded it into a
-  JSON-RPC error the client handles instead. Only a message that cannot be read as a
-  request at all becomes a JSON-RPC error object.
+  JSON-RPC error the client handles instead. ``ToolCallBlocked`` below is how a refusal
+  crosses into the transport while staying a result.
 
-The server is stateless: no ``Mcp-Session-Id`` is issued, nothing is remembered between
-requests, and no SSE stream is opened. Streamable HTTP permits all three, and a
-restarted process therefore loses nothing a client needs.
+The server is stateless: nothing is remembered between requests, and a restarted process
+therefore loses nothing a client needs.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Callable, Sequence
+from typing import Any, Sequence
 
-from . import orchestration
 from .athlete_evidence import GOAL_OPTIONAL_FIELDS, IMPORT_RESOLUTIONS
 from .context_view import ALL as READ_ALL, ALL_GROUPS, DEFAULT_READ, FOCUS_AXES
 from .decision_scope import DECISION_SCOPE_SCHEMA
 from .evidence_import import IMPORT_FORMATS
 from .release_identity import sha256_text
-from .source_intervals import name_provider_quota_tool, note_tool_outcome
 
-
-# The revision this server answers with when a client asks for one it does not speak
-# (see ``_negotiated_version``). A revision this server *does* speak is agreed to as
-# asked.
-PROTOCOL_VERSION = "2025-06-18"
-
-# The revisions a client may negotiate. 2025-11-25 belongs here and 2025-03-26 does not,
-# for the same reason: what a revision obliges *this* server to do. 2025-11-25 changed
-# nothing a stateless server offering only tools and prompts has to honour -- its
-# additions are optional metadata and opt-in capabilities, and its two requirements here,
-# a 403 on a bad Origin and input-validation errors carried as tool results rather than
-# protocol errors, were already how this server behaves. 2025-03-26 allows JSON-RPC
-# batching, which this server refuses, so agreeing to it would promise something untrue.
-SUPPORTED_PROTOCOL_VERSIONS = (PROTOCOL_VERSION, "2025-11-25")
-
-# What the `MCP-Protocol-Version` HTTP header may say, which is a wider set than the one
-# above and deliberately so. The header is not the handshake: it states which revision an
-# already-negotiated connection is speaking, and 2025-06-18 requires a server that
-# receives no header at all to assume 2025-03-26. Refusing that value in the header while
-# assuming it in its absence would refuse exactly the clients the spec accommodates.
-#
-# It also has to tolerate a client that states its own preferred revision rather than the
-# negotiated one, which the specification only makes a `SHOULD`. Gemini Spark does
-# exactly that -- measured 2026-08-31: it opens with an `initialize` naming 2025-11-25,
-# accepts 2025-06-18 as the answer, and then carries `MCP-Protocol-Version: 2025-11-25`
-# on every request after it. With that value refused here, the connection completes and
-# every tool call is a 400.
-HTTP_PROTOCOL_VERSIONS: tuple[str, ...] = (PROTOCOL_VERSION, "2025-11-25", "2025-03-26")
 
 SERVER_NAME = "garmin-coach-loop"
 # `serverInfo.title` is the human-readable name 2025-06-18 added beside the stable `name`.
@@ -113,14 +90,6 @@ def _account_deletion_moved(operation: str) -> str:
         f"send the athlete to {SUPPORT_DATA_REQUEST_URL}, which tells them what to "
         "email. Do not describe the request as submitted -- it is not, until they write."
     )
-
-# JSON-RPC 2.0 error codes. Only these four can occur here: everything past the protocol
-# layer is a coaching answer, including a refusal.
-PARSE_ERROR = -32700
-INVALID_REQUEST = -32600
-METHOD_NOT_FOUND = -32601
-INVALID_PARAMS = -32602
-
 
 class ToolCallBlocked(Exception):
     """One tool call the gateway refused, carrying the gateway's own error payload.
@@ -3323,204 +3292,3 @@ def tool_catalogue_sha256(tools: Sequence[Tool] = TOOLS) -> str:
             sort_keys=True,
         )
     )
-
-
-# --------------------------------------------------------------------------------------
-# JSON-RPC 2.0
-# --------------------------------------------------------------------------------------
-
-
-def _result(message_id: Any, result: dict[str, Any]) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": message_id, "result": result}
-
-
-def _error(message_id: Any, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": message_id, "error": {"code": code, "message": message}}
-
-
-def _negotiated_version(requested: Any) -> str:
-    """Answer with the client's version when it is one this server speaks, else our own.
-
-    A client that cannot live with the answer disconnects, which is the protocol's own
-    resolution. Guessing agreement would be worse: it would leave the client believing a
-    removed feature is still available.
-    """
-    return requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
-
-
-def _text_content(payload: dict[str, Any]) -> dict[str, Any]:
-    """One tool response, rendered exactly as the gateway's own JSON body is.
-
-    ``ensure_ascii=False`` so the athlete's own language survives the encoding rather
-    than reaching the model as escape sequences. ``client_result_characters`` measures
-    this same string.
-
-    The 66,000-character guard is *not* here on purpose. This function serializes
-    every tool result, including ``applyCoachDecision`` and ``exportOwnerData``; a
-    ceiling that fired on a confirmation the athlete already approved, or on the
-    archive they asked for, would be worse than an oversized read. It also
-    serializes the refusal itself, which must not re-enter a guard. The check
-    lives in ``CoachGateway.route`` for ``session`` and ``evidence_read`` only,
-    on the redacted payload this function would emit, and raises before that
-    payload is handed here.
-    """
-    return {"type": "text", "text": client_result_json(payload)}
-
-
-def _call_tool(
-    message_id: Any, params: Any, call_tool: Callable[[str, dict[str, Any]], dict[str, Any]]
-) -> dict[str, Any]:
-    if not isinstance(params, dict):
-        return _error(message_id, INVALID_PARAMS, "params must be an object")
-    name = params.get("name")
-    if isinstance(name, str) and name in RETIRED_TOOLS:
-        # A cached catalogue, not a protocol mistake: answer it the way the gateway
-        # answers any refusal, so the model reads `status: blocked` and cannot report
-        # an erasure that never happened.
-        name_provider_quota_tool(name)
-        note_tool_outcome("blocked:account_deletion_moved")
-        return _result(
-            message_id,
-            {
-                "content": [
-                    _text_content(
-                        {
-                            "status": "blocked",
-                            "error": "account_deletion_moved",
-                            "detail": _account_deletion_moved(RETIRED_TOOLS[name]),
-                            "support_url": SUPPORT_DATA_REQUEST_URL,
-                        }
-                    )
-                ],
-                "isError": True,
-            },
-        )
-    tool = TOOLS_BY_NAME.get(name) if isinstance(name, str) else None
-    if tool is None:
-        # A name this server does not serve is a protocol-level mistake by the client, not
-        # a coaching refusal: there is no tool whose result it could be.
-        return _error(message_id, INVALID_PARAMS, f"unknown tool: {name!r}")
-    arguments = params.get("arguments")
-    if arguments is None:
-        arguments = {}
-    if not isinstance(arguments, dict):
-        return _error(message_id, INVALID_PARAMS, "arguments must be an object")
-    # Which tool this HTTP request's provider spend belongs to, for the access-log
-    # line (issue #260). The public name, which the client already sent.
-    name_provider_quota_tool(name)
-    try:
-        payload = call_tool(tool.kind, arguments)
-    except ToolCallBlocked as blocked:
-        # The gateway's own refusal body, through the same projection, so the model reads
-        # the same `status: blocked` and error code the gateway's own body carries.
-        # No `structuredContent` here: `outputSchema` describes this tool's result, a
-        # refusal is not one, and a validating client must not be handed a refusal shaped
-        # as if it were.
-        return _result(
-            message_id,
-            {"content": [_text_content(_redact(blocked.payload, tool.redactions))], "isError": True},
-        )
-    projected = _redact(payload, tool.redactions)
-    # Both members carry the same projected object: `structuredContent` is what
-    # 2025-06-18 obliges a tool with an `outputSchema` to return, and the text block is
-    # the same JSON serialized for clients that read only `content`. One projection,
-    # serialized once -- never a fuller copy on one member than the other.
-    return _result(
-        message_id,
-        {"content": [_text_content(projected)], "structuredContent": projected},
-    )
-
-
-def _get_prompt(message_id: Any, params: Any) -> dict[str, Any]:
-    """Serve one of the prompts this server has, or say plainly that a name is not one."""
-    if not isinstance(params, dict):
-        return _error(message_id, INVALID_PARAMS, "params must be an object")
-    name = params.get("name")
-    served = orchestration.PROMPTS.get(name) if isinstance(name, str) else None
-    if served is None:
-        return _error(message_id, INVALID_PARAMS, f"unknown prompt: {name!r}")
-    return _result(message_id, served[1]())
-
-
-def handle(
-    raw: bytes,
-    *,
-    call_tool: Callable[[str, dict[str, Any]], dict[str, Any]],
-    server_version: str,
-) -> tuple[int, dict[str, Any] | None]:
-    """Answer one MCP message: ``(HTTP status, JSON-RPC body or None)``.
-
-    ``None`` means the message was a notification, which has no response at all -- the
-    caller sends the status and no body.
-
-    ``call_tool`` is the caller's already-authenticated dispatch into
-    ``CoachGateway.route``; it raises ``ToolCallBlocked`` for a refusal. Nothing in this
-    function knows which athlete it is serving, which is the point.
-    """
-    try:
-        message = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return 400, _error(None, PARSE_ERROR, "request body must be UTF-8 JSON-RPC")
-    if isinstance(message, list):
-        # Removed from the protocol in 2025-06-18. Saying so plainly beats answering the
-        # first element and silently dropping the rest.
-        return 400, _error(None, INVALID_REQUEST, "JSON-RPC batching is not supported")
-    if (
-        not isinstance(message, dict)
-        or message.get("jsonrpc") != "2.0"
-        or not isinstance(message.get("method"), str)
-    ):
-        return 400, _error(None, INVALID_REQUEST, "not a JSON-RPC 2.0 request")
-
-    method = message["method"]
-    # A notification is defined by the *absence* of the member, not by a null id.
-    if "id" not in message:
-        # Every notification this server can receive -- `notifications/initialized` and
-        # anything a future client sends -- is accepted and answered with nothing. There
-        # is no per-connection state for one to change.
-        return 202, None
-
-    message_id = message["id"]
-    if method == "initialize":
-        params = message.get("params")
-        requested = params.get("protocolVersion") if isinstance(params, dict) else None
-        return 200, _result(
-            message_id,
-            {
-                "protocolVersion": _negotiated_version(requested),
-                # Tools, and the two prompts that say how to sequence them and how to
-                # coach. No resources, sampling or logging: each would be a second way to
-                # reach the same state. A prompt is not that -- it reaches no state at
-                # all (issue #125).
-                "capabilities": {"tools": {}, "prompts": {}},
-                # The one layer that does not wait to be asked for. A prompt is
-                # user-controlled by specification -- a client is expected to offer it for
-                # explicit selection, and Claude Code surfaces each as a slash command --
-                # so serving one is not delivering it. `instructions` is the surface the
-                # specification defines for text a host may put in front of its model
-                # without anybody choosing it, which is exactly what sequencing is: a
-                # client that drives these operations without it can write to an
-                # athlete's calendar without the confirmation this product is built on.
-                #
-                # `MAY` is as strong as the specification gets, so this is not a
-                # guarantee either -- it is the difference between "no host can be
-                # expected to have it" and "a host that honours the field does".
-                "instructions": orchestration.instructions(),
-                "serverInfo": {"name": SERVER_NAME, "title": SERVER_TITLE, "version": server_version},
-            },
-        )
-    if method == "ping":
-        # Base-protocol liveness check; an unanswered ping reads as a dead connection.
-        return 200, _result(message_id, {})
-    if method == "tools/list":
-        return 200, _result(message_id, {"tools": [tool.descriptor() for tool in TOOLS]})
-    if method == "tools/call":
-        return 200, _call_tool(message_id, message.get("params"), call_tool)
-    if method == "prompts/list":
-        return 200, _result(
-            message_id,
-            {"prompts": [descriptor() for descriptor, _ in orchestration.PROMPTS.values()]},
-        )
-    if method == "prompts/get":
-        return 200, _get_prompt(message_id, message.get("params"))
-    return 200, _error(message_id, METHOD_NOT_FOUND, f"unknown method: {method!r}")

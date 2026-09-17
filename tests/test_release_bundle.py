@@ -6,6 +6,7 @@ import io
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -192,7 +193,7 @@ class ReleaseIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "bundle.json"
             subprocess.run(
-                ["python3", str(SCRIPT), "build", "--gateway-domain", "https://gateway.example", "--output", str(output)],
+                [sys.executable, str(SCRIPT), "build", "--gateway-domain", "https://gateway.example", "--output", str(output)],
                 cwd=ROOT,
                 check=True,
                 capture_output=True,
@@ -266,7 +267,7 @@ class ReleaseIdentityTests(unittest.TestCase):
             output = root / "expected-deployment.json"
             result = subprocess.run(
                 [
-                    "python3",
+                    sys.executable,
                     str(SCRIPT),
                     "deployment-identity",
                     "--env-file",
@@ -289,14 +290,14 @@ class ReleaseIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bundle = root / "bundle.json"
-            result = subprocess.run(["python3", str(SCRIPT), "build", "--gateway-domain", "https://gateway.example", "--output", str(bundle)], cwd=ROOT, text=True, capture_output=True)
+            result = subprocess.run([sys.executable, str(SCRIPT), "build", "--gateway-domain", "https://gateway.example", "--output", str(bundle)], cwd=ROOT, text=True, capture_output=True)
             self.assertEqual(0, result.returncode, result.stderr)
             first = bundle.read_text(encoding="utf-8")
             again = root / "again.json"
             self.assertEqual(
                 0,
                 subprocess.run(
-                    ["python3", str(SCRIPT), "build", "--gateway-domain", "https://gateway.example", "--output", str(again)],
+                    [sys.executable, str(SCRIPT), "build", "--gateway-domain", "https://gateway.example", "--output", str(again)],
                     cwd=ROOT,
                     capture_output=True,
                     text=True,
@@ -319,7 +320,7 @@ class ReleaseIdentityTests(unittest.TestCase):
             root = Path(directory)
             bundle_path = root / "bundle.json"
             subprocess.run(
-                ["python3", str(SCRIPT), "build", "--gateway-domain", "https://gateway.example", "--output", str(bundle_path)],
+                [sys.executable, str(SCRIPT), "build", "--gateway-domain", "https://gateway.example", "--output", str(bundle_path)],
                 cwd=ROOT,
                 check=True,
                 capture_output=True,

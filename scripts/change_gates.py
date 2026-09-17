@@ -37,6 +37,12 @@ LIVE_SMOKE_PATHS = frozenset(
         # connector does. Unit tests drive it against a fake provider; whether the hop
         # still works is a question only a real run answers.
         "garmin_coach_loop/hosted.py",
+        # The wire every connected client reaches `/mcp` on. It serves no catalogue of
+        # its own -- the reviewed surface is still `mcp_transport.py`, and the digest row
+        # below is what notices a moved one whichever file moved it -- but it decides
+        # which protocol era a request is answered on, so a change here is exactly the
+        # kind only a real client proves.
+        "garmin_coach_loop/mcp_sdk_transport.py",
     }
 )
 

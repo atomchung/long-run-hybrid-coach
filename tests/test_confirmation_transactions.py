@@ -20,7 +20,7 @@ from unittest import mock
 from garmin_coach_loop import athlete_evidence, privacy_request
 from garmin_coach_loop import gateway as gateway_module
 from garmin_coach_loop.identity import lookup_or_create_owner, record_token_fingerprint
-from garmin_coach_loop.mcp_transport import PROTOCOL_VERSION, RETIRED_TOOLS, TOOLS_BY_NAME
+from garmin_coach_loop.mcp_transport import RETIRED_TOOLS, TOOLS_BY_NAME
 from garmin_coach_loop.privacy_request import PrivacyRequestError
 from garmin_coach_loop.store import init_store, read_current_plan, resolve_state_dir
 from failure_injection import isolated_product_home, restart_gateway
@@ -38,7 +38,7 @@ from test_gateway import (
     publishable_plan,
     unwritable,
 )
-from test_mcp_gateway import McpTestCase
+from test_mcp_gateway import PROTOCOL_VERSION, McpTestCase
 
 
 EXCLUDED_PUBLIC_DELETION = ("prepareOwnerDeletion", "applyOwnerDeletion")
