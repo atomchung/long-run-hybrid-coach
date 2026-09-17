@@ -277,11 +277,15 @@ def _pinned_dependency_set(contents: dict[str, str | None]) -> str:
 
 
 def dependency_pin_at(ref: str) -> str | None:
-    """The pinned dependency set ``ref`` builds from, or ``None`` for an unknown ref.
+    """The pinned dependency set ``ref`` builds from, or ``None`` when it cannot be read.
 
-    ``None`` is "the question was never answered", exactly as it is for the catalogue
-    digest: a ref that cannot be read carries no evidence, and the classification below
-    then asks for the acceptance run rather than assuming the pin stood still.
+    ``None`` means "the question was never answered" here as it does for the catalogue
+    digest, but what happens next is **not** the same and the difference is deliberate.
+    An unanswered catalogue question falls back to the line markers in
+    ``mcp_transport.py``, which are an estimate of the same thing. There is no estimate of
+    a dependency pin -- a version and a set of hashes are either compared or they are not --
+    so an unanswered pin asks for the acceptance run instead of assuming it stood still.
+    Aligning the two would mean answering "no gate" from having measured nothing.
     """
     contents: dict[str, str | None] = {}
     for name in sorted(DEPENDENCY_PATHS):

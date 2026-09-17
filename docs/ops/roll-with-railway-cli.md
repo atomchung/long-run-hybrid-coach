@@ -53,9 +53,12 @@ reviewed commit), not with the candidate itself:
    python3 scripts/change_gates.py --base origin/production
    ```
 
-   Run the listed live smoke only when `live_smoke` is true. Run the real-client and OpenAI
-   steps only when `client_acceptance` / `scan_tools` is true. Internal code, docs and CI-only
-   changes still get `/readyz` after deployment, but do not acquire a live ceremony. The
+   Run the listed live smoke only when `live_smoke` is true, and the real-client acceptance
+   when `client_acceptance` is true. The OpenAI steps -- Scan Tools and a new reviewed version
+   before resubmission -- follow `scan_tools` / `plugin_resubmission` and nothing else: a moved
+   dependency pin sets `client_acceptance` without setting either, and a resubmission run on it
+   would put a release into review for a change no reviewer can see. Internal code, docs and
+   CI-only changes still get `/readyz` after deployment, but do not acquire a live ceremony. The
    detailed entry sequence remains in `accept-an-entry-after-a-surface-change.md`, and
    `protocol_acceptance: true` -- a change naming `garmin_coach_loop/mcp_sdk_transport.py`,
    or a moved dependency pin -- also needs `accept-both-protocol-eras.md`, which is the only
