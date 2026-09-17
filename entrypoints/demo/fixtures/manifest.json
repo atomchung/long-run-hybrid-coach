@@ -1,0 +1,20 @@
+{
+  "fixture": "anonymous 10K-plus-strength-maintenance athlete, three weeks into a 28-day cycle",
+  "purpose": "The only athlete the public Product Hunt demo ever reads. Nobody's real data.",
+  "private_data": false,
+  "provider_connection": false,
+  "identity": "none -- no name, no account, no provider id, no contact detail, no real location",
+  "as_of": "2026-09-13T18:40:00+08:00",
+  "files": {
+    "context": "coach-context.json",
+    "plan": "plan-state.json",
+    "acceptance": "acceptance-prompts.json"
+  },
+  "deliberate_unknowns": [
+    "the 2026-09-09 strength session came back with no execution evidence at all",
+    "overnight HRV was observed on 4 of the last 7 days",
+    "two of the three comparable threshold sessions carry no per-segment heart rate",
+    "the cycle's declared 10K measurement has not been run yet",
+    "nothing before 2026-08-03 was imported, so there is no multi-month trend to read"
+  ]
+}

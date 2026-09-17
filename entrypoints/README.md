@@ -19,6 +19,16 @@ that real run has not happened yet through this specific client.
 | Smithery | [`mcp/`](mcp/README.md) | Verified end-to-end against production |
 | Hermes Agent | [`mcp/`](mcp/README.md) | Packaged, awaiting real-connection verification |
 
+## Not a channel: the public demo
+
+[`demo/`](demo/README.md) is the Product Hunt playground, and it is the one thing under this
+directory that is not packaging around the sentence at the top of this page. It has no
+athlete, no PlanState, no provider connection and no write path: it reads one committed
+synthetic fixture, reasons over it with the product's own contracts and projectors, and
+stops at a preview. It deploys as a second Railway service from this same repository with
+its own secret and its own limits, so a visitor hammering it cannot reach, slow or break a
+connected athlete's plan.
+
 Getting a channel *listed* rather than merely reachable — the metadata a directory asks for,
 the reviewer's path, and the steps that happen in somebody's console — is
 [`../docs/distribution/`](../docs/distribution/README.md).

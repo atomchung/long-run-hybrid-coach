@@ -1,0 +1,25 @@
+# Railway settings for the public demo service (entrypoints/demo).
+#
+# A SECOND service in the same project, built from this same repository. Set this file as
+# the service's config-as-code path; railway.toml stays the Coach Gateway's and is not
+# touched by anything here.
+#
+# Two differences from that file are the whole point of this one. There is no volume: the
+# demo holds its sessions in memory and has nothing to persist, and a disk here would be
+# the first step towards a second store for somebody's plan. And there is no drain window
+# to protect an owner lock, because there is no owner and no lock -- a restart costs a
+# visitor their conversation and nothing else.
+#
+# Variables this service needs: OPENAI_API_KEY, and COACH_DEMO_ALLOWED_ORIGINS when a
+# preview origin has to reach it. It needs no Intervals OAuth secrets; it has no provider
+# client to give them to.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.demo"
+
+[deploy]
+healthcheckPath = "/healthz"
+healthcheckTimeout = 60
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

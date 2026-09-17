@@ -1,0 +1,294 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "demo-plan-001",
+  "version": 4,
+  "status": "active",
+  "athlete_baseline": {
+    "threshold_pace_sec_per_km": 345,
+    "max_hr": 189,
+    "easy_hr_ceiling": 152,
+    "longest_recent_run_km": 15.0,
+    "weekly_volume_km_4wk_avg": 34.0,
+    "max_session_minutes": 90,
+    "strength_loads": [
+      {
+        "exercise": "back squat",
+        "load_kg": 80.0,
+        "assist_kg": null,
+        "scheme": "4x5"
+      },
+      {
+        "exercise": "pull-up",
+        "load_kg": null,
+        "assist_kg": 12.5,
+        "scheme": "3x8"
+      }
+    ]
+  },
+  "goal": {
+    "outcome": "improve repeatable 10K performance while maintaining squat and pulling strength",
+    "measurement_protocol": "Run the same measured 10K loop in comparable conditions in the cycle's final week and compare it against the same loop run on 2026-08-24",
+    "measurement": {
+      "reference_session_id": "run-measure-ref",
+      "measurement_week_start": "2026-09-14",
+      "compare": "Same measured 10K loop at the same effort; compare elapsed time and average heart rate"
+    }
+  },
+  "cycle": {
+    "start": "2026-08-24",
+    "end": "2026-09-20",
+    "primary_adaptation": "threshold",
+    "maintenance_adaptation": "strength",
+    "planned_evidence": [
+      "One threshold anchor on the same measured loop each week",
+      "One long easy run each week",
+      "One full-body strength session each week, kept away from failure"
+    ],
+    "adjust_conditions": [
+      "Two consecutive weeks miss the threshold anchor",
+      "Repeatable threshold efforts deteriorate with adequate recovery"
+    ],
+    "stop_conditions": [
+      "Pain, illness, chest pain, dizziness, or unusual symptoms require a human decision"
+    ],
+    "outlook": [
+      {
+        "week_start": "2026-09-14",
+        "intent": "Reduce total volume and run the cycle's declared 10K measurement.",
+        "key_sessions": [
+          "One measured 10K on the cycle's own loop, in comparable conditions",
+          "One short easy run",
+          "One strength session at reduced volume"
+        ],
+        "relation_to_primary": "Reads the primary adaptation against the 2026-08-24 reference run."
+      }
+    ]
+  },
+  "week": {
+    "start": "2026-09-07",
+    "intent": "Hold the threshold anchor and the long run, keep one strength exposure",
+    "sessions": [
+      {
+        "session_id": "run-quality-w3",
+        "sport": "running",
+        "scheduled_date": "2026-09-08",
+        "time_window": "morning",
+        "purpose": "Repeatable 10K-specific threshold work on the same measured loop",
+        "adaptation": "threshold",
+        "body_stress": "lower",
+        "cost": "hard",
+        "priority": "anchor",
+        "planned_minutes": 60,
+        "hard": true,
+        "plan": {
+          "kind": "time_axis",
+          "name": "5 x 1km threshold",
+          "steps": [
+            {
+              "kind": "work",
+              "name": "Warm up",
+              "duration": {
+                "kind": "time",
+                "seconds": 720
+              },
+              "target": {
+                "kind": "pace",
+                "unit": "sec_per_km",
+                "low_seconds_per_km": 400,
+                "high_seconds_per_km": 430
+              }
+            },
+            {
+              "kind": "repeat",
+              "repetitions": 5,
+              "steps": [
+                {
+                  "kind": "work",
+                  "name": "Threshold",
+                  "duration": {
+                    "kind": "distance",
+                    "meters": 1000
+                  },
+                  "target": {
+                    "kind": "pace",
+                    "unit": "sec_per_km",
+                    "low_seconds_per_km": 335,
+                    "high_seconds_per_km": 345
+                  }
+                },
+                {
+                  "kind": "work",
+                  "name": "Jog",
+                  "duration": {
+                    "kind": "time",
+                    "seconds": 120
+                  },
+                  "target": {
+                    "kind": "open"
+                  }
+                }
+              ]
+            },
+            {
+              "kind": "work",
+              "name": "Cool down",
+              "duration": {
+                "kind": "time",
+                "seconds": 480
+              },
+              "target": {
+                "kind": "open"
+              }
+            }
+          ]
+        },
+        "fallback": {
+          "action": "reduce",
+          "description": "Drop one repetition, hold the pace"
+        },
+        "execution": {
+          "publish_supported": true,
+          "external_id": null,
+          "delivery_state": "not_published"
+        },
+        "match_status": "completed",
+        "prescription": "Warm up 12 min pace 6:40-7:10/km\n5 rounds: Threshold 1 km pace 5:35-5:45/km, Jog 2 min\nCool down 8 min"
+      },
+      {
+        "session_id": "strength-w3",
+        "sport": "strength",
+        "scheduled_date": "2026-09-09",
+        "time_window": "evening",
+        "purpose": "Maintain squat and pulling strength without lower-body failure",
+        "adaptation": "strength",
+        "body_stress": "full",
+        "cost": "moderate",
+        "priority": "anchor",
+        "planned_minutes": 50,
+        "hard": false,
+        "plan": {
+          "kind": "movement_list",
+          "movements": [
+            {
+              "exercise": "back squat",
+              "display_name": "back squat",
+              "sets": 4,
+              "reps": 5,
+              "load_kg": 80.0,
+              "assist_kg": null,
+              "load_basis": "measured_baseline"
+            },
+            {
+              "exercise": "pull-up",
+              "display_name": "pull-up",
+              "sets": 3,
+              "reps": 8,
+              "load_kg": null,
+              "assist_kg": 12.5,
+              "load_basis": "measured_baseline"
+            }
+          ]
+        },
+        "fallback": {
+          "action": "reduce",
+          "description": "Drop the last squat set, hold the load"
+        },
+        "execution": {
+          "publish_supported": false,
+          "external_id": null,
+          "delivery_state": "not_published"
+        },
+        "match_status": "planned",
+        "prescription": "back squat 4x5 80 kg\npull-up 3x8 assist 12.5 kg"
+      },
+      {
+        "session_id": "run-easy-w3",
+        "sport": "running",
+        "scheduled_date": "2026-09-10",
+        "time_window": "morning",
+        "purpose": "Aerobic support at conversational effort",
+        "adaptation": "aerobic_base",
+        "body_stress": "lower",
+        "cost": "easy",
+        "priority": "flexible",
+        "planned_minutes": 40,
+        "hard": false,
+        "plan": {
+          "kind": "time_axis",
+          "name": "Easy run",
+          "steps": [
+            {
+              "kind": "work",
+              "name": "Easy run",
+              "duration": {
+                "kind": "time",
+                "seconds": 2400
+              },
+              "target": {
+                "kind": "pace",
+                "unit": "sec_per_km",
+                "low_seconds_per_km": 400,
+                "high_seconds_per_km": 430
+              }
+            }
+          ]
+        },
+        "fallback": {
+          "action": "reduce",
+          "description": "Shorten it and keep the effort easy"
+        },
+        "execution": {
+          "publish_supported": true,
+          "external_id": null,
+          "delivery_state": "not_published"
+        },
+        "match_status": "completed",
+        "prescription": "Easy run 40 min pace 6:40-7:10/km"
+      },
+      {
+        "session_id": "run-long-w3",
+        "sport": "running",
+        "scheduled_date": "2026-09-12",
+        "time_window": "morning",
+        "purpose": "The weekly long aerobic exposure a 10K sits on",
+        "adaptation": "aerobic_base",
+        "body_stress": "lower",
+        "cost": "moderate",
+        "priority": "anchor",
+        "planned_minutes": 85,
+        "hard": false,
+        "plan": {
+          "kind": "time_axis",
+          "name": "Long easy run",
+          "steps": [
+            {
+              "kind": "work",
+              "name": "Long easy run",
+              "duration": {
+                "kind": "time",
+                "seconds": 5100
+              },
+              "target": {
+                "kind": "pace",
+                "unit": "sec_per_km",
+                "low_seconds_per_km": 400,
+                "high_seconds_per_km": 440
+              }
+            }
+          ]
+        },
+        "fallback": {
+          "action": "reduce",
+          "description": "Shorten it and keep the effort easy"
+        },
+        "execution": {
+          "publish_supported": true,
+          "external_id": null,
+          "delivery_state": "not_published"
+        },
+        "match_status": "completed",
+        "prescription": "Long easy run 85 min pace 6:40-7:20/km"
+      }
+    ]
+  }
+}
