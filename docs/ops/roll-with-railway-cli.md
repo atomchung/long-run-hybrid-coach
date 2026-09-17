@@ -61,7 +61,10 @@ reviewed commit), not with the candidate itself:
    `requirements.txt` -- also needs `accept-both-protocol-eras.md`, which is the only
    thing that catches a 2026-07-28 client silently falling back to 2025.
 
-1. **Build the release bundle for the exact commit being promoted.**
+1. **Build the release bundle for the exact commit being promoted.** It reads the served
+   tool catalogue out of the gateway module, which imports the MCP SDK, so the checkout
+   needs `python3 -m pip install -r requirements.txt` first -- the same one line CI and
+   the deployed image run.
 
    ```bash
    python3 scripts/release_bundle.py build \
