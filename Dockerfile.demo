@@ -29,7 +29,8 @@ COPY garmin_coach_loop/ /app/garmin_coach_loop/
 COPY entrypoints/ /app/entrypoints/
 
 # Unbuffered so the access log reaches the platform's collector as it is written.
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
 
 # Documentary only -- Docker does not enforce it. The bound port is decided at startup by
 # COACH_DEMO_PORT, with 8433 (config.py DEFAULT_PORT) as the fallback.
