@@ -15,6 +15,34 @@ anybody's plan -- no store, no owner and no write path is reachable from it -- s
 athlete. `tests/test_demo_boundary.py` holds every clause of this paragraph that a test
 can hold.
 
+## Dependencies
+
+The product had no Python dependencies at all until 2026-09-17, and the reason that
+stopped being right is worth stating rather than the rule alone. MCP is not this
+repository's protocol. Hand-writing it meant owning every revision of somebody else's
+wire format, and the revision that made that untenable -- 2026-07-28 -- is not another
+value in a version list but a different message shape, so the alternative to a dependency
+was a second protocol implementation maintained here forever (issue #352).
+
+So there is exactly one dependency, pinned exactly, in `requirements.txt`:
+
+- **`mcp`**, the official Model Context Protocol Python SDK. It owns the protocol and
+  wire layer behind `/mcp` -- revisions, the 2025 `initialize` handshake, the 2026-07-28
+  per-request envelope and `server/discover`, JSON-RPC framing, and serving both eras from
+  one endpoint. It carries no LLM client and no provider credential, so the rule above is
+  untouched: the model doing the coaching is still the client's.
+
+Adding a second one is a decision of the same size, not a follow-on from this one. The
+question to answer first is whether the thing being imported is a standard this product
+merely speaks, or product behaviour it should own. Coaching, validation, the store, the
+delivery boundary and identity are the second kind and stay stdlib-only.
+
+`python3 -m unittest discover -s tests -p 'test_*.py'` and
+`python3 scripts/check_repo_safety.py` now need `requirements.txt` installed; CI installs
+it, and so does the deployed image. `/readyz` reports the version that was actually
+resolved (`mcp_sdk_version`), because a pin says what the build asked for and only the
+running container says what is answering.
+
 ## Repository invariants
 
 1. Keep the product runnable without importing PersonalOS. PersonalOS may be a
@@ -180,6 +208,11 @@ The repository has one inexpensive local feedback path and two correctness bound
 # unstaged and untracked work in this checkout
 python3 scripts/test_selection.py
 
+# the reviewed model-facing surface, compared against a base ref through both
+# protocol eras -- tool names, descriptions, schemas, annotations, instructions,
+# prompts, and the catalogue digest
+python3 scripts/mcp_contract_equivalence.py --base origin/main
+
 # see the exact manual gates before touching a live client
 python3 scripts/change_gates.py --base origin/main
 
@@ -278,10 +311,12 @@ ancestor of `main`.
 Run:
 
 ```bash
+python3 -m pip install -r requirements.txt
 python3 -m unittest discover -s tests -p 'test_*.py'
 python3 scripts/check_repo_safety.py
 ```
 
-Both run on a bare Python 3.11 with nothing installed. They remain the merge and main
-confidence boundary; the production promotion job intentionally proves reuse of that
+They run on Python 3.11 with `requirements.txt` installed -- one pinned package, the MCP
+SDK; see **Dependencies** above for why there is one at all. They remain the merge and
+main confidence boundary; the production promotion job intentionally proves reuse of that
 boundary for the same commit instead of executing it a second time.

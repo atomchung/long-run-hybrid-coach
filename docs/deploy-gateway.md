@@ -19,7 +19,14 @@ got — see [`ops/security-events.md`](ops/security-events.md).
 
 One long-running Python process, no application server or process manager in front of
 it: `garmin_coach_loop.gateway.CoachGatewayServer` is itself an HTTP server
-(`http.server.ThreadingHTTPServer`) that binds `0.0.0.0` on a platform-provided port. TLS
+(`http.server.ThreadingHTTPServer`) that binds `0.0.0.0` on a platform-provided port.
+Beside it, on a thread of its own, one asyncio loop hosts the MCP SDK's session manager:
+the protocol layer behind `/mcp` is asyncio and this server is threads, so a `/mcp`
+request is marshalled across and every other route is untouched. It is started before the
+socket is bound and closed after the last request thread has been joined, so a drain is
+still a drain. The one Python dependency the image installs (`requirements.txt`, the MCP
+SDK) is what that loop runs; `/readyz` reports the version it resolved as
+`mcp_sdk_version`. TLS
 terminates at the platform, never in this process. One persistent volume holds the
 identity registry (`identity.db`) and every owner's PlanState store; nothing else in this
 deployment is stateful. **Exactly one replica** -- see the "single replica" note in

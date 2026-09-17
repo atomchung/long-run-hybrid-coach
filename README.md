@@ -152,9 +152,9 @@ Garmin / Apple Watch / 其他下游同步
 
 ### 自架怎麼跑？
 
-Repo 使用 Python 3.11，產品本身只用標準函式庫，不需要先安裝一串套件。
+Repo 使用 Python 3.11，只有一個釘死版本的依賴：官方 MCP Python SDK（`requirements.txt`），它負責 `/mcp` 的協定與傳輸層。教練判斷、驗證、store、交付與身分都仍然只用標準函式庫。
 
-1. Clone repo。
+1. Clone repo，然後 `python3 -m pip install -r requirements.txt`。
 2. **向 Intervals.icu 申請建立 OAuth application。** Intervals 目前的公開流程不是在 Settings 自助新增：依官方說明提供 app name、description、website、logo、privacy policy、redirect URI 與你的 Intervals ID；app 建立後才會出現在 Settings，從 **Manage App** 取得 `client_id` / secret。流程見 [Intervals.icu OAuth support](https://forum.intervals.icu/t/intervals-icu-oauth-support/2759)。
 3. 在 Intervals app 裡註冊 callback：`<gateway-origin>/oauth/callback`。本機 client 可以走 loopback；remote client 需要可達的 HTTPS 或安全通道。
 4. 設定必要環境變數：

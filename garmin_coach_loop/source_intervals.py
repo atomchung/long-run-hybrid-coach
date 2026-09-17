@@ -179,6 +179,29 @@ def current_provider_quota() -> ProviderQuotaScope | None:
     return _QUOTA_SCOPE.get()
 
 
+@contextmanager
+def adopt_provider_quota_scope(scope: ProviderQuotaScope | None) -> Iterator[None]:
+    """Re-open an already-open scope on a second thread, so its spend lands in one place.
+
+    ``provider_quota_scope`` opens one scope per HTTP request on the thread that serves
+    it. The MCP transport runs the tool call on a worker thread instead (the event loop
+    serving every other in-flight request must not block on a delivery), and a context
+    variable is not inherited across that hop. Handing the same ``ProviderQuotaScope``
+    object over is what keeps the tool name, the outcome and the Intervals call count on
+    the object the request thread will read for its access-log line.
+
+    ``None`` is a run with no scope open -- the CLI, a test -- and costs nothing.
+    """
+    if scope is None:
+        yield
+        return
+    token = _QUOTA_SCOPE.set(scope)
+    try:
+        yield
+    finally:
+        _QUOTA_SCOPE.reset(token)
+
+
 def count_provider_call() -> None:
     scope = _QUOTA_SCOPE.get()
     if scope is not None:

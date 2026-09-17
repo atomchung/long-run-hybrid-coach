@@ -152,9 +152,9 @@ Which entry points are verified end to end on real hardware, and which are packa
 
 ### Running your own server
 
-The repository uses Python 3.11 and is stdlib-only at runtime.
+The repository uses Python 3.11 and has one pinned dependency, the official MCP Python SDK (`requirements.txt`), which owns the protocol and wire layer behind `/mcp`. Coaching judgment, validation, the store, delivery and identity remain stdlib-only.
 
-1. Clone the repository.
+1. Clone the repository, then `python3 -m pip install -r requirements.txt`.
 2. **Request an OAuth application from Intervals.icu.** Their public process is not self-service app creation in Settings: send the application details listed in [Intervals.icu OAuth support](https://forum.intervals.icu/t/intervals-icu-oauth-support/2759). After Intervals creates it, **Manage App** appears in Settings and exposes the `client_id` and secret.
 3. Register `<gateway-origin>/oauth/callback` as the provider callback. A local client may use loopback; a remote client needs reachable HTTPS or a secure tunnel.
 4. Set the required variables:

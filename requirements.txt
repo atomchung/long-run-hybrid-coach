@@ -1,0 +1,15 @@
+# The gateway's one runtime dependency, and the reason the product stopped being
+# stdlib-only (AGENTS.md records the exception and what it costs).
+#
+# `mcp` is the official Model Context Protocol Python SDK. It owns the protocol and wire
+# layer this product used to hand-write: which revisions exist, how the 2025 `initialize`
+# handshake negotiates one, how the 2026-07-28 per-request envelope and `server/discover`
+# work, and how both are served from a single `/mcp`. Nothing product-facing is imported
+# from it -- no coaching, no store, no validation, no provider access -- and no LLM API
+# comes with it, so AGENTS.md's first rule is untouched.
+#
+# Pinned exactly, not floated. This dependency decides what a connected client sees on
+# the wire, so which version a deployment is running has to be a fact in the repository
+# rather than whatever the build host resolved that day; `/readyz` reports the resolved
+# version beside the release identity.
+mcp==2.2.0

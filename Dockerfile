@@ -10,11 +10,9 @@
 # host only needs its own equivalent of that file, pointed at this same image.
 FROM python:3.11-slim
 
-# The product is stdlib-only by repository rule (AGENTS.md: must not call an LLM API, and
-# there is no requirements.txt here) -- no `pip install` step exists because none is
-# needed, not because one was forgotten. These are OS packages, not Python ones, so
-# neither contradicts "no pip install" -- they supply data and trust anchors the stdlib
-# itself reads, not a library:
+# OS packages, not Python ones: they supply data and trust anchors the stdlib itself
+# reads, not a library. The Python dependency is installed separately below --
+# requirements.txt, one entry, the MCP protocol SDK.
 #   - tzdata: `python:3.11-slim`'s Debian base ships without system timezone data, so
 #     zoneinfo.ZoneInfo(...) (context_core.py, gateway.py, store.py) raises
 #     ZoneInfoNotFoundError for every real IANA name -- including DEFAULT_TIMEZONE itself
@@ -28,6 +26,19 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Before the source, so an unchanged dependency set keeps its layer across code-only
+# deploys. `--no-cache-dir` because the wheel cache would ship inside the image and is
+# never read again.
+#
+# This is the product's only pip install and it is deliberately narrow: `mcp` is the
+# official Model Context Protocol SDK, which owns the wire format `/mcp` speaks. It
+# brings no LLM client and no provider credential, so AGENTS.md's rule that the product
+# must not call an LLM API is unaffected -- the model doing the coaching is still the
+# client's.
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
 COPY garmin_coach_loop/ /app/garmin_coach_loop/
 # See the file-level note above. Keep this narrow: the demo service needs only this
 # package, and the gateway never imports it.

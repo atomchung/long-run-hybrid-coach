@@ -111,6 +111,29 @@ re-running the *same* approved delivery set converges it without a duplicate eve
 exactly which operations it abandoned. A reservation this code cannot parse blocks
 `doctor-store` rather than reading as absent.
 
+## One `/mcp`, two protocol eras, and neither is this repository's to implement
+
+The wire behind `/mcp` is the official MCP Python SDK's (`requirements.txt`, the product's
+only dependency). It serves the 2025 `initialize` handshake and the 2026-07-28
+per-request envelope with `server/discover` from the same endpoint, and which era a given
+client uses is the client's choice, not a setting anywhere here.
+
+What that means when working in this repository:
+
+- **Do not add a protocol revision to a list.** There is no list; the accepted set is the
+  SDK's own registry (`mcp_sdk_transport.HTTP_PROTOCOL_VERSIONS`). A revision this server
+  should speak and does not is an SDK upgrade, which moves one pinned line.
+- **The reviewed surface is still `mcp_transport.py`** -- tools, schemas, annotations,
+  prompts -- and `tool_catalogue_sha256` still hashes it. The SDK carries those bytes; it
+  does not own them.
+- **Prove a transport change against a real client of each era**, because a 2026 client
+  that is refused falls back to 2025 silently and the conversation still works:
+  [docs/ops/accept-both-protocol-eras.md](docs/ops/accept-both-protocol-eras.md).
+- **`scripts/mcp_contract_equivalence.py --base origin/main`** compares the whole
+  model-facing surface between a base ref and this checkout, through both eras. A tool
+  count is not that comparison, and neither is the digest alone: the digest says two
+  catalogues differ, not which annotation flipped, and says nothing about `instructions`.
+
 ## Revoking at Intervals signs every entry out, not the one being tested
 
 Intervals authorization is granted per application per athlete, not per connection. So
