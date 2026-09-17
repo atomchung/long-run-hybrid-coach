@@ -59,15 +59,23 @@ so the receipt below records the era of every request rather than only the outco
 
 ## What makes it pass
 
-Read the gateway's own log, not the client's summary:
+Read the gateway's own log, not the client's summary. Every `/mcp` line names the era
+it was served on — `protocol=2026-07-28`, `protocol=2025-06-18`, or `protocol=absent` for
+a request carrying no header, which the specification reads as 2025-03-26:
+
+```
+POST /mcp -> 200 access=authenticated owner=… protocol=2026-07-28 tool=getCoachState outcome=passed
+```
 
 - **Every request answered `200` or `202`.** A `400` carrying
   `unsupported_protocol_version` is the failure this page is looking for, and its count
   must be zero.
-- **The 2026 client never sent `initialize`.** If it did, it fell back, and the run is a
-  failure however well the conversation went.
-- **The 2025 client's requests carried `2025-06-18`** (or no header on `initialize`) and
-  were answered on the same endpoint, in the same process, without a restart.
+- **The 2026 client's lines all read `protocol=2026-07-28`.** One reading
+  `protocol=2025-06-18`, or an `initialize` in the sequence, means it fell back — and the
+  run is a failure however well the conversation went.
+- **The 2025 client's lines read `protocol=2025-06-18`** (and `protocol=absent` on its
+  `initialize`, which is sent before a version is agreed), answered on the same endpoint,
+  in the same process, without a restart.
 - **The access line still names the tool and the outcome** — `tool=…​ outcome=…​` — on
   both eras. The tool call runs on the SDK's event loop rather than the request thread, so
   a missing name here means the request's provider-quota scope stopped travelling with it,

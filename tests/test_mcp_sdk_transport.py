@@ -21,6 +21,7 @@ gateway does.
 from __future__ import annotations
 
 import json
+import time
 import unittest
 from typing import Any
 
@@ -419,20 +420,72 @@ class AccessLogAcrossErasTests(EraTestCase):
             with self.subTest(era=era):
                 self.log_handler.records.clear()
                 self.call(era, "getCoachState")
-                lines = [line for line in self.log_handler.records if "POST /mcp" in line]
-                self.assertTrue(lines, self.log_handler.records)
-                self.assertIn("tool=getCoachState", lines[-1])
-                self.assertIn("outcome=passed", lines[-1])
+                line = self._last_mcp_line()
+                self.assertIn("tool=getCoachState", line)
+                self.assertIn("outcome=passed", line)
+
+    def test_the_line_names_which_protocol_era_served_the_request(self):
+        """One endpoint, two eras: the operator line has to say which one answered.
+
+        Without it a 2026 client that fell back to 2025 and one that did not produce
+        the same log line, which is the exact failure issue #352 was about -- and the
+        one thing the production log could not observe on the day this shipped.
+        """
+        self.call("legacy", "getCoachState")
+        self.assertIn(f"protocol={PROTOCOL_VERSION}", self._last_mcp_line())
+
+        self.log_handler.records.clear()
+        self.call("modern", "getCoachState")
+        self.assertIn(f"protocol={MODERN}", self._last_mcp_line())
+
+    def test_a_request_with_no_version_header_is_named_rather_than_left_blank(self):
+        """The specification reads an absent header as 2025-03-26, so it is a fact.
+
+        Printing nothing would make it indistinguishable from a field this server
+        forgot to fill in.
+        """
+        self.log_handler.records.clear()
+        self.post_mcp({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        self.assertIn("protocol=absent", self._last_mcp_line())
+
+    def test_an_unserved_revision_never_reaches_the_line(self):
+        """Issue #369's rule still holds: a caller cannot write into this line."""
+        self.log_handler.records.clear()
+        self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            headers={"MCP-Protocol-Version": "private-value-" + "x" * 40},
+        )
+        line = self._last_mcp_line()
+        self.assertNotIn("private-value-", line)
+        self.assertNotIn("protocol=", line)
+
+    def _last_mcp_line(self) -> str:
+        """The access line for the request that just returned, once it exists.
+
+        The gateway sends the response and *then* writes this line, so a client that
+        has already read the body can reach here before the serving thread gets to it.
+        The window is microseconds on an idle machine and wider on a loaded CI runner,
+        which is exactly the shape of a test that passes locally and fails once in CI
+        (observed on `main` at 39f0b17). Waiting for the line tests the line; reading
+        immediately tests the scheduler.
+        """
+        deadline = time.monotonic() + 5
+        while True:
+            lines = [line for line in self.log_handler.records if "POST /mcp" in line]
+            if lines:
+                return lines[-1]
+            if time.monotonic() >= deadline:
+                self.fail(f"no access line was written: {self.log_handler.records}")
+            time.sleep(0.01)
 
     def test_a_refusal_is_told_apart_from_a_success_on_the_same_line(self):
         for era in ("legacy", "modern"):
             with self.subTest(era=era):
                 self.log_handler.records.clear()
                 self.call(era, "clearDeliveryAttempt", {"attempt_id": "a", "confirmed": False})
-                lines = [line for line in self.log_handler.records if "POST /mcp" in line]
-                self.assertTrue(lines, self.log_handler.records)
-                self.assertIn("tool=clearDeliveryAttempt", lines[-1])
-                self.assertIn("outcome=blocked:", lines[-1])
+                line = self._last_mcp_line()
+                self.assertIn("tool=clearDeliveryAttempt", line)
+                self.assertIn("outcome=blocked:", line)
 
 
 class MalformedBodyHygieneTests(EraTestCase):

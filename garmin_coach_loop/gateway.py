@@ -7857,6 +7857,24 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         # all), and on the one shape that is not this module's own: an MCP JSON-RPC fault
         # nests its code under "error" as an object rather than a bare string, and is left
         # alone rather than stringified into the line.
+        # Which protocol era served this request, for the operator line. One endpoint
+        # answers two of them now, and until this field existed the line could not say
+        # which -- so a 2026 client silently falling back to 2025 looked, in the log,
+        # exactly like a 2026 client that worked. That is the failure this whole
+        # migration was about, and it was the one thing production could not observe.
+        #
+        # Only a value this server actually serves is printed, never the raw header
+        # (issue #369): an unserved one is already a classified security event, and a
+        # request that carries none is `2025-03-26` by the specification's own default.
+        # So the field is a closed set, and a caller cannot write into this line.
+        era = (self.headers.get("MCP-Protocol-Version") or "").strip()
+        protocol = ""
+        if path == MCP_PATH:
+            if era in mcp_sdk_transport.HTTP_PROTOCOL_VERSIONS:
+                protocol = f" protocol={era}"
+            elif not era:
+                protocol = " protocol=absent"
+
         error_code: str | None = None
         if int(status) >= 400 and isinstance(payload, dict):
             candidate = payload.get("error")
@@ -7891,7 +7909,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         # and a counter was dropped because it *wrote* -- this line does not). A keyed
         # handle, never the owner id: see `owner_log_handle`.
         LOGGER.info(
-            "%s %s -> %s access=%s%s%s%s",
+            "%s %s -> %s access=%s%s%s%s%s",
             method,
             path,
             int(status),
@@ -7900,6 +7918,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             # handle beside it, which is the one combination the line must never print.
             "authenticated" if owner_id else "anonymous",
             f" owner={owner_handle}" if owner_handle else "",
+            protocol,
             f" error={error_code}" if error_code else "",
             request_spend,
         )
