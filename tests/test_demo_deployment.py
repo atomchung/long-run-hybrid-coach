@@ -106,8 +106,8 @@ class ResponsesRequestShapeTest(unittest.TestCase):
     def test_nothing_is_stored_at_the_provider(self):
         self.assertIs(False, self.body["store"])
 
-    def test_it_asks_for_max_reasoning_effort(self):
-        self.assertEqual({"effort": "max"}, self.body["reasoning"])
+    def test_it_asks_for_medium_reasoning_effort(self):
+        self.assertEqual({"effort": "medium"}, self.body["reasoning"])
         # The values the API defines. A typo here is a 400 on the first real call.
         self.assertIn(
             model_module.REASONING_EFFORT,

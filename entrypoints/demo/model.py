@@ -22,9 +22,13 @@ conversation stateless, which is what the reasoning carry-forward below exists f
 the configuration, sent only in this request's ``Authorization`` header, and never logged,
 never echoed into an error, and never included in any response this service writes.
 
-*Reasoning effort is max.* The demo uses the strongest reasoning setting supported by its
-pinned model so the visitor sees the intended luna behavior; the per-response output cap
-still bounds the launch bill.
+*Reasoning effort is medium.* Measured against the deployed service on 2026-09-17: at
+``max`` the first round alone asks for three evidence reads, and every result is carried
+into the next round's input on top of 42 KB of instructions, so the second and third rounds
+run past the 60-second provider timeout and the visitor gets a 504 instead of an answer.
+``medium`` still uses a tool round -- the demo's whole point is that it reads the evidence
+before answering -- where ``low`` answered straight from the instructions without reading
+anything.
 """
 
 from __future__ import annotations
@@ -40,7 +44,7 @@ from typing import Any
 MODEL = "gpt-5.6-luna"
 
 # One of none | minimal | low | medium | high | xhigh | max.
-REASONING_EFFORT = "max"
+REASONING_EFFORT = "medium"
 
 # An upper bound on *everything* the model generates for one response, reasoning tokens
 # included -- which is why this is not the size of the answer. A three-option allocation
