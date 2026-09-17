@@ -435,6 +435,38 @@ class AccessLogAcrossErasTests(EraTestCase):
                 self.assertIn("outcome=blocked:", lines[-1])
 
 
+class MalformedBodyHygieneTests(EraTestCase):
+    """A body the protocol layer cannot parse must not echo itself anywhere.
+
+    The SDK validates with pydantic, whose errors quote the offending input, and this
+    repository's rule is that nothing it logs or answers with carries credential
+    material. Held here rather than assumed, because the thing quoting the input is no
+    longer code in this repository: an SDK upgrade could widen what a validation error
+    repeats, and this is the test that would notice.
+    """
+
+    SECRET = "SECRET-PROVIDER-TOKEN-abc123"
+
+    def _malformed(self, body: bytes) -> tuple[int, bytes]:
+        self.log_handler.records.clear()
+        status, _, answered = self.post_mcp(
+            raw=body, headers={"MCP-Protocol-Version": PROTOCOL_VERSION}
+        )
+        return status, answered
+
+    def test_a_refused_body_is_not_repeated_to_the_client_or_the_log(self):
+        for label, body in (
+            ("not JSON-RPC", json.dumps({"method": "tools/list", "id": 1, "leak": self.SECRET})),
+            ("a batch", json.dumps([{"jsonrpc": "2.0", "id": 1, "method": "ping", "leak": self.SECRET}])),
+            ("unparseable", '{"jsonrpc":"2.0","leak":"' + self.SECRET),
+        ):
+            with self.subTest(body=label):
+                status, answered = self._malformed(body.encode("utf-8"))
+                self.assertEqual(400, status)
+                self.assertNotIn(self.SECRET, answered.decode("utf-8"))
+                self.assertNotIn(self.SECRET, "\n".join(self.log_handler.records))
+
+
 class CatalogueRoundTripTests(unittest.TestCase):
     """The reviewed descriptors, through the SDK's own wire model and back."""
 
