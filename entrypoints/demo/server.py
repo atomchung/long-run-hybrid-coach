@@ -39,6 +39,11 @@ class DemoHandler(BaseHTTPRequestHandler):
     server_version = "long-run-hybrid-coach-demo"
     sys_version = ""
 
+    # A connection that opens and then sends nothing holds a worker thread for as long as
+    # it likes, and never reaches the rate limiter -- which counts requests, not sockets.
+    # Fifteen seconds is longer than any honest client needs to send at most 8 KB.
+    timeout = 15
+
     # --------------------------------------------------------------------------- plumbing
     @property
     def _service(self) -> DemoService:
@@ -61,15 +66,19 @@ class DemoHandler(BaseHTTPRequestHandler):
 
         Behind Railway the socket peer is the platform's proxy, so every visitor would
         share one bucket and the per-client limit would mean nothing. ``forwarded`` reads
-        the left-most ``X-Forwarded-For`` entry instead, which is only as trustworthy as
-        the proxy in front -- and is why the global limit exists underneath it.
+        ``X-Forwarded-For`` instead -- the **right-most** entry, because each proxy appends
+        the address it received the connection from: the last entry is the one the platform
+        in front wrote, and everything to the left of it is whatever the caller sent. Read
+        the left-most and one host rotates the header for a fresh allowance per request,
+        which is the per-client limit meaning nothing and the global ceiling being the only
+        brake left.
         """
         if self._config.client_ip_source == "forwarded":
             forwarded = self.headers.get("X-Forwarded-For")
             if forwarded:
-                first = forwarded.split(",")[0].strip()
-                if first:
-                    return first[:64]
+                last = forwarded.split(",")[-1].strip()
+                if last:
+                    return last[:64]
         return str(self.client_address[0])[:64]
 
     def _origin(self) -> str | None:
@@ -121,7 +130,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         """
         LOGGER.info(
             json.dumps(
-                {"method": self.command, "path": self.path.split("?")[0], "status": status,
+                {"method": self.command, "path": self.path.split("?")[0][:200], "status": status,
                  **entry},
                 sort_keys=True,
             )

@@ -20,7 +20,7 @@ only for a host that injects nothing. Nothing needs setting for the port.
 
 ## The steps only the owner can take
 
-These four happen in somebody's browser, in a console this repository cannot reach. Nothing
+These five happen in somebody's browser or console, in a console this repository cannot reach. Nothing
 else is left.
 
 1. **Create the service.** Railway → the existing project → *New* → *GitHub Repo* →
@@ -36,7 +36,13 @@ else is left.
    production site origin is compiled in and needs no variable.)
 3. **Add the custom domain.** Railway → the `coach-demo` service → *Settings* → *Networking*
    → *Custom Domain* → `demo-api.paceandstaystrong.com`. Railway prints a `CNAME` target.
-4. **Point DNS at it.** In Cloudflare, add a `CNAME` record for `demo-api` to the target
+4. **Cap the spend.** On the OpenAI project this key belongs to, set a monthly budget and
+   an alert. Everything in the service bounds *shape* — turns per session, tool calls per
+   round, requests per minute per client and for the whole process — and a determined
+   caller still gets the global ceiling, which is 120 requests a minute of somebody else's
+   money. The budget is the only limit that is denominated in dollars, and nothing in this
+   repository can set it.
+5. **Point DNS at it.** In Cloudflare, add a `CNAME` record for `demo-api` to the target
    Railway printed. Leave it **DNS-only** (grey cloud) until Railway reports the domain as
    issued, then proxy it if you want to.
 
@@ -57,10 +63,17 @@ curl -s https://demo-api.paceandstaystrong.com/healthz
 python3 -m entrypoints.demo.acceptance --base-url https://demo-api.paceandstaystrong.com
 ```
 
-`"status":"degraded"` with `"model_credential":"absent"` means step 2 above did not take —
-the service will refuse every turn with `503 demo_model_unconfigured` rather than answer
-from a substitute. `"fixture":"invalid"` means the committed athlete no longer validates
-against `contracts/`, which is a repository problem and not a deployment one.
+**A missing credential does not show up here.** `build_service` refuses to start without
+one, so the symptom on Railway is not a `degraded` health response — it is a container that
+exits, three restart attempts, a failed deploy, and one line on stderr saying
+`OPENAI_API_KEY is not set`. Same for a fixture that no longer validates against
+`contracts/`, which is a repository problem rather than a deployment one. If `/healthz`
+answers at all, the credential is present.
+
+Step 2 of this list is the only thing that prevents that failure, and the acceptance
+command is the only check in this repository that reaches the real Responses API: the
+pinned model id, the continuation shape and every provider-side error are proven there or
+nowhere. Run it against the deployed service before the launch link goes out.
 
 A `403 origin_not_allowed` from the browser and a `200` from `curl` is CORS: the page's
 origin is not on the allowlist. The production site origin is compiled in, so this means

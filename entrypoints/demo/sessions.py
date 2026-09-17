@@ -55,6 +55,10 @@ class SessionLimit(Exception):
     """A session that has taken every turn it is allowed."""
 
 
+class StoreFull(Exception):
+    """A full store in which every conversation is mid-turn, so none may be evicted."""
+
+
 @dataclass
 class DemoSession:
     """One visitor's conversation, and the only mutable state this service holds."""
@@ -119,7 +123,17 @@ class SessionStore:
                 self._sessions.move_to_end(session_id)
                 return session
             while len(self._sessions) >= self._max_sessions:
-                self._sessions.popitem(last=False)
+                # The oldest one that is not answering. Evicting a session mid-turn does
+                # not stop that turn: the next request for the same id builds a new session
+                # with a new lock, so two model calls run for one conversation and the one
+                # in flight writes its history into an object nothing will read again.
+                victim = next(
+                    (key for key, value in self._sessions.items() if not value.lock.locked()),
+                    None,
+                )
+                if victim is None:
+                    raise StoreFull("every demo conversation in this process is mid-turn")
+                del self._sessions[victim]
             session = DemoSession(
                 session_id=session_id,
                 created_at=now,

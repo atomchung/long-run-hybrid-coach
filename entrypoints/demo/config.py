@@ -123,9 +123,9 @@ class DemoConfig:
     requests_per_minute_global: int = 120
 
     # Railway terminates TLS in front of this process, so the socket peer is its proxy and
-    # every visitor would share one bucket. "forwarded" reads the left-most entry of
-    # X-Forwarded-For, which is only trustworthy behind a proxy that overwrites the header
-    # -- set "peer" when nothing fronts the service.
+    # every visitor would share one bucket. "forwarded" reads the right-most entry of
+    # X-Forwarded-For -- the one the proxy in front appended, rather than anything the
+    # caller put there -- so set "peer" when nothing fronts the service.
     client_ip_source: str = "forwarded"
 
     model_timeout_seconds: int = 60
