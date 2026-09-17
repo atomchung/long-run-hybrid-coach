@@ -9,6 +9,7 @@ classified conservatively; documentation-only changes do not acquire a live cere
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -56,6 +57,22 @@ MODEL_FACING_PATHS = frozenset(
 
 # Diff-gated: the file carries both the served MCP surface and ordinary transport code.
 DIFF_GATED_SURFACE_PATH = "garmin_coach_loop/mcp_transport.py"
+
+# The wire itself. It serves no catalogue of its own -- so it never asks for Scan Tools or
+# a resubmission -- but it decides which protocol era a request is answered on, and a
+# 2026-07-28 client that is refused falls back to 2025 silently. Only a real client of
+# each era proves that did not happen: docs/ops/accept-both-protocol-eras.md.
+PROTOCOL_SURFACE_PATH = "garmin_coach_loop/mcp_sdk_transport.py"
+
+# The dependency surface. `requirements.txt` is the intent, `requirements.lock` is what
+# every build installs, and between them they decide which protocol implementation is
+# serving `/mcp` -- without a line of this repository's code changing. Naming the files is
+# only the question; `dependency_pin_at` below is the answer, so a comment edit in either
+# file does not acquire a live ceremony.
+DEPENDENCY_PATHS = frozenset({"requirements.txt", "requirements.lock"})
+
+DEPENDENCY_PIN_MOVED_REASON = "requirements.lock (pinned dependency set moved)"
+DEPENDENCY_PIN_UNKNOWN_REASON = "requirements.lock (pinned dependency set not comparable)"
 
 # What travels to another ref so `tool_catalogue_sha256()` can be built there. The whole
 # package goes, because the catalogue is assembled from constants several modules own.
@@ -231,6 +248,87 @@ def working_tree_tool_catalogue_sha256() -> str | None:
     return _catalogue_digest_in(ROOT)
 
 
+def _pinned_dependency_set(contents: dict[str, str | None]) -> str:
+    """One digest over what a build would actually install.
+
+    Comments and blank lines are dropped before hashing, so the prose in
+    `requirements.txt` -- which is where the reason for the dependency lives -- can be
+    rewritten without anybody being sent to run a manual acceptance. What survives is the
+    requirement lines and their `--hash=` continuations: the distributions, their
+    versions, and the artifacts allowed to satisfy them. A missing file hashes as absent
+    rather than as empty, so adding or deleting the lock is itself a move.
+    """
+    digest = hashlib.sha256()
+    for name in sorted(contents):
+        digest.update(f"\n[{name}]\n".encode("utf-8"))
+        text = contents[name]
+        if text is None:
+            digest.update(b"<absent>")
+            continue
+        for line in text.splitlines():
+            # pip's own comment rule: a `#` starts one only at the beginning of a line or
+            # after whitespace. Splitting on every `#` would also eat the fragment of a
+            # direct URL requirement -- which is where such a requirement carries its
+            # artifact digest, and dropping that would hide the one thing this hashes for.
+            stripped = re.split(r"(?:^|\s)#", line, maxsplit=1)[0].strip()
+            if stripped:
+                digest.update(" ".join(stripped.split()).encode("utf-8") + b"\n")
+    return digest.hexdigest()
+
+
+def dependency_pin_at(ref: str) -> str | None:
+    """The pinned dependency set ``ref`` builds from, or ``None`` when it cannot be read.
+
+    ``None`` means "the question was never answered" here as it does for the catalogue
+    digest, but what happens next is **not** the same and the difference is deliberate.
+    An unanswered catalogue question falls back to the line markers in
+    ``mcp_transport.py``, which are an estimate of the same thing. There is no estimate of
+    a dependency pin -- a version and a set of hashes are either compared or they are not --
+    so an unanswered pin asks for the acceptance run instead of assuming it stood still.
+    Aligning the two would mean answering "no gate" from having measured nothing.
+    """
+    contents: dict[str, str | None] = {}
+    for name in sorted(DEPENDENCY_PATHS):
+        shown = subprocess.run(
+            ["git", "show", f"{ref}:{name}"], cwd=ROOT, capture_output=True, text=True
+        )
+        if shown.returncode != 0:
+            # A ref that predates the lock file is a real answer -- the file was not there
+            # yet -- and a read that failed for any other reason is not an answer at all.
+            # `git show` exits non-zero for both, so the tree is asked directly: a path it
+            # does not list is genuinely absent, and anything else (an unresolvable ref, an
+            # unreadable object, git missing) is `None`, which the classification reads as
+            # "not measured" and answers conservatively. Guessing "absent" there would turn
+            # a broken read into the claim that the pin stood still.
+            listed = subprocess.run(
+                ["git", "ls-tree", "-r", "--name-only", f"{ref}^{{tree}}", "--", name],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            if listed.returncode != 0:
+                return None
+            if listed.stdout.strip():
+                return None
+            contents[name] = None
+            continue
+        contents[name] = shown.stdout
+    return _pinned_dependency_set(contents)
+
+
+def working_tree_dependency_pin() -> str:
+    """The pinned dependency set this checkout would install, uncommitted edits included."""
+
+    return _pinned_dependency_set(
+        {
+            name: (ROOT / name).read_text(encoding="utf-8")
+            if (ROOT / name).is_file()
+            else None
+            for name in sorted(DEPENDENCY_PATHS)
+        }
+    )
+
+
 def package_file(path: str) -> bool:
     return path.startswith(PACKAGE) and path.endswith(PACKAGE_SUFFIXES)
 
@@ -264,6 +362,7 @@ def classify_changed_paths(
     *,
     diffs_by_path: dict[str, str] | None = None,
     catalogue_moved: bool | None = None,
+    dependency_pin_moved: bool | None = None,
 ) -> dict[str, object]:
     """Name the gates these paths need.
 
@@ -274,11 +373,21 @@ def classify_changed_paths(
     It outranks the line markers whenever it is not ``None``. The digest is rebuilt from
     the same descriptors ``tools/list`` serves, so it answers the question the markers
     only estimate, and an estimate does not overturn the measurement it stands in for.
+
+    ``dependency_pin_moved`` is the same three states for the installed dependency set,
+    and it is only consulted when one of ``DEPENDENCY_PATHS`` is in the change. A moved
+    pin is a transport change with no diff: the protocol implementation behind `/mcp`
+    belongs to the SDK, so which revisions are agreed to, what an `initialize` result
+    carries and which error a refused batch returns can all move while every line in this
+    repository stands still. What that asks for is the dual-era acceptance run, and only
+    that -- the reviewed tool catalogue and `instructions` are this repository's own
+    bytes, so a pin cannot move them and must not trigger a resubmission.
     """
     paths = sorted(set(_normalise_path(path) for path in changed_paths if path.strip()))
     diffs_by_path = diffs_by_path or {}
     smoke_reasons: list[str] = []
     surface_reasons: list[str] = []
+    protocol_reasons: list[str] = []
 
     for path in paths:
         if live_boundary_changed(path, diffs_by_path.get(path)):
@@ -315,6 +424,25 @@ def classify_changed_paths(
             # release that was in OpenAI review at the time.
             surface_reasons.append(path)
 
+    if PROTOCOL_SURFACE_PATH in paths:
+        # Whatever the diff says: this module has no reviewed catalogue to move, so the
+        # markers above never speak for it, and the failure it is capable of -- a
+        # 2026-07-28 client answered `400` and falling back to 2025 -- is invisible from
+        # inside the conversation that fell back.
+        protocol_reasons.append(PROTOCOL_SURFACE_PATH)
+
+    if any(path in DEPENDENCY_PATHS for path in paths):
+        # The path check is load-bearing rather than belt-and-braces. `--base` compares
+        # this checkout against the *base ref's* files, while the change list is what this
+        # branch touched, so a lock that moved on `main` after the branch point makes the
+        # two digests differ over a change the branch never made. Asking whether one of
+        # these files is in the change is what keeps that from billing this branch for
+        # somebody else's upgrade.
+        if dependency_pin_moved is None:
+            protocol_reasons.append(DEPENDENCY_PIN_UNKNOWN_REASON)
+        elif dependency_pin_moved:
+            protocol_reasons.append(DEPENDENCY_PIN_MOVED_REASON)
+
     if catalogue_moved:
         # The reviewed bytes are what the digest binds, so a moved digest is a changed
         # surface whichever file moved it -- the catalogue is assembled from constants
@@ -330,13 +458,16 @@ def classify_changed_paths(
     smoke_reasons.extend(unclassified)
     surface_reasons.extend(unclassified)
 
+    # Scan Tools and the resubmission are decided from the reviewed surface alone. A
+    # protocol reason never enters either: the SDK owns the wire, this repository owns the
+    # bytes on it, and a pin that moves the first cannot move the second.
     scan_tools = any(
         not path.startswith(".agents/skills/garmin-coach-loop/")
         and path not in unclassified
         for path in surface_reasons
     )
     live_smoke = bool(smoke_reasons)
-    client_acceptance = bool(surface_reasons)
+    client_acceptance = bool(surface_reasons or protocol_reasons)
     resubmission_reasons = sorted(
         set(submission_reasons) | (set(surface_reasons) if scan_tools else set())
     )
@@ -346,7 +477,9 @@ def classify_changed_paths(
         "live_smoke": live_smoke,
         "live_smoke_reasons": sorted(set(smoke_reasons)),
         "client_acceptance": client_acceptance,
-        "client_acceptance_reasons": sorted(set(surface_reasons)),
+        "client_acceptance_reasons": sorted(set(surface_reasons) | set(protocol_reasons)),
+        "protocol_acceptance": bool(protocol_reasons),
+        "protocol_acceptance_reasons": sorted(set(protocol_reasons)),
         "scan_tools": scan_tools,
         "plugin_resubmission": bool(resubmission_reasons),
         "plugin_resubmission_reasons": resubmission_reasons,
@@ -356,6 +489,7 @@ def classify_changed_paths(
             "a changed tool catalogue, schema, annotation, or served prompt needs Scan Tools and a new plugin version",
             "an edited submission packet, registry entry or plugin manifest is resubmitted content on its own, without a Scan Tools run",
             "an unclassified package file is treated as both a live and a model-facing surface until change_gates.py names it",
+            "a moved dependency pin or a changed wire module needs the dual-era acceptance run (docs/ops/accept-both-protocol-eras.md) and never a resubmission",
         ],
     }
 
@@ -417,14 +551,22 @@ def main() -> int:
     catalogue_moved = (
         None if base_digest is None or head_digest is None else base_digest != head_digest
     )
+    head_pin = working_tree_dependency_pin()
+    base_pin = dependency_pin_at(args.base) if args.base else None
+    dependency_pin_moved = None if base_pin is None else base_pin != head_pin
     print(
         json.dumps(
             {
                 **classify_changed_paths(
-                    paths, diffs_by_path=diffs, catalogue_moved=catalogue_moved
+                    paths,
+                    diffs_by_path=diffs,
+                    catalogue_moved=catalogue_moved,
+                    dependency_pin_moved=dependency_pin_moved,
                 ),
                 "tool_catalogue_sha256_base": base_digest,
                 "tool_catalogue_sha256_head": head_digest,
+                "dependency_pin_base": base_pin,
+                "dependency_pin_head": head_pin,
             },
             ensure_ascii=False,
             indent=2,

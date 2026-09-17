@@ -123,6 +123,15 @@ What that means when working in this repository:
 - **Do not add a protocol revision to a list.** There is no list; the accepted set is the
   SDK's own registry (`mcp_sdk_transport.HTTP_PROTOCOL_VERSIONS`). A revision this server
   should speak and does not is an SDK upgrade, which moves one pinned line.
+- **That pinned line is not yours to move casually.** An upgrade needs a written reason --
+  a revision this product should serve, or a security or compatibility fix, never "newer
+  exists" -- and then the ceremony in
+  [docs/ops/upgrade-the-mcp-sdk.md](docs/ops/upgrade-the-mcp-sdk.md): regenerate
+  `requirements.lock` (hashed; nothing installs from `requirements.txt`), run
+  `scripts/mcp_protocol_envelope.py` to see what the candidate changes on the wire, run the
+  dual-era acceptance, deploy, then read `mcp_sdk_version` back off `/readyz`.
+  `change_gates.py` reports a moved pin as `protocol_acceptance: true` and deliberately not
+  as a catalogue change: an SDK cannot move bytes this repository owns.
 - **The reviewed surface is still `mcp_transport.py`** -- tools, schemas, annotations,
   prompts -- and `tool_catalogue_sha256` still hashes it. The SDK carries those bytes; it
   does not own them.

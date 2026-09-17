@@ -129,6 +129,7 @@ def select_test_paths(changed_paths: list[str] | tuple[str, ...]) -> dict[str, o
             "scripts/test_selection.py": ("tests/test_process_gates.py",),
             "scripts/change_gates.py": ("tests/test_process_gates.py",),
             "scripts/verify_production_promotion.py": ("tests/test_process_gates.py",),
+            "scripts/mcp_protocol_envelope.py": ("tests/test_protocol_envelope.py",),
         }
         if path in script_tests:
             for test_path in script_tests[path]:
@@ -167,6 +168,40 @@ def select_test_paths(changed_paths: list[str] | tuple[str, ...]) -> dict[str, o
 
         if path.startswith(".github/"):
             _add(selected, reasons, "tests/test_process_gates.py", f"workflow changed: {path}")
+            # Every workflow job installs the hashed lock, and the gate that holds them to
+            # it is the dependency test rather than the process one.
+            _add(selected, reasons, "tests/test_dependency_lock.py", f"workflow changed: {path}")
+            continue
+
+        # What a build installs, and what the installed SDK then puts on the wire. The pin
+        # is the one change that moves protocol behaviour without moving a line of product
+        # code, so the envelope record is selected beside the lock's own gate.
+        if path in {"requirements.txt", "requirements.lock", "Dockerfile"}:
+            _add(selected, reasons, "tests/test_dependency_lock.py", f"install path changed: {path}")
+            _add(selected, reasons, "tests/test_process_gates.py", f"install path changed: {path}")
+            if path != "Dockerfile":
+                _add(
+                    selected,
+                    reasons,
+                    "tests/test_protocol_envelope.py",
+                    f"pinned dependency set changed: {path}",
+                )
+            continue
+
+        if path == "docs/mcp-protocol-envelope.json":
+            _add(
+                selected,
+                reasons,
+                "tests/test_protocol_envelope.py",
+                "the recorded protocol envelope changed",
+            )
+            continue
+
+        # The upgrade runbook carries the command that regenerates the lock, and the lock
+        # test holds the two to each other; a docs-only edit that rewrites it must still
+        # reach that assertion.
+        if path == "docs/ops/upgrade-the-mcp-sdk.md":
+            _add(selected, reasons, "tests/test_dependency_lock.py", "SDK upgrade runbook")
             continue
 
         # The production-truth runbook is the ownership contract for live facts.

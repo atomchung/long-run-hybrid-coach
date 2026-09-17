@@ -3,13 +3,18 @@
 One endpoint answers two protocol eras, and only a real client proves which one it picked.
 This is how to find out, on a branch, before anything is deployed.
 
-Use it whenever `python3 scripts/change_gates.py --base origin/main` names
-`garmin_coach_loop/mcp_sdk_transport.py`, whenever the pinned `mcp` version in
-`requirements.txt` moves, and once after any deployment that did either. It is not a
+Use it whenever `python3 scripts/change_gates.py --base origin/main` reports
+`protocol_acceptance: true` -- a change naming `garmin_coach_loop/mcp_sdk_transport.py`, or
+a moved dependency pin -- and once after any deployment that did either. It is not a
 replacement for
 [`accept-an-entry-after-a-surface-change.md`](accept-an-entry-after-a-surface-change.md):
 that page is about what a model does with changed bytes, this one is about whether a
 client connects at all.
+
+For an SDK upgrade this is step 4 of five, and the four around it decide whether it is
+worth running: [`upgrade-the-mcp-sdk.md`](upgrade-the-mcp-sdk.md). Run
+`scripts/mcp_protocol_envelope.py` before this page rather than instead of it -- the diff
+says what the server answers, this page says what a real client does with the answer.
 
 ## What the two eras look like on the wire
 

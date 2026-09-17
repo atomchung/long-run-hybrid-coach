@@ -24,8 +24,9 @@ Beside it, on a thread of its own, one asyncio loop hosts the MCP SDK's session 
 the protocol layer behind `/mcp` is asyncio and this server is threads, so a `/mcp`
 request is marshalled across and every other route is untouched. It is started before the
 socket is bound and closed after the last request thread has been joined, so a drain is
-still a drain. The one Python dependency the image installs (`requirements.txt`, the MCP
-SDK) is what that loop runs; `/readyz` reports the version it resolved as
+still a drain. The one Python dependency the image installs -- the MCP SDK, pinned in
+`requirements.txt` and installed from `requirements.lock` with `--require-hashes` -- is
+what that loop runs; `/readyz` reports the version it resolved as
 `mcp_sdk_version`. TLS
 terminates at the platform, never in this process. One persistent volume holds the
 identity registry (`identity.db`) and every owner's PlanState store; nothing else in this
@@ -371,6 +372,35 @@ the CoachContext, the change request previewed, the delivery set prepared -- in 
 60 minutes, so that the client can name each rather than resend it), and
 `Cache-Control: no-store` on every response so an intermediate cache never serves one
 athlete's answer to another's request.
+
+## Which supply-chain controls are this application's
+
+The gateway process holds every connected athlete's Intervals credential and PlanState
+store, so what a build is *allowed to be* is part of this deployment rather than a detail
+of it. The split is worth stating once, because the two halves fail differently and only
+one of them is fixable from this repository.
+
+**This application owns what enters the image.** `requirements.txt` pins the one runtime
+dependency by version; `requirements.lock` resolves that pin to every distribution and the
+sha256 of the artifacts allowed to satisfy it; the `Dockerfile` and every workflow job
+install that lock with `--require-hashes`, so a release re-published under the same version,
+a compromised index account or a mirror substitution fails the build instead of shipping.
+There is no second, unhashed install path anywhere -- adding one for convenience would be
+the path the next upgrade takes. Regenerating the lock is step 2 of
+[`ops/upgrade-the-mcp-sdk.md`](ops/upgrade-the-mcp-sdk.md), which is also where the rule for
+upgrading at all lives. The same pattern already covers the `mcp-publisher` binary the
+registry workflow runs: pinned to a release and checked with `sha256sum --check --strict`
+before it executes.
+
+**The platform owns the build host and the edge.** Railway builds the image, stores it,
+runs it, terminates TLS and decides what reaches the process at all; none of that is
+verifiable from here, and no application-side control substitutes for it. What this
+repository can do about it is limited to making the *contents* of a build stated and
+checkable -- which is what the lock and `/readyz`'s `mcp_sdk_version` read-back are for:
+the lock says what the build asked for, and the running container says what answered.
+
+Request-rate and volumetric protection at the edge is the platform's too; what this
+application already enforces at that boundary is the section above, not this one.
 
 ## Platform-neutral: Railway, Render, or elsewhere
 
