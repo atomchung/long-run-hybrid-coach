@@ -337,6 +337,7 @@ python3 scripts/check_repo_safety.py
 ```
 
 They run on Python 3.11 with `requirements.lock` installed -- one pinned package and what
-it resolves to, hashes verified; see **Dependencies** above for why there is one at all. They remain the merge and
-main confidence boundary; the production promotion job intentionally proves reuse of that
-boundary for the same commit instead of executing it a second time.
+it resolves to, hashes verified; see **Dependencies** above for why there is one at all.
+They remain the merge and main confidence boundary; the production promotion job
+intentionally proves reuse of that boundary for the same commit instead of executing it a
+second time.

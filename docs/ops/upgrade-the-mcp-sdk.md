@@ -96,9 +96,9 @@ pinned SDK serves today, and prints every difference: the negotiated revision pe
 requested revision, the `initialize` capabilities and `serverInfo` shape, the
 `server/discover` envelope, and the error code and HTTP status for a batch, a malformed
 body, an unknown method, an unknown protocol version and a routing-header mismatch. Tool
-results and coaching content are deliberately not in it — `scripts/mcp_contract_equivalence.py`
-owns that half, and a capture carrying the catalogue would move on every ordinary release
-and stop reading as a protocol fact.
+results and coaching content are deliberately not in it —
+`scripts/mcp_contract_equivalence.py` owns that half, and a capture carrying the catalogue
+would move on every ordinary release and stop reading as a protocol fact.
 
 A difference is not a defect. It is the upgrade's behavioural delta, read before a client
 meets it rather than after. Decide on each line, then record the new envelope in the same
