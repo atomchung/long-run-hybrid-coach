@@ -522,7 +522,7 @@ def _trimmed(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     Whole exchanges rather than single items, because dropping one item at a time
     eventually leaves a ``function_call_output`` whose ``function_call`` has already gone.
     The Responses API rejects that input, and the history is kept rather than repaired --
-    so the session would answer 502 for the rest of its fifteen minutes instead of simply
+    so the session would answer 502 for the rest of its hour instead of simply
     getting shorter.
     """
     while len(json.dumps(items, default=str)) > MAX_HISTORY_CHARS:
