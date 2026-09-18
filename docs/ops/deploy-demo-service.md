@@ -64,7 +64,7 @@ railway deployment list --json --service coach-demo | python3 -c \
 curl -s https://demo-api.paceandstaystrong.com/healthz
 # {"status":"ok","model":"gpt-5.6-luna","model_credential":"present","fixture":"valid",...}
 
-# 2. the three committed acceptance turns, against the deployed service
+# 2. the committed acceptance turns -- three alone, three in one conversation
 python3 -m entrypoints.demo.acceptance --base-url https://demo-api.paceandstaystrong.com
 
 # 3. the account can pay: model_quota is what those turns just found out
