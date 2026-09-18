@@ -61,6 +61,10 @@ curl -s https://demo-api.paceandstaystrong.com/healthz
 
 # 2. the three committed acceptance turns, against the deployed service
 python3 -m entrypoints.demo.acceptance --base-url https://demo-api.paceandstaystrong.com
+
+# 3. the account can pay: model_quota is what those turns just found out
+curl -s https://demo-api.paceandstaystrong.com/healthz
+# {"status":"ok", ..., "model_quota":"ok", ...}
 ```
 
 **A missing credential does not show up here.** `build_service` refuses to start without
@@ -69,6 +73,13 @@ exits, three restart attempts, a failed deploy, and one line on stderr saying
 `OPENAI_API_KEY is not set`. Same for a fixture that no longer validates against
 `contracts/`, which is a repository problem rather than a deployment one. If `/healthz`
 answers at all, the credential is present.
+
+**A credential that cannot pay shows up one step later.** `model_quota` on `/healthz` is
+what the last provider call found out: `unknown` until this container has asked,
+`ok` after a call that answered, `exhausted` after a `429` whose body said the account has
+no credit. That last one reports `degraded` (a 503) and means add credit on the OpenAI
+project; it is not a rate limit and does not clear by waiting (issue #476). A fresh
+container starts at `unknown`, so step 2 is what turns the field into evidence.
 
 Step 2 of this list is the only thing that prevents that failure, and the acceptance
 command is the only check in this repository that reaches the real Responses API: the

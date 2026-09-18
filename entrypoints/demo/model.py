@@ -265,7 +265,10 @@ def _refusal(error: urllib.error.HTTPError) -> tuple[str | None, bool]:
     body = payload.get("error") if isinstance(payload.get("error"), dict) else payload
     kind = body.get("type")
     words = {word for word in (kind, body.get("code")) if isinstance(word, str)}
-    return kind if isinstance(kind, str) else None, bool(words & _QUOTA_REFUSALS)
+    # Bounded the way ``server._client_key`` bounds an address: this is the one string the
+    # provider wrote that reaches a log line, and a log line is not the place to discover
+    # how long a provider can make one word.
+    return (kind[:64] if isinstance(kind, str) else None), bool(words & _QUOTA_REFUSALS)
 
 
 class ResponsesClient:
