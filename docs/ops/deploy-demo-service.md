@@ -105,6 +105,26 @@ origin is not on the allowlist. The production site origin is compiled in, so th
 the page is being served from somewhere else — add that origin to
 `COACH_DEMO_ALLOWED_ORIGINS`.
 
+## Receipts
+
+One line per run that proved something, so a later session can tell what was actually
+established from what was merged. The full report is written beside each run; only what
+would be asked about later is kept here.
+
+**2026-09-18 — three turns in one conversation, against `2ab33a1`** (Railway deployment
+`046515b3`, image built from `main`). All six committed turns passed: the three standalone
+ones, and the conversation — two options, "I'll take the second one, but Saturday is down to
+30 minutes", "compared with the first option, what am I giving up?". The service answered
+them as turns 1, 2 and 3; turn two revised *the strength-priority option* by name and rebuilt
+Saturday at 30 minutes; turn three compared against *Option 1* and kept the 30-minute
+Saturday. `model_quota: ok` afterwards.
+
+The run before the fix is the reason there is anything to record. Against the previous
+deployment the same second turn asked for `preview_demo_plan_change` three times, exhausted
+its rounds, and answered with the no-answer fallback — a sentence a visitor reads as the
+coach having forgotten a conversation it was in fact still holding. The third round is now
+sent with `tool_choice: "none"` (#508).
+
 ## The site
 
 The page lives in the website repository and calls
