@@ -119,8 +119,10 @@ carry into the next round, how a tool result is spelled, and how a failure maps 
 service's codes. `service.py` drives a conversation without naming a provider field, and
 `garmin_coach_loop` does not know the file exists.
 
-Requests carry `reasoning: {"effort": "max"}` and `max_output_tokens: 8000`, which bounds
-reasoning and visible output together rather than just the answer.
+Requests carry `reasoning: {"effort": "medium"}` and `max_output_tokens: 8000`, which bounds
+reasoning and visible output together rather than just the answer. `max` was tried against
+the deployed service and timed out: it opens with three evidence reads, and the rounds that
+carry those results back exceed the 60-second provider timeout.
 
 `store` is false on every call, so nothing is retained at the provider. That makes the
 conversation stateless, which is exactly why the next round has to carry the previous one:
