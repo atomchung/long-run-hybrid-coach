@@ -61,12 +61,31 @@ MAX_OUTPUT_TOKENS = 8000
 ENCRYPTED_REASONING = "reasoning.encrypted_content"
 
 
-class ModelError(Exception):
-    """A call that did not produce an answer, with the code the client is told."""
+# The provider's own words for a 429 that no amount of waiting clears: the account behind
+# the credential has no credit left. Matched against both the error body's ``type`` and its
+# ``code``, because the refusal has been seen naming itself in either field.
+_QUOTA_REFUSALS = frozenset({"insufficient_quota", "credit_balance_exhausted"})
 
-    def __init__(self, code: str, message: str) -> None:
+# A hard stop on how much of an error body is buffered to classify one failure. Far more
+# than any refusal needs -- the words above arrive in a few hundred bytes -- and generous
+# enough that a wordy message does not truncate the JSON and take the classification with
+# it, which would quietly turn "out of credit" back into "try again shortly".
+_ERROR_BODY_LIMIT = 16384
+
+
+class ModelError(Exception):
+    """A call that did not produce an answer, with the code the client is told.
+
+    ``provider_type`` is the provider's one-word name for the refusal, and it exists for
+    the log alone. Two failures this service has to describe to a visitor in the same
+    sentence are still different jobs for whoever is on call. It never reaches a response
+    -- see ``_http_error``.
+    """
+
+    def __init__(self, code: str, message: str, *, provider_type: str | None = None) -> None:
         super().__init__(message)
         self.code = code
+        self.provider_type = provider_type
 
 
 class MissingApiKey(ModelError):
@@ -222,6 +241,36 @@ def parse_response(payload: dict[str, Any]) -> ModelTurn:
     return ModelTurn(text=text, tool_calls=tool_calls, output_items=output_items)
 
 
+def _refusal(error: urllib.error.HTTPError) -> tuple[str | None, bool]:
+    """The provider's word for a failure, and whether it is the kind that never clears.
+
+    The body is opened to answer those two questions and for nothing else. What comes back
+    is one short word and one boolean; the message, and everything else that could quote
+    an anonymous visitor's request back at them, is dropped here rather than carried and
+    filtered later.
+
+    A body that will not read -- absent, truncated, not JSON, a shape this does not know --
+    is not a failure of its own. It leaves the call classified by its status alone, which
+    is what this file did before it read bodies at all.
+    """
+    try:
+        raw = error.read(_ERROR_BODY_LIMIT)
+        payload = json.loads(raw.decode("utf-8", "replace"))
+    except Exception:  # noqa: BLE001 - a body this cannot read is simply not read
+        return None, False
+    if not isinstance(payload, dict):
+        return None, False
+    # Both spellings: the provider nests the failure under ``error``, and the same object
+    # is quoted flat in the reports that reach this repository.
+    body = payload.get("error") if isinstance(payload.get("error"), dict) else payload
+    kind = body.get("type")
+    words = {word for word in (kind, body.get("code")) if isinstance(word, str)}
+    # Bounded the way ``server._client_key`` bounds an address: this is the one string the
+    # provider wrote that reaches a log line, and a log line is not the place to discover
+    # how long a provider can make one word.
+    return (kind[:64] if isinstance(kind, str) else None), bool(words & _QUOTA_REFUSALS)
+
+
 class ResponsesClient:
     """One HTTPS call per round, with the key held here and nowhere else."""
 
@@ -280,6 +329,11 @@ class ResponsesClient:
         The provider's body is deliberately not carried through. It can quote the request
         back, and this endpoint answers anonymous callers -- so what reaches a visitor is
         a code and a sentence this repository wrote.
+
+        One status cannot be classified without it. A 429 is either "you asked too often"
+        or "there is no credit left", and those are opposite instructions: wait, or add
+        money. The status is the same for both and only the body says which, so for a 429
+        the body is opened, read for two words, and dropped.
         """
         status = getattr(error, "code", 0)
         if status in (401, 403):
@@ -287,7 +341,22 @@ class ResponsesClient:
                 "demo_model_unconfigured", "the demo's model credential was not accepted"
             )
         if status == 429:
-            return ModelError("model_rate_limited", "the demo is busy; try again shortly")
+            provider_type, exhausted = _refusal(error)
+            if exhausted:
+                # Deliberately not "try again shortly". Waiting does not put credit on an
+                # account, so every request after this one fails identically -- and a
+                # visitor sent away to come back later is the one answer certain to be
+                # wrong. The status this maps to says the same thing: see service.py.
+                return ModelError(
+                    "model_quota_exhausted",
+                    "this demo is temporarily unavailable",
+                    provider_type=provider_type,
+                )
+            return ModelError(
+                "model_rate_limited",
+                "the demo is busy; try again shortly",
+                provider_type=provider_type,
+            )
         if status in (408, 504):
             return ModelError("model_timeout", "the model did not answer in time")
         return ModelError("model_unavailable", "the model could not answer this turn")

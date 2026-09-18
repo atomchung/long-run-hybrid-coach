@@ -6,13 +6,15 @@ the rest of this repository's does.
 
 The tests are grouped by the thing that would go wrong in public: an unconfigured
 deployment answering anyway, one visitor's conversation showing up in another's, a session
-that never ends, a caller who does not stop, a model that asks for a write, and a log line
-that writes down what somebody typed.
+that never ends, a caller who does not stop, a model that asks for a write, a visitor told
+to come back to a failure that will never clear, and a log line that writes down what
+somebody typed.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import io
 import json
 import logging
 import threading
@@ -24,7 +26,12 @@ from unittest import mock
 
 from entrypoints.demo import boundary, fixture, model as model_module, server as server_module
 from entrypoints.demo.config import ConfigError, DemoConfig, SITE_ORIGIN, from_environment
-from entrypoints.demo.service import DemoRequestError, DemoService
+from entrypoints.demo.service import (
+    MODEL_QUOTA_STATES,
+    DemoRequestError,
+    DemoService,
+    error_body,
+)
 
 
 # Short enough to read, long enough to be a real key. Never a real one.
@@ -33,9 +40,14 @@ NOW = dt.datetime(2026, 9, 13, 10, 40, tzinfo=dt.timezone.utc)
 
 
 class FakeModel:
-    """A model that says what the test told it to, and records what it was given."""
+    """A model that says what the test told it to, and records what it was given.
 
-    def __init__(self, *turns: model_module.ModelTurn) -> None:
+    A ``ModelError`` among the turns is raised where it sits, so "refused, then answered"
+    is written the same way two answers are, and the last turn repeats for every call
+    after it.
+    """
+
+    def __init__(self, *turns: model_module.ModelTurn | model_module.ModelError) -> None:
         self.turns = list(turns) or [model_module.ModelTurn(text="A demo answer.")]
         self.calls: list[dict[str, Any]] = []
 
@@ -47,7 +59,15 @@ class FakeModel:
                 "tools": tools,
             }
         )
-        return self.turns.pop(0) if len(self.turns) > 1 else self.turns[0]
+        turn = self.turns.pop(0) if len(self.turns) > 1 else self.turns[0]
+        if isinstance(turn, model_module.ModelError):
+            raise turn
+        return turn
+
+
+def http_error(status: int, body: bytes | None = None) -> urllib.error.HTTPError:
+    """A provider failure carrying the body it actually answered with, if any."""
+    return urllib.error.HTTPError("u", status, "x", {}, io.BytesIO(body) if body else None)
 
 
 def tool_turn(name: str, arguments: dict[str, Any], *, call_id: str = "call-1"):
@@ -68,7 +88,9 @@ def config(**overrides: Any) -> DemoConfig:
     return DemoConfig(api_key=FAKE_CREDENTIAL, **overrides)
 
 
-def service(*turns: model_module.ModelTurn, now=None, **overrides: Any) -> DemoService:
+def service(
+    *turns: model_module.ModelTurn | model_module.ModelError, now=None, **overrides: Any
+) -> DemoService:
     return DemoService(config(**overrides), client=FakeModel(*turns), now=now or (lambda: NOW))
 
 
@@ -437,6 +459,189 @@ class ForbiddenWritePathTest(unittest.TestCase):
         self.assertEqual({boundary.READ_EVIDENCE, boundary.PREVIEW_PLAN_CHANGE}, offered)
 
 
+class QuotaRefusalTest(unittest.TestCase):
+    """The 429 that never clears, told apart from the one that does.
+
+    Both arrive with the same status and only the body says which is which, so the body is
+    read to classify. The tests below are what stops that reading from turning into a
+    provider body reaching a visitor: the code differs, the sentence differs, the log
+    carries the provider's one word and none of its prose, and ``/healthz`` says which of
+    the two questions about a credential -- set, or able to pay -- is now answered no.
+
+    The quota body is the one quoted in issue #476, observed by calling the API outside the
+    service. Both shapes are pinned because the report quotes it flat and the provider
+    nests it under ``error``.
+    """
+
+    QUOTA = json.dumps(
+        {
+            "type": "insufficient_quota",
+            "code": "credit_balance_exhausted",
+            "message": "You have no credits remaining. Add credits to keep going.",
+        }
+    ).encode()
+    NESTED_QUOTA = json.dumps(
+        {
+            "error": {
+                "type": "insufficient_quota",
+                "code": "credit_balance_exhausted",
+                "message": "You have no credits remaining. Add credits to keep going.",
+            }
+        }
+    ).encode()
+    RATE_LIMIT = json.dumps(
+        {
+            "error": {
+                "type": "rate_limit_error",
+                "code": "rate_limit_exceeded",
+                "message": "Rate limit reached. Please try again in 1.3s.",
+            }
+        }
+    ).encode()
+
+    def refusal(self) -> model_module.ModelError:
+        return model_module.ResponsesClient._http_error(http_error(429, self.QUOTA))
+
+    # ------------------------------------------------------------------- the two shapes
+    def test_a_429_that_means_no_credit_is_not_a_rate_limit(self):
+        # The third shape is the same body with a message long enough to reach the read
+        # limit: a truncated body parses as nothing and would read as a rate limit again.
+        wordy = json.dumps(
+            {
+                "type": "insufficient_quota",
+                "code": "credit_balance_exhausted",
+                "message": "You have no credits remaining. " + "Add credits. " * 400,
+            }
+        ).encode()
+        for shape, body in (
+            ("flat", self.QUOTA),
+            ("nested", self.NESTED_QUOTA),
+            ("wordy", wordy),
+        ):
+            with self.subTest(shape=shape):
+                error = model_module.ResponsesClient._http_error(http_error(429, body))
+                self.assertEqual("model_quota_exhausted", error.code)
+                self.assertEqual("insufficient_quota", error.provider_type)
+
+    def test_a_429_that_really_is_a_rate_limit_keeps_its_own_code_and_sentence(self):
+        error = model_module.ResponsesClient._http_error(http_error(429, self.RATE_LIMIT))
+        self.assertEqual("model_rate_limited", error.code)
+        self.assertIn("try again shortly", str(error))
+        self.assertEqual("rate_limit_error", error.provider_type)
+
+    def test_a_429_whose_body_says_nothing_readable_stays_a_rate_limit(self):
+        for body in (None, b"", b"<html>slow down</html>", b'"a string"'):
+            with self.subTest(body=body):
+                error = model_module.ResponsesClient._http_error(http_error(429, body))
+                self.assertEqual("model_rate_limited", error.code)
+                self.assertIsNone(error.provider_type)
+
+    def test_the_visitor_is_not_sent_back_to_a_failure_that_will_not_clear(self):
+        self.assertNotIn("try again", str(self.refusal()).lower())
+        self.assertIn("unavailable", str(self.refusal()))
+
+    # ------------------------------------------------------------------------ the turn
+    def test_the_turn_is_refused_503_without_a_retry_after(self):
+        demo = service(self.refusal())
+        with self.assertRaises(DemoRequestError) as raised:
+            ask(demo, "session-quota-aaa", "What should I do this week?")
+        self.assertEqual(503, raised.exception.status)
+        self.assertEqual("model_quota_exhausted", raised.exception.code)
+        self.assertIsNone(raised.exception.retry_after)
+        self.assertNotIn("try again", raised.exception.message.lower())
+
+    def test_nothing_the_provider_wrote_reaches_the_visitor(self):
+        demo = service(self.refusal())
+        with self.assertRaises(DemoRequestError) as raised:
+            ask(demo, "session-quota-bbb", "What should I do this week?")
+        written = json.dumps(error_body(raised.exception))
+        self.assertNotIn("credits remaining", written)
+        self.assertNotIn("insufficient_quota", written)
+        self.assertNotIn("credit_balance_exhausted", written)
+
+    # ------------------------------------------------------------------------- the log
+    def test_the_log_names_this_code_and_the_provider_s_type_and_nothing_else(self):
+        demo = service(self.refusal())
+        with self.assertLogs("entrypoints.demo", level="INFO") as captured:
+            with self.assertRaises(DemoRequestError):
+                ask(demo, "session-quota-ccc", "What should I do this week?")
+        logged = [json.loads(record.getMessage()) for record in captured.records]
+        refused = [entry for entry in logged if entry.get("event") == "model_refused"]
+        self.assertEqual(1, len(refused))
+        self.assertEqual({"event", "session", "code", "provider_type"}, set(refused[0]))
+        self.assertEqual("model_quota_exhausted", refused[0]["code"])
+        self.assertEqual("insufficient_quota", refused[0]["provider_type"])
+
+        written = "\n".join(captured.output)
+        self.assertNotIn("credits remaining", written)
+        self.assertNotIn("credit_balance_exhausted", written)
+        self.assertNotIn(FAKE_CREDENTIAL, written)
+        self.assertNotIn("session-quota-ccc", written)
+
+    def test_a_real_rate_limit_is_logged_as_one_rather_than_as_a_quota_refusal(self):
+        limited = model_module.ResponsesClient._http_error(http_error(429, self.RATE_LIMIT))
+        demo = service(limited)
+        with self.assertLogs("entrypoints.demo", level="INFO") as captured:
+            with self.assertRaises(DemoRequestError) as raised:
+                ask(demo, "session-quota-ddd", "What should I do this week?")
+        self.assertEqual(429, raised.exception.status)
+        logged = [json.loads(record.getMessage()) for record in captured.records]
+        refused = [entry for entry in logged if entry.get("event") == "model_refused"]
+        self.assertEqual(["model_rate_limited"], [entry["code"] for entry in refused])
+        self.assertEqual(["rate_limit_error"], [entry["provider_type"] for entry in refused])
+
+    # ---------------------------------------------------------------------- the health
+    def test_health_tells_a_credential_that_is_set_from_one_that_cannot_pay(self):
+        demo = service(self.refusal())
+        self.assertEqual("unknown", demo.health().body["model_quota"])
+        self.assertEqual(200, demo.health().status)
+
+        with self.assertRaises(DemoRequestError):
+            ask(demo, "session-quota-eee", "What should I do this week?")
+
+        health = demo.health()
+        self.assertEqual("present", health.body["model_credential"])
+        self.assertEqual("exhausted", health.body["model_quota"])
+        self.assertEqual("degraded", health.body["status"])
+        self.assertEqual(503, health.status)
+
+    def test_a_rate_limit_says_nothing_about_the_account_s_credit(self):
+        limited = model_module.ResponsesClient._http_error(http_error(429, self.RATE_LIMIT))
+        demo = service(limited)
+        with self.assertRaises(DemoRequestError):
+            ask(demo, "session-quota-fff", "What should I do this week?")
+        self.assertEqual("unknown", demo.health().body["model_quota"])
+        self.assertEqual(200, demo.health().status)
+
+    def test_the_next_call_that_answers_clears_the_refusal(self):
+        demo = service(self.refusal(), model_module.ModelTurn(text="A demo answer."))
+        with self.assertRaises(DemoRequestError):
+            ask(demo, "session-quota-ggg", "What should I do this week?")
+        self.assertEqual("exhausted", demo.health().body["model_quota"])
+
+        ask(demo, "session-quota-ggg", "And after that?")
+        self.assertEqual("ok", demo.health().body["model_quota"])
+        self.assertEqual(200, demo.health().status)
+
+    def test_health_asks_the_provider_nothing(self):
+        fake = FakeModel()
+        demo = DemoService(config(), client=fake, now=lambda: NOW)
+        demo.health()
+        demo.health()
+        self.assertEqual([], fake.calls)
+
+    def test_the_health_vocabulary_is_a_fixed_set_of_words(self):
+        demo = service(self.refusal(), model_module.ModelTurn(text="A demo answer."))
+        seen = [demo.health().body["model_quota"]]
+        with self.assertRaises(DemoRequestError):
+            ask(demo, "session-quota-hhh", "What should I do this week?")
+        seen.append(demo.health().body["model_quota"])
+        ask(demo, "session-quota-hhh", "And after that?")
+        seen.append(demo.health().body["model_quota"])
+        self.assertEqual(["unknown", "exhausted", "ok"], seen)
+        self.assertEqual(sorted(MODEL_QUOTA_STATES), sorted(set(seen)))
+
+
 class PrivacySafeLogTest(unittest.TestCase):
     def test_the_access_log_carries_no_message_no_athlete_and_no_credential(self):
         demo = service()
@@ -603,6 +808,11 @@ class HttpSurfaceTest(unittest.TestCase):
         self.assertEqual("ok", body["status"])
         self.assertEqual("gpt-5.6-luna", body["model"])
         self.assertEqual("present", body["model_credential"])
+        # Whether a credential can pay is a second question, answered over the same wire.
+        # Which of the two non-refused words shows depends on whether a turn in this class
+        # has run yet; the one that matters to a deploy check is the one that must not.
+        self.assertIn(body["model_quota"], MODEL_QUOTA_STATES)
+        self.assertNotEqual("exhausted", body["model_quota"])
         self.assertNotIn(FAKE_CREDENTIAL, json.dumps(body))
 
 
@@ -702,6 +912,7 @@ class FailedTurnQuotaTest(unittest.TestCase):
             ("model_timeout", 504),
             ("model_unavailable", 502),
             ("model_rate_limited", 429),
+            ("model_quota_exhausted", 503),
             ("model_output_truncated", 502),
         ):
             with self.subTest(code=code):
