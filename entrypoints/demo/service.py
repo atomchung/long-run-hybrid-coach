@@ -85,6 +85,33 @@ _NO_ANSWER = {
 }
 
 
+# Which mirror the visitor has open, said to the model. The coaching prompt tells it to
+# answer in the language the visitor is writing in, which is the right rule and silent on the
+# case that was reported: a message with no language in it at all. `b` is not English, and a
+# model with nothing else to go on picks English -- under a Chinese heading, on a Chinese
+# page. This is the something else to go on. It reaches the wording of a reply and nothing
+# else: no tool, no evidence group, no fixture, no model.
+_MIRRORS = {"zh": "Traditional Chinese", "en": "English"}
+
+
+def _mirror(locale: str | None) -> str | None:
+    if not locale:
+        return None
+    return _MIRRORS.get(locale.lower()[:2])
+
+
+def _mirror_note(locale: str | None) -> str:
+    named = _mirror(locale)
+    if named is None:
+        return ""
+    return (
+        "\n\n## The page this visitor opened\n\n"
+        f"They are reading the {named} mirror of this playground. Answer in {named} unless "
+        "they write to you in something else. What they type may carry no language at all -- "
+        f"a single letter, a number, an emoji -- and {named} is the answer then."
+    )
+
+
 def _no_answer(message: str, locale: str | None) -> str:
     """What to say when the model returned no words, in the language it was asked in.
 
@@ -424,7 +451,7 @@ class DemoService:
             # keeps its evidence: everything the earlier rounds read is in `items`.
             try:
                 turn = self._client.respond(
-                    instructions=self.instructions(),
+                    instructions=self.instructions() + _mirror_note(locale),
                     input_items=items,
                     tools=boundary.tool_definitions(),
                     allow_tools=rounds < MAX_TOOL_ROUNDS,

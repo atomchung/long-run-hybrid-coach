@@ -372,6 +372,45 @@ class NoAnswerTest(unittest.TestCase):
                 self.assertEqual(400, raised.exception.status)
                 self.assertEqual("invalid_request", raised.exception.code)
 
+    def test_the_model_is_told_which_mirror_the_visitor_opened(self):
+        """The reported case again, for the turn where the model DOES answer.
+
+        `b` carries no language, so a model told only "answer in the language they write in"
+        has nothing to answer from and picks English -- which is what a visitor on the
+        Chinese page saw. The page's own locale is the only thing that can settle it.
+        """
+        demo = service()
+        demo.respond(
+            {"session_id": "session-jjjjjjjj", "message": "b", "locale": "zh-Hant"},
+            client_key="203.0.113.7",
+        )
+        instructions = demo._client.calls[-1]["instructions"]
+        self.assertIn("Traditional Chinese mirror", instructions)
+        self.assertIn("a single letter", instructions)
+
+    def test_an_english_page_is_named_as_one(self):
+        demo = service()
+        demo.respond(
+            {"session_id": "session-kkkkkkkk", "message": "b", "locale": "en"},
+            client_key="203.0.113.7",
+        )
+        self.assertIn("English mirror", demo._client.calls[-1]["instructions"])
+
+    def test_a_turn_with_no_locale_adds_nothing_to_the_prompt(self):
+        demo = service()
+        ask(demo, "session-llllllll", "What should I do on Thursday?")
+        with_none = demo._client.calls[-1]["instructions"]
+        self.assertNotIn("The page this visitor opened", with_none)
+        self.assertEqual(demo.instructions(), with_none)
+
+    def test_a_tag_this_service_has_no_mirror_for_adds_nothing(self):
+        demo = service()
+        demo.respond(
+            {"session_id": "session-mmmmmmmm", "message": "hei", "locale": "no"},
+            client_key="203.0.113.7",
+        )
+        self.assertNotIn("The page this visitor opened", demo._client.calls[-1]["instructions"])
+
     def test_a_turn_without_a_locale_still_answers(self):
         demo = service(model_module.ModelTurn(text=""))
         reply = ask(demo, "session-iiiiiiii", "What should I do on Thursday?")
