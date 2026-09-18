@@ -188,9 +188,15 @@ demo_model_unconfigured` rather than served from a substitute.
 ## What it logs
 
 Method, path, status, error code, a session **fingerprint** (a hash prefix, never the id
-itself), the turn number, which acts were asked for, how long it took, and how long the
-reply was. Never the visitor's message, never the athlete payload, never a header, never a
-credential.
+itself), the turn number, which acts were asked for, how long it took, how long the reply
+was, and what the turn cost: `input_tokens`, `cached_tokens`, `output_tokens`,
+`reasoning_tokens`, summed across the turn's rounds because a round is not a thing anybody
+is billed for. A number the provider did not report is absent rather than zero. Never the
+visitor's message, never the athlete payload, never a header, never a credential.
+
+`cached_tokens` is the one worth watching. Every request re-sends the same 43 KB of
+instructions, so a cache that is not being hit is the demo paying full price for identical
+bytes on every round of every turn.
 
 ## Configuration
 

@@ -107,12 +107,78 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class Usage:
+    """What one call cost, in the provider's own four numbers.
+
+    ``cached`` is the part of the input the provider billed as a cache hit. It matters here
+    more than anywhere else in this repository: every request carries the same 43 KB of
+    instructions, so if that prefix is not being cached the demo is paying full price for
+    the same bytes on every round of every turn. ``reasoning`` is output nobody reads -- it
+    is generated at the same speed as the visible answer, and it is most of why a turn that
+    fetches nothing still takes ten seconds.
+
+    Absent when a response does not report it: a number this did not read is ``None``,
+    never a zero.
+    """
+
+    input_tokens: int | None = None
+    cached_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+    def __add__(self, other: "Usage") -> "Usage":
+        def plus(left: int | None, right: int | None) -> int | None:
+            if left is None and right is None:
+                return None
+            return (left or 0) + (right or 0)
+
+        return Usage(
+            plus(self.input_tokens, other.input_tokens),
+            plus(self.cached_tokens, other.cached_tokens),
+            plus(self.output_tokens, other.output_tokens),
+            plus(self.reasoning_tokens, other.reasoning_tokens),
+        )
+
+    def as_log(self) -> dict[str, int]:
+        """Only the numbers that were reported, so a log line cannot invent a zero."""
+        return {
+            name: value
+            for name, value in (
+                ("input_tokens", self.input_tokens),
+                ("cached_tokens", self.cached_tokens),
+                ("output_tokens", self.output_tokens),
+                ("reasoning_tokens", self.reasoning_tokens),
+            )
+            if value is not None
+        }
+
+
+def _usage(payload: dict[str, Any]) -> Usage:
+    """The provider's ``usage`` block, read for four numbers and nothing else."""
+    raw = payload.get("usage")
+    if not isinstance(raw, dict):
+        return Usage()
+
+    def number(source: Any, key: str) -> int | None:
+        value = source.get(key) if isinstance(source, dict) else None
+        return value if isinstance(value, int) else None
+
+    return Usage(
+        input_tokens=number(raw, "input_tokens"),
+        cached_tokens=number(raw.get("input_tokens_details"), "cached_tokens"),
+        output_tokens=number(raw, "output_tokens"),
+        reasoning_tokens=number(raw.get("output_tokens_details"), "reasoning_tokens"),
+    )
+
+
+@dataclass(frozen=True)
 class ModelTurn:
     """One response: the words, the acts it asked for, and the items it produced."""
 
     text: str
     tool_calls: tuple[ToolCall, ...] = ()
     output_items: tuple[dict[str, Any], ...] = field(default=())
+    usage: Usage = field(default_factory=Usage)
 
     @property
     def reasoning_items(self) -> tuple[dict[str, Any], ...]:
@@ -245,7 +311,12 @@ def parse_response(payload: dict[str, Any]) -> ModelTurn:
                 "the model reached its output ceiling before it answered",
             )
         raise ModelError("model_unavailable", "the model returned no answer")
-    return ModelTurn(text=text, tool_calls=tool_calls, output_items=output_items)
+    return ModelTurn(
+        text=text,
+        tool_calls=tool_calls,
+        output_items=output_items,
+        usage=_usage(payload),
+    )
 
 
 def _refusal(error: urllib.error.HTTPError) -> tuple[str | None, bool]:
