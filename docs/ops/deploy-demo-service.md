@@ -25,7 +25,7 @@ else is left.
 
 1. **Create the service.** Railway → the existing project → *New* → *GitHub Repo* →
    `long-run-hybrid-coach`. In its *Settings*, set **Config-as-code path** to
-   `railway.demo.toml`. Name it `coach-demo`.
+   `railway.demo.toml` and the **deploy branch** to `main`. Name it `coach-demo`.
    *Do not attach a volume.* The demo holds its sessions in memory and has nothing to
    persist; a disk here is the first step towards a second store for somebody's plan.
 2. **Set one variable.** `OPENAI_API_KEY`, on this service only. Do not copy the gateway's
@@ -55,6 +55,11 @@ the production failure domain and behind the reviewed MCP surface.
 In this order, because each one is cheap and rules out the next one's ambiguity.
 
 ```bash
+# 0. what is actually running: the branch and the commit, not the one you merged to
+railway deployment list --json --service coach-demo | python3 -c \
+  'import json,sys; d=json.load(sys.stdin)[0]["meta"]; print(d["branch"], d["commitHash"][:8])'
+# main 5a7e9877
+
 # 1. the deployment answers at all, and says whether it can coach
 curl -s https://demo-api.paceandstaystrong.com/healthz
 # {"status":"ok","model":"gpt-5.6-luna","model_credential":"present","fixture":"valid",...}
@@ -85,6 +90,15 @@ Step 2 of this list is the only thing that prevents that failure, and the accept
 command is the only check in this repository that reaches the real Responses API: the
 pinned model id, the continuation shape and every provider-side error are proven there or
 nowhere. Run it against the deployed service before the launch link goes out.
+
+**The branch is the one that fails silently.** This service deploys from `main`; the
+gateway deploys from its own `production` release lane, and the difference is deliberate --
+the demo has no release identity, no volume and no athlete, so a merge to `main` is the
+whole of its release process. A service left pointed at a working branch keeps answering
+perfectly from code that has stopped moving: nothing reports `degraded`, no check fails,
+and a merged change simply never appears. On 2026-09-18 this service spent a day on
+`codex/demo-luna`, and a merge to `main` plus a `railway redeploy --from-source` rebuilt
+the same commit twice before step 0 above said why. Read the branch, not the merge.
 
 A `403 origin_not_allowed` from the browser and a `200` from `curl` is CORS: the page's
 origin is not on the allowlist. The production site origin is compiled in, so this means
