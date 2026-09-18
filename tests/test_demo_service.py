@@ -311,6 +311,85 @@ class AcceptanceTurnTest(unittest.TestCase):
         self.assertNotEqual("attached", evidence["comparison_result"])
 
 
+class NoAnswerTest(unittest.TestCase):
+    """A turn the model finished without words.
+
+    The visitor still gets a sentence, and it is the one thing on the page this service
+    writes itself -- so it is the one thing that does not follow the language of the
+    conversation unless it is made to.
+    """
+
+    def test_an_english_question_is_answered_in_english(self):
+        demo = service(model_module.ModelTurn(text=""))
+        reply = ask(demo, "session-bbbbbbbb", "What should I do on Thursday?")
+        self.assertIn("Ask me again", reply.body["reply"])
+
+    def test_a_chinese_question_is_not_answered_in_english(self):
+        demo = service(model_module.ModelTurn(text=""))
+        reply = ask(demo, "session-cccccccc", "週四突然不能練了，這週怎麼改？")
+        self.assertIn("再問我一次", reply.body["reply"])
+        self.assertNotIn("Ask me again", reply.body["reply"])
+
+    def test_the_reported_case_a_single_latin_letter_on_the_chinese_page(self):
+        """What was actually typed, which no amount of reading the message can classify."""
+        demo = service(model_module.ModelTurn(text=""))
+        reply = demo.respond(
+            {"session_id": "session-eeeeeeee", "message": "b", "locale": "zh-Hant"},
+            client_key="203.0.113.7",
+        )
+        self.assertIn("再問我一次", reply.body["reply"])
+        self.assertNotIn("Ask me again", reply.body["reply"])
+
+    def test_the_page_s_locale_outranks_the_characters_in_the_message(self):
+        demo = service(model_module.ModelTurn(text=""))
+        reply = demo.respond(
+            {
+                "session_id": "session-ffffffff",
+                "message": "What about 小明's Thursday?",
+                "locale": "en",
+            },
+            client_key="203.0.113.7",
+        )
+        self.assertIn("Ask me again", reply.body["reply"])
+
+    def test_a_locale_this_service_has_no_sentence_for_falls_through_to_the_message(self):
+        demo = service(model_module.ModelTurn(text=""))
+        reply = demo.respond(
+            {"session_id": "session-gggggggg", "message": "週四怎麼辦？", "locale": "ja"},
+            client_key="203.0.113.7",
+        )
+        self.assertIn("再問我一次", reply.body["reply"])
+
+    def test_a_locale_that_is_not_a_language_tag_is_refused(self):
+        demo = service(model_module.ModelTurn(text=""))
+        for bad in ("zh Hant", "x" * 33, {"lang": "zh"}, "../../etc"):
+            with self.subTest(locale=bad):
+                with self.assertRaises(DemoRequestError) as raised:
+                    demo.respond(
+                        {"session_id": "session-hhhhhhhh", "message": "hi", "locale": bad},
+                        client_key="203.0.113.7",
+                    )
+                self.assertEqual(400, raised.exception.status)
+                self.assertEqual("invalid_request", raised.exception.code)
+
+    def test_a_turn_without_a_locale_still_answers(self):
+        demo = service(model_module.ModelTurn(text=""))
+        reply = ask(demo, "session-iiiiiiii", "What should I do on Thursday?")
+        self.assertIn("Ask me again", reply.body["reply"])
+
+    def test_the_sentence_is_carried_forward_so_the_next_turn_does_not_open_on_two_questions(self):
+        demo = service(model_module.ModelTurn(text=""))
+        ask(demo, "session-dddddddd", "這位運動員這週練什麼？")
+        ask(demo, "session-dddddddd", "那重訓呢？")
+        second = demo._client.calls[-1]["input_items"]
+        self.assertTrue(
+            any(
+                "再問我一次" in json.dumps(item, ensure_ascii=False)
+                for item in second
+            )
+        )
+
+
 class SessionIsolationTest(unittest.TestCase):
     def test_two_sessions_share_no_history(self):
         demo = service()

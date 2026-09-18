@@ -22,6 +22,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import re
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
@@ -54,6 +55,49 @@ __all__ = [
 ]
 
 _ORCHESTRATION = Path(__file__).with_name("orchestration.md")
+
+# The one sentence this service says in its own voice, in the two languages the demo page is
+# published in. Everything else a visitor reads is the model's, and the model answers in the
+# language it was asked in -- but this sentence is reached precisely when the model produced
+# no words at all, so there is nothing to follow and the language has to be decided here.
+#
+# The page says which mirror it is, because the message often cannot. What was actually typed
+# on the Chinese page the day this was reported was `b`: one Latin letter, no language in it
+# at all, answered in English under a Chinese heading. Han characters in the message are the
+# fallback for a caller that sends no locale, not the primary test.
+_HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+# Long enough for any BCP-47 tag a page would carry, short enough that the field cannot be
+# used to smuggle anything. Anything else in it is a refused request rather than a silently
+# ignored one, in keeping with every other field here.
+MAX_LOCALE_CHARS = 32
+_LOCALE = re.compile(r"\A[A-Za-z0-9-]{1,32}\Z")
+
+_NO_ANSWER = {
+    "en": (
+        "I could not put that into an answer this time. Ask me again, or ask "
+        "something narrower about this athlete's week."
+    ),
+    "zh": (
+        "這次我沒能整理出一個答案。再問我一次，或問得更具體一點，"
+        "例如這位運動員這週該怎麼練。"
+    ),
+}
+
+
+def _no_answer(message: str, locale: str | None) -> str:
+    """What to say when the model returned no words, in the language it was asked in.
+
+    The locale the page declared wins, because it is the one thing that is true of a
+    visitor whatever they typed. A tag this service has no sentence for falls through to
+    the message, the same as no tag at all.
+    """
+    if locale and locale.lower().startswith("zh"):
+        return _NO_ANSWER["zh"]
+    if locale and locale.lower().startswith("en"):
+        return _NO_ANSWER["en"]
+    return _NO_ANSWER["zh" if _HAN.search(message) else "en"]
+
 
 # How many times one turn may go round the model-then-act loop before it has to answer in
 # words. A ceiling rather than a budget: a turn that has asked for evidence twice has the
@@ -280,7 +324,7 @@ class DemoService:
 
         if not isinstance(payload, dict):
             raise DemoRequestError(400, "invalid_request", "the body must be a JSON object")
-        unexpected = sorted(set(payload) - {"session_id", "message"})
+        unexpected = sorted(set(payload) - {"session_id", "message", "locale"})
         if unexpected:
             raise DemoRequestError(
                 400, "invalid_request", f"unexpected field: {', '.join(unexpected)}"
@@ -300,6 +344,16 @@ class DemoService:
                 400,
                 "message_too_long",
                 f"message must be at most {self.config.max_message_chars} characters",
+            )
+        # Optional: the language tag of the page asking. It reaches exactly one sentence --
+        # the one below that this service writes itself -- and nothing chooses a model, a
+        # prompt or a fixture from it.
+        locale = payload.get("locale")
+        if locale is not None and (not isinstance(locale, str) or not _LOCALE.match(locale)):
+            raise DemoRequestError(
+                400,
+                "invalid_request",
+                f"locale must be a language tag of at most {MAX_LOCALE_CHARS} characters",
             )
         if not self.config.has_api_key:
             # Said in the same words whether the key was never set or was rejected. A demo
@@ -330,7 +384,9 @@ class DemoService:
                 409, "session_busy", "this demo conversation is already answering a turn"
             )
         try:
-            return self._answer(session, message.strip(), now=now, started=started)
+            return self._answer(
+                session, message.strip(), locale=locale, now=now, started=started
+            )
         finally:
             session.lock.release()
 
@@ -339,6 +395,7 @@ class DemoService:
         session: Any,
         message: str,
         *,
+        locale: str | None,
         now: dt.datetime,
         started: dt.datetime,
     ) -> DemoReply:
@@ -484,10 +541,7 @@ class DemoService:
             )
 
         if not text.strip():
-            text = (
-                "I could not put that into an answer this time. Ask me again, or ask "
-                "something narrower about this athlete's week."
-            )
+            text = _no_answer(message, locale)
             # Not something the model said, so it is added rather than already carried
             # forward -- the conversation has to end on a turn, or the next one opens with
             # two questions in a row.

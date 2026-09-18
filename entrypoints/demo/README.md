@@ -66,8 +66,13 @@ own `unknowns`, and a reply that reads one as a zero is wrong, not terse.
 POST /demo/v1/respond
 Content-Type: application/json
 
-{"session_id": "opaque-random-id", "message": "..."}
+{"session_id": "opaque-random-id", "message": "...", "locale": "zh-Hant"}
 ```
+
+`locale` is optional and reaches exactly one sentence: the one this service writes itself
+when a turn finishes with no words in it. The page knows which mirror it is; a message often
+does not -- the first report of this was a visitor on the Chinese page typing `b`, which
+carries no language at all and came back in English.
 
 ```json
 {"reply": "...", "turn": 3}
