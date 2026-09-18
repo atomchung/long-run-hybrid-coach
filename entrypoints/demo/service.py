@@ -228,6 +228,11 @@ class DemoService:
         process's memory of its own last call, so a fresh container starts at ``unknown``
         and reports ``ok`` until something refuses it again.
         """
+        # The only moment anything expires when nothing is being asked. `get_or_create` is
+        # the other one, and a service with no traffic never reaches it -- so the count
+        # below would report conversations that ended an hour ago as though they were live,
+        # and a deploy check reading it would see load that is not there.
+        self.purge_expired()
         degraded = (
             bool(self._fixture_report["errors"])
             or not self.config.has_api_key
@@ -522,7 +527,7 @@ def _trimmed(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     Whole exchanges rather than single items, because dropping one item at a time
     eventually leaves a ``function_call_output`` whose ``function_call`` has already gone.
     The Responses API rejects that input, and the history is kept rather than repaired --
-    so the session would answer 502 for the rest of its fifteen minutes instead of simply
+    so the session would answer 502 for the rest of its hour instead of simply
     getting shorter.
     """
     while len(json.dumps(items, default=str)) > MAX_HISTORY_CHARS:

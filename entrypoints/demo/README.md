@@ -114,10 +114,14 @@ nothing; two ids reach two conversations about the same synthetic athlete. What 
 never do is let one visitor's exploration appear in another's, so a session holds its own
 deep copy of the plan and its own history, and nothing is shared between them.
 
-Bounded in three directions, because the endpoint is anonymous: sessions expire (15 minutes
-by default), a conversation is capped at 12 turns, and the store holds 500 sessions before
-the least recently touched is dropped. Memory only — no volume, no database, and a deploy
-starts every conversation over, which is the correct lifetime for a playground.
+Bounded in three directions, because the endpoint is anonymous: sessions expire after an
+hour of silence by default, a conversation is capped at 12 turns, and the store holds 500
+sessions before the least recently touched is dropped. The hour is idle time between turns,
+not the length of a conversation, and it is long because a visitor reads a week of training
+between one turn and the next. The two bounds meet: a conversation keeps its slot for the
+whole hour, so past 500 live conversations the store, not the clock, is what ends the oldest
+one -- and it ends the same way, as a turn answered from an empty history. Memory only — no volume, no database, and a deploy starts
+every conversation over, which is the correct lifetime for a playground.
 
 ## The model
 
@@ -164,7 +168,7 @@ for an anonymous public endpoint, and none of them can be changed by a request.
 | `PORT` | — | Railway injects it and routes to it. Read **first**; a service that binds its own number instead fails the health check while running perfectly. |
 | `COACH_DEMO_PORT` | `8433` | only consulted when `PORT` is unset |
 | `COACH_DEMO_ALLOWED_ORIGINS` | — | comma-separated preview origins, **added to** `https://paceandstaystrong.com`, which is compiled in. https only, apart from a loopback origin. No wildcard, in any position. |
-| `COACH_DEMO_SESSION_TTL_SECONDS` | `900` | |
+| `COACH_DEMO_SESSION_TTL_SECONDS` | `3600` | idle time between turns, not the length of a conversation |
 | `COACH_DEMO_MAX_SESSIONS` | `500` | |
 | `COACH_DEMO_MAX_TURNS` | `12` | per session |
 | `COACH_DEMO_MAX_MESSAGE_CHARS` | `1200` | |
