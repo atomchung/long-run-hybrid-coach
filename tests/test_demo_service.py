@@ -311,6 +311,38 @@ class AcceptanceTurnTest(unittest.TestCase):
         self.assertNotEqual("attached", evidence["comparison_result"])
 
 
+class NoAnswerTest(unittest.TestCase):
+    """A turn the model finished without words.
+
+    The visitor still gets a sentence, and it is the one thing on the page this service
+    writes itself -- so it is the one thing that does not follow the language of the
+    conversation unless it is made to.
+    """
+
+    def test_an_english_question_is_answered_in_english(self):
+        demo = service(model_module.ModelTurn(text=""))
+        reply = ask(demo, "session-bbbbbbbb", "What should I do on Thursday?")
+        self.assertIn("Ask me again", reply.body["reply"])
+
+    def test_a_chinese_question_is_not_answered_in_english(self):
+        demo = service(model_module.ModelTurn(text=""))
+        reply = ask(demo, "session-cccccccc", "週四突然不能練了，這週怎麼改？")
+        self.assertIn("再問我一次", reply.body["reply"])
+        self.assertNotIn("Ask me again", reply.body["reply"])
+
+    def test_the_sentence_is_carried_forward_so_the_next_turn_does_not_open_on_two_questions(self):
+        demo = service(model_module.ModelTurn(text=""))
+        ask(demo, "session-dddddddd", "這位運動員這週練什麼？")
+        ask(demo, "session-dddddddd", "那重訓呢？")
+        second = demo._client.calls[-1]["input_items"]
+        self.assertTrue(
+            any(
+                "再問我一次" in json.dumps(item, ensure_ascii=False)
+                for item in second
+            )
+        )
+
+
 class SessionIsolationTest(unittest.TestCase):
     def test_two_sessions_share_no_history(self):
         demo = service()

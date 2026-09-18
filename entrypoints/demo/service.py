@@ -22,6 +22,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import re
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
@@ -54,6 +55,31 @@ __all__ = [
 ]
 
 _ORCHESTRATION = Path(__file__).with_name("orchestration.md")
+
+# The one sentence this service says in its own voice, in the two languages the demo page is
+# published in. Everything else a visitor reads is the model's, and the model answers in the
+# language it was asked in -- but this sentence is reached precisely when the model produced
+# no words at all, so there is nothing to follow and the language has to be decided here.
+# Han characters in what was just asked are the whole of the test: the pages are English and
+# Traditional Chinese, and a question in either is answered in the one it was asked in.
+_HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+_NO_ANSWER = {
+    "en": (
+        "I could not put that into an answer this time. Ask me again, or ask "
+        "something narrower about this athlete's week."
+    ),
+    "zh": (
+        "這次我沒能整理出一個答案。再問我一次，或問得更具體一點，"
+        "例如這位運動員這週該怎麼練。"
+    ),
+}
+
+
+def _no_answer(message: str) -> str:
+    """What to say when the model returned no words, in the language it was asked in."""
+    return _NO_ANSWER["zh" if _HAN.search(message) else "en"]
+
 
 # How many times one turn may go round the model-then-act loop before it has to answer in
 # words. A ceiling rather than a budget: a turn that has asked for evidence twice has the
@@ -484,10 +510,7 @@ class DemoService:
             )
 
         if not text.strip():
-            text = (
-                "I could not put that into an answer this time. Ask me again, or ask "
-                "something narrower about this athlete's week."
-            )
+            text = _no_answer(message)
             # Not something the model said, so it is added rather than already carried
             # forward -- the conversation has to end on a turn, or the next one opens with
             # two questions in a row.
