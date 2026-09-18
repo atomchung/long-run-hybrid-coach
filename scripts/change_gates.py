@@ -130,6 +130,66 @@ CLASSIFIED_PACKAGE_PATHS = (
     LIVE_SMOKE_PATHS | MODEL_FACING_PATHS | INTERNAL_PACKAGE_PATHS | {DIFF_GATED_SURFACE_PATH}
 )
 
+# entrypoints/demo/ is a second deployable, not part of the package above -- AGENTS.md says
+# so explicitly -- so it gets its own classification rather than being folded into the
+# lists above. Named here: everything that decides whether the demo can answer a real
+# visitor turn at all -- its model settings, its orchestration prompt, the service/session/
+# HTTP wiring around them, the fixture it replays against, and the two deploy artifacts
+# that put a build in front of traffic. No unit test judges any of these (they run against
+# a fake model), and docs/ops/deploy-demo-service.md ("Proving it") names the acceptance
+# run as the only check in this repository that reaches the real Responses API. Issue #478
+# is what a change here does without this row: a changed constant, a green suite, and every
+# visitor turn answering 504 until somebody ran the command by hand.
+DEMO_ENTRYPOINT_PREFIX = "entrypoints/demo/"
+
+DEMO_ACCEPTANCE_PATHS = frozenset(
+    {
+        "entrypoints/demo/model.py",
+        "entrypoints/demo/service.py",
+        "entrypoints/demo/boundary.py",
+        "entrypoints/demo/orchestration.md",
+        "entrypoints/demo/config.py",
+        "entrypoints/demo/server.py",
+        "entrypoints/demo/sessions.py",
+        "entrypoints/demo/fixture.py",
+        # Outside entrypoints/demo/ itself, but the same question: a moved model image, a
+        # moved provider timeout or a moved health check reaches production before any
+        # test does.
+        "Dockerfile.demo",
+        "railway.demo.toml",
+    }
+)
+
+# A prefix, not a fixed set, the way LIVE_SMOKE_PATHS and MODEL_FACING_PATHS are fixed sets
+# but contracts/*.json below is a prefix: the acceptance run replays committed prompts
+# against this committed fixture, so a changed fixture is a changed answer whichever file
+# inside the directory moved.
+DEMO_ACCEPTANCE_FIXTURE_PREFIX = "entrypoints/demo/fixtures/"
+
+# Named rather than assumed, the same way INTERNAL_PACKAGE_PATHS is: these ask for no live
+# run -- the README, the acceptance script itself, and the two files Python requires to
+# exist and that carry no behaviour of their own. tests/ also asks for no live run here,
+# but it is a prefix outside entrypoints/demo/ entirely (already mapped to the demo's own
+# unit tests by scripts/test_selection.py) and never matches DEMO_ENTRYPOINT_PREFIX, so it
+# needs no entry in this set.
+DEMO_NO_GATE_PATHS = frozenset(
+    {
+        "entrypoints/demo/README.md",
+        "entrypoints/demo/acceptance.py",
+        "entrypoints/demo/__init__.py",
+        "entrypoints/demo/__main__.py",
+    }
+)
+
+# The one command that proves any of the paths above: the acceptance run against the
+# deployed service (docs/ops/deploy-demo-service.md, "Proving it"). Every path shares the
+# same command, so the reason string can name it once and reuse it per path.
+DEMO_ACCEPTANCE_COMMAND = (
+    "python3 -m entrypoints.demo.acceptance --base-url https://demo-api.paceandstaystrong.com"
+)
+
+CLASSIFIED_DEMO_PATHS = DEMO_ACCEPTANCE_PATHS | DEMO_NO_GATE_PATHS
+
 # The files a reviewer or a registry actually receives. Editing one changes submitted
 # bytes even when the served tool catalogue is untouched, so the next submission is a
 # different submission. They do not move the reviewed MCP surface, so they do not ask
@@ -339,6 +399,22 @@ def unclassified_package_file(path: str) -> bool:
     return package_file(path) and path not in CLASSIFIED_PACKAGE_PATHS
 
 
+def unclassified_demo_file(path: str) -> bool:
+    """A file under entrypoints/demo/ that no list places -- the demo's analogue of
+    ``unclassified_package_file``. A new demo module must not inherit silence by being
+    new, so this is reported through the *same* ``unclassified_paths`` key the package
+    uses (see the comment beside it in ``classify_changed_paths``) rather than a new key:
+    a no-op diff must add only the two ``demo_acceptance*`` keys to the report, and a
+    second ``unclassified_*`` key would not be one.
+    """
+
+    return (
+        path.startswith(DEMO_ENTRYPOINT_PREFIX)
+        and path not in CLASSIFIED_DEMO_PATHS
+        and not path.startswith(DEMO_ACCEPTANCE_FIXTURE_PREFIX)
+    )
+
+
 def mcp_surface_changed(path: str, diff: str | None = None) -> bool:
     if path != DIFF_GATED_SURFACE_PATH:
         return False
@@ -355,6 +431,26 @@ def live_boundary_changed(path: str, diff: str | None = None) -> bool:
         return True
     changed = _changed_lines(diff).lower()
     return any(marker in changed for marker in LIVE_BOUNDARY_MARKERS)
+
+
+def demo_acceptance_changed(path: str) -> bool:
+    """Whole-path, unlike mcp_surface_changed/live_boundary_changed: no line in a diff
+    distinguishes a demo settings change from an internal one the way ``description=`` or
+    ``oauth`` does for the product's own surfaces -- the demo has no equivalent internal/
+    live split, so any change to a named path is the gate.
+    """
+    return path in DEMO_ACCEPTANCE_PATHS or path.startswith(DEMO_ACCEPTANCE_FIXTURE_PREFIX)
+
+
+def demo_acceptance_reason(path: str) -> str:
+    """The reason string for one demo-surface path: the path, and the command that clears it.
+
+    Every other reason in this module names only the path and leaves the command to the
+    AGENTS.md table. This one inlines ``python3 -m entrypoints.demo.acceptance`` itself,
+    because issue #478 was exactly a named gate whose command nobody ran by hand -- the
+    string doubles as the reminder.
+    """
+    return f"{path} ({DEMO_ACCEPTANCE_COMMAND})"
 
 
 def classify_changed_paths(
@@ -388,10 +484,14 @@ def classify_changed_paths(
     smoke_reasons: list[str] = []
     surface_reasons: list[str] = []
     protocol_reasons: list[str] = []
+    demo_reasons: list[str] = []
 
     for path in paths:
         if live_boundary_changed(path, diffs_by_path.get(path)):
             smoke_reasons.append(path)
+
+        if demo_acceptance_changed(path):
+            demo_reasons.append(demo_acceptance_reason(path))
 
         if path in MODEL_FACING_PATHS:
             surface_reasons.append(path)
@@ -458,6 +558,15 @@ def classify_changed_paths(
     smoke_reasons.extend(unclassified)
     surface_reasons.extend(unclassified)
 
+    # The demo's own unnamed file. It is not a live MCP boundary or a reviewed tool
+    # catalogue, so it does not join the two lists above -- only demo_acceptance, the one
+    # gate an unrecognised file under entrypoints/demo/ could plausibly need. It still
+    # joins `unclassified` (not a new list) so the report gains no third key beyond
+    # demo_acceptance/demo_acceptance_reasons.
+    unclassified_demo = [path for path in paths if unclassified_demo_file(path)]
+    demo_reasons.extend(demo_acceptance_reason(path) for path in unclassified_demo)
+    unclassified = sorted(unclassified + unclassified_demo)
+
     # Scan Tools and the resubmission are decided from the reviewed surface alone. A
     # protocol reason never enters either: the SDK owns the wire, this repository owns the
     # bytes on it, and a pin that moves the first cannot move the second.
@@ -483,6 +592,8 @@ def classify_changed_paths(
         "scan_tools": scan_tools,
         "plugin_resubmission": bool(resubmission_reasons),
         "plugin_resubmission_reasons": resubmission_reasons,
+        "demo_acceptance": bool(demo_reasons),
+        "demo_acceptance_reasons": sorted(set(demo_reasons)),
         "notes": [
             "production /readyz verification remains required after every deployment",
             "Skill-only changes need client acceptance but not Scan Tools for the current MCP-only OpenAI submission",

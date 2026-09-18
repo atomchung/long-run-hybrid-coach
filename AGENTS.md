@@ -258,6 +258,7 @@ or branch when a newer commit supersedes it.
 | Submission packet, registry entry, or plugin manifest | A new plugin version before resubmission; no Scan Tools on its own | They are the bytes a reviewer or the registry receives, not the served tool catalogue. |
 | Internal code, tests, docs, release notes, or CI-only changes | No live ceremony | They do not change a live provider or reviewed client surface. |
 | A package file no list names | Reported as unclassified: live smoke and client acceptance until it is named | Silence is not evidence that a new module is internal. |
+| The public demo's model, service, session, boundary, config, orchestration prompt, or fixture (`entrypoints/demo/`), or its deploy artifacts (`Dockerfile.demo`, `railway.demo.toml`) | The acceptance run against the deployed service | It is the only check in this repository that reaches the real Responses API; unit tests there run against a fake model (issue #478). |
 
 The tool-catalogue row is decided from the digest rather than from the diff: `change_gates.py`
 builds `tool_catalogue_sha256()` at `--base` and at this checkout and asks for Scan Tools when
