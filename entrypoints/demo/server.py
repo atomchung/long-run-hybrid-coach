@@ -6,9 +6,10 @@ here, and nothing here can be reached without going through the service's own li
 
 The endpoint is public and anonymous, so the shape of what it accepts is the first defence:
 JSON only and never a multipart body, so there is no upload path; a declared length that is
-checked before the body is read, so a large body is refused rather than buffered; exactly
-two fields, so nothing else can be smuggled in; and no URL of any kind taken from a caller,
-so there is no arbitrary MCP endpoint, webhook or callback to point this at.
+checked before the body is read, so a large body is refused rather than buffered; a closed
+set of three fields -- a session id, a message and an optional language tag, each checked
+against its own shape -- so nothing else can be smuggled in; and no URL of any kind taken
+from a caller, so there is no arbitrary MCP endpoint, webhook or callback to point this at.
 """
 
 from __future__ import annotations
