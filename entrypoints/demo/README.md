@@ -70,8 +70,14 @@ Content-Type: application/json
 ```
 
 ```json
-{"reply": "..."}
+{"reply": "...", "turn": 3}
 ```
+
+`turn` is this conversation's own count, and it is there so the page can notice a
+conversation it has lost. A session that expired, or one this process never had because it
+restarted, answers `turn: 1` while the browser still holds the same `session_id` and still
+shows the transcript above it -- which reads as a coach that forgot rather than as a
+conversation that ended.
 
 In production that is `https://demo-api.paceandstaystrong.com/demo/v1/respond`.
 

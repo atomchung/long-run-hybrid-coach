@@ -486,7 +486,14 @@ class DemoService:
         finished = self._now()
         return DemoReply(
             status=200,
-            body={"reply": text},
+            # The turn number travels with the reply because the page cannot otherwise tell
+            # that its conversation was replaced. A session that expired, or one this process
+            # never had because it restarted, comes back as turn one with an empty history --
+            # while the browser still holds the same id and still shows the whole transcript,
+            # so what a visitor sees is a coach that forgot its own last answer. A page that
+            # is told the count can say what happened instead. It is this visitor's own
+            # number and says nothing about anybody else's conversation.
+            body={"reply": text, "turn": turn_index},
             log={
                 "event": "respond",
                 "session": session.fingerprint,
