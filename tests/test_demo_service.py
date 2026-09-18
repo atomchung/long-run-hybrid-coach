@@ -349,6 +349,17 @@ class SessionLifetimeTest(unittest.TestCase):
         # that forgot the answer above it.
         self.assertEqual(1, resumed.body["turn"], "a replaced conversation answers turn one")
 
+    def test_health_stops_counting_a_session_that_has_expired(self):
+        clock = {"now": NOW}
+        demo = service(session_ttl_seconds=60, now=lambda: clock["now"])
+        ask(demo, "session-health-aaa", "first turn")
+        self.assertEqual(1, demo.health().body["sessions"])
+
+        clock["now"] = NOW + dt.timedelta(seconds=61)
+        # Nothing is being asked, so nothing else in this process would notice. A service
+        # that has gone quiet would otherwise report an hour of dead conversations as load.
+        self.assertEqual(0, demo.health().body["sessions"])
+
     def test_a_session_is_limited_to_its_turns(self):
         demo = service(max_turns_per_session=2)
         ask(demo, "session-turns-aaa", "one")

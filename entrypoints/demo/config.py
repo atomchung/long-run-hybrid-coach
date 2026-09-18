@@ -109,9 +109,14 @@ class DemoConfig:
     port: int = DEFAULT_PORT
     allowed_origins: tuple[str, ...] = (SITE_ORIGIN,)
 
-    # A session is a conversation about a fixture, not an account. Short by design: the
-    # store is in this process's memory and goes away with it either way.
-    session_ttl_seconds: int = 900
+    # A session is a conversation about a fixture, not an account. An hour, because what
+    # this bounds is a visitor reading: a turn takes ten to thirty seconds, the answer is a
+    # week of training, and at fifteen minutes a conversation expired while it was still
+    # being read. An expired id does not resume -- it comes back as turn one with no
+    # history, which is indistinguishable from a coach that forgot the last answer. Idle
+    # time only: the store still holds 500 conversations, and a deploy still starts every
+    # one of them over.
+    session_ttl_seconds: int = 3600
     max_sessions: int = 500
     max_turns_per_session: int = 12
     max_message_chars: int = 1200
@@ -178,7 +183,7 @@ def from_environment(environ: dict[str, str] | None = None) -> DemoConfig:
         host=env.get("COACH_DEMO_HOST", "0.0.0.0").strip() or "0.0.0.0",
         port=_port(env),
         allowed_origins=_origins(env.get("COACH_DEMO_ALLOWED_ORIGINS")),
-        session_ttl_seconds=_int(env, "COACH_DEMO_SESSION_TTL_SECONDS", 900, minimum=30),
+        session_ttl_seconds=_int(env, "COACH_DEMO_SESSION_TTL_SECONDS", 3600, minimum=30),
         max_sessions=_int(env, "COACH_DEMO_MAX_SESSIONS", 500),
         max_turns_per_session=_int(env, "COACH_DEMO_MAX_TURNS", 12),
         max_message_chars=_int(env, "COACH_DEMO_MAX_MESSAGE_CHARS", 1200),
