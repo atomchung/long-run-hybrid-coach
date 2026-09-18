@@ -79,6 +79,11 @@ SUPPORT_DATA_REQUEST_URL_ZH = "https://paceandstaystrong.com/zh/support.html#dat
 # free to narrate as anything, including as a deletion that went through. So they answer
 # in the product's own refusal shape and say the two things that matter: nothing was
 # deleted, and here is where the request actually goes.
+#
+# The refusal text is internal product text, not reviewed surface (issue #487, decided
+# 2026-09-18): it is on no `tools/list`, `initialize` or `server/discover` answer, so no
+# digest binds it and no gate catches an edit. Change it as product copy, with the tests
+# that read it, and never as a release on its own.
 RETIRED_TOOLS: dict[str, str] = {
     "prepareOwnerDeletion": "deletion preview",
     "applyOwnerDeletion": "account erasure",
@@ -3216,6 +3221,10 @@ TOOLS_BY_NAME: dict[str, Tool] = {tool.name: tool for tool in TOOLS}
 # and every other field in -- never on the context build, the projection, or the
 # retained snapshot. Raising it is not the repair: an oversized read refuses and names
 # the group or focus to ask for instead (issue #441).
+#
+# Internal, not reviewed surface (issue #487, decided 2026-09-18): the number reaches a
+# model only inside that refusal's `detail`, which no digest binds and no gate catches.
+# Moving it is a product change with its own test, never a release on its own.
 MAX_CLIENT_RESULT_CHARACTERS = 66_000
 
 

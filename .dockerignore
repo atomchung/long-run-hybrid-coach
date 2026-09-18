@@ -1,7 +1,8 @@
-# The Dockerfile COPYs only garmin_coach_loop/ by name, so nothing here is a correctness
-# fix -- it only keeps everything else (git history, worktrees, tests, docs, this
-# repository's own private/gitignored material) out of the build context that gets sent
-# to the Docker daemon before that COPY ever runs.
+# Both Dockerfiles COPY their inputs by name -- garmin_coach_loop/, entrypoints/, and the
+# two requirements files -- so nothing here is a correctness fix: it only keeps everything
+# else (git history, worktrees, tests, docs, this repository's own private/gitignored
+# material) out of the build context that gets sent to the Docker daemon before those
+# COPYs ever run.
 .git
 .github
 .claude
