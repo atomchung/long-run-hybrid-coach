@@ -129,6 +129,23 @@ whole hour, so past 500 live conversations the store, not the clock, is what end
 one -- and it ends the same way, as a turn answered from an empty history. Memory only — no volume, no database, and a deploy starts
 every conversation over, which is the correct lifetime for a playground.
 
+### The conversation it is built for
+
+Three turns, one session, committed in the same file. Each of the last two names something
+only an earlier turn said, so a service that lost the history cannot answer them -- it asks
+which option was meant, which is what a visitor was answered with in public.
+
+```
+Give me two different ways to adjust next week, and say what each one costs.
+I'll take the second one, but Saturday is down to 30 minutes.
+Compared with the first option, what am I giving up?
+```
+
+The run checks two things about these that no separate turn can show: the reply does not say
+it has lost the conversation, and the service answered the second and third turns as turns
+two and three rather than as turn one. Whether the shorter Saturday was honoured is a
+judgment about coaching, so it stays a hint for whoever reads the transcript.
+
 ## The model
 
 The OpenAI Responses API, on `gpt-5.6-luna`, pinned as a constant in [`model.py`](model.py).
@@ -140,6 +157,12 @@ Every provider-specific shape is in that one file — the request body, which re
 carry into the next round, how a tool result is spelled, and how a failure maps onto this
 service's codes. `service.py` drives a conversation without naming a provider field, and
 `garmin_coach_loop` does not know the file exists.
+
+A turn takes at most three rounds, and **the third may not call a tool**: it is sent with
+`tool_choice: "none"` so it has to answer from what the first two read. Production on
+2026-09-18 is why -- a second turn asked for a preview three times over, ran out of rounds,
+and the visitor got the no-answer fallback, which reads like the coach forgetting the
+conversation it was in fact still holding.
 
 Requests carry `reasoning: {"effort": "medium"}` and `max_output_tokens: 8000`, which bounds
 reasoning and visible output together rather than just the answer. `max` was tried against
@@ -207,14 +230,15 @@ OPENAI_API_KEY=... python3 -m entrypoints.demo
 OPENAI_API_KEY=... python3 -m entrypoints.demo.acceptance
 ```
 
-One command. It runs the three committed turns below in three separate conversations
-against the real model, and reports for each: whether it answered, the latency, how many
-model rounds it used, which demo acts ran, and whether the reply claimed a write or named a
-score this product does not have. Transcripts are written out beside a JSON report.
+One command. It runs the three committed turns below in three separate conversations, and
+then the committed three-turn conversation in one, against the real model. For each turn it
+reports whether it answered, the latency, how many model rounds it used, which demo acts
+ran, whether the reply claimed a write or named a score this product does not have, and
+whether it said it had lost the conversation. Transcripts are written out beside a JSON
+report.
 
-`--base-url https://demo-api.paceandstaystrong.com` runs the same three turns over HTTP
-against the deployed service, which also exercises the platform port, CORS and the deploy
-itself.
+`--base-url https://demo-api.paceandstaystrong.com` runs the same turns over HTTP against
+the deployed service, which also exercises the platform port, CORS and the deploy itself.
 
 It grades nothing. Two of its checks are real refusals; the rest is a prompt to read the
 transcript. No test in this repository judges a coaching answer, and this command does not
@@ -260,7 +284,8 @@ so this page, the tests and whoever runs the demo read one copy.
 python3 -m unittest tests.test_demo_fixture tests.test_demo_boundary tests.test_demo_service
 ```
 
-They cover the missing credential, the three acceptance turns, session isolation, TTL
+They cover the missing credential, the three acceptance turns, three turns of one
+conversation carrying the earlier ones into the model's input, session isolation, TTL
 expiry, the turn and input limits, both rate limits, the forbidden write path, the fixture
 carrying no real identity, and the log carrying no secret. Nothing in them reaches a
 network. The production MCP suite is untouched and still runs as it did.

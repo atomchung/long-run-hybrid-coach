@@ -31,7 +31,7 @@ class FakeModel:
         self.turns = list(turns)
         self.calls: list[dict[str, Any]] = []
 
-    def respond(self, *, instructions, input_items, tools):
+    def respond(self, *, instructions, input_items, tools, allow_tools=True):
         self.calls.append({"input_items": [dict(item) for item in input_items]})
         return self.turns.pop(0) if len(self.turns) > 1 else self.turns[0]
 

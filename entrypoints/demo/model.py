@@ -124,8 +124,15 @@ def build_request(
     instructions: str,
     input_items: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
+    allow_tools: bool = True,
 ) -> dict[str, Any]:
-    """The request body, assembled in one place so a test can read it without a network."""
+    """The request body, assembled in one place so a test can read it without a network.
+
+    ``allow_tools`` false still sends the tools -- the conversation being carried contains
+    ``function_call`` items, and input that refers to tools the request does not declare is
+    input the API can refuse -- but forbids another call. It is how a turn is made to answer
+    in words on its last round instead of asking for a fourth thing it will not get.
+    """
     body: dict[str, Any] = {
         "model": MODEL,
         "instructions": instructions,
@@ -137,7 +144,7 @@ def build_request(
     }
     if tools:
         body["tools"] = tools
-        body["tool_choice"] = "auto"
+        body["tool_choice"] = "auto" if allow_tools else "none"
     return body
 
 
@@ -289,11 +296,15 @@ class ResponsesClient:
         instructions: str,
         input_items: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        allow_tools: bool = True,
     ) -> ModelTurn:
         if not self._api_key:
             raise MissingApiKey()
         body = build_request(
-            instructions=instructions, input_items=input_items, tools=tools
+            instructions=instructions,
+            input_items=input_items,
+            tools=tools,
+            allow_tools=allow_tools,
         )
         request = urllib.request.Request(
             f"{self._base_url}/responses",

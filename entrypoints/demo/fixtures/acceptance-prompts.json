@@ -1,5 +1,5 @@
 {
-  "description": "The three turns this demo is built to answer, committed so the README, the tests and the operator read one copy.",
+  "description": "What this demo is built to answer, committed so the README, the tests and the operator read one copy: three turns that stand alone, and three that only work in order.",
   "prompts": [
     {
       "id": "allocation-under-a-time-budget",
@@ -30,5 +30,35 @@
         "no change to any other demo session and none to the fixture underneath them"
       ]
     }
-  ]
+  ],
+  "conversation": {
+    "id": "one-conversation-three-turns",
+    "why": "What three separate conversations cannot show. The second and third turns are unanswerable on their own: 'the second one' and 'the first option' name something said in the first turn, and the shorter Saturday arrives in the second and has to survive into the third.",
+    "turns": [
+      {
+        "id": "two-ways-to-adjust",
+        "message": "Give me two different ways to adjust next week, and say what each one costs.",
+        "expects": [
+          "two materially different adjustments, in an order a later turn can refer to",
+          "what each one preserves and what it gives up"
+        ]
+      },
+      {
+        "id": "the-second-one-and-a-shorter-saturday",
+        "message": "I'll take the second one, but Saturday is down to 30 minutes.",
+        "expects": [
+          "the second adjustment resolved from the turn before, not asked for again",
+          "the week rebuilt inside a 30-minute Saturday"
+        ]
+      },
+      {
+        "id": "what-the-first-one-would-have-kept",
+        "message": "Compared with the first option, what am I giving up?",
+        "expects": [
+          "both adjustments resolved from the first turn, and compared",
+          "the answer still inside the 30-minute Saturday from the second turn"
+        ]
+      }
+    ]
+  }
 }

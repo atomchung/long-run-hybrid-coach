@@ -360,11 +360,17 @@ class DemoService:
         exhausted = True
         while rounds < MAX_TOOL_ROUNDS:
             rounds += 1
+            # The last round may read nothing further. Without this the loop can end with
+            # the model still asking -- three previews in a row, each a little different --
+            # and the visitor is handed the fallback below instead of an answer, which is
+            # what production did to the second turn of a conversation on 2026-09-18. It
+            # keeps its evidence: everything the earlier rounds read is in `items`.
             try:
                 turn = self._client.respond(
                     instructions=self.instructions(),
                     input_items=items,
                     tools=boundary.tool_definitions(),
+                    allow_tools=rounds < MAX_TOOL_ROUNDS,
                 )
             except model_module.ModelError as error:
                 # The visitor got no answer, so this turn does not count against the few
@@ -458,9 +464,10 @@ class DemoService:
                 items_chars += len(json.dumps(output, default=str))
 
         if exhausted:
-            # Out of rounds with the model still asking. Every call it made has its output
-            # in `items`, so the conversation is still well formed; what is missing is the
-            # answer, and the fallback below supplies one.
+            # The last round was asked to answer and asked for a tool anyway, which the
+            # provider should not allow. Every call it made has its output in `items`, so
+            # the conversation is still well formed; what is missing is the answer, and the
+            # fallback below supplies one.
             LOGGER.info(
                 json.dumps({"event": "tool_rounds_exhausted", "session": session.fingerprint})
             )

@@ -72,6 +72,17 @@ def acceptance_prompts() -> list[dict[str, Any]]:
     return copy.deepcopy(_cached(ACCEPTANCE_PATH))["prompts"]
 
 
+def acceptance_conversation() -> dict[str, Any]:
+    """The three turns that are only answerable in order, in one conversation.
+
+    Committed beside the separate turns rather than derived from them, because what it
+    tests is the one thing they cannot: each of the last two names something said in an
+    earlier turn, so a conversation that lost its history answers them by asking which
+    option was meant -- which is exactly the failure a visitor met in public.
+    """
+    return copy.deepcopy(_cached(ACCEPTANCE_PATH))["conversation"]
+
+
 def validate() -> dict[str, list[str]]:
     """Both fixtures against the product's own validators, reported together.
 

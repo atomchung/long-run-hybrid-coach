@@ -260,6 +260,20 @@ class DemoAcceptancePromptTest(unittest.TestCase):
                 self.assertTrue(prompt["message"].strip())
                 self.assertTrue(prompt["expects"])
 
+    def test_the_three_turn_conversation_is_committed_beside_them(self):
+        conversation = fixture.acceptance_conversation()
+        turns = conversation["turns"]
+        self.assertEqual(3, len(turns))
+        self.assertEqual(3, len({turn["id"] for turn in turns}), "turn ids are the report's keys")
+        for turn in turns:
+            with self.subTest(turn=turn["id"]):
+                self.assertTrue(turn["message"].strip())
+                self.assertTrue(turn["expects"])
+        # The property that makes this a continuity test rather than three more prompts: the
+        # last two turns name something only an earlier turn said.
+        self.assertIn("the second one", turns[1]["message"])
+        self.assertIn("the first option", turns[2]["message"])
+
     def test_the_readme_quotes_the_hero_turn_as_committed(self):
         hero = fixture.acceptance_prompts()[0]["message"]
         readme = (ROOT / "entrypoints" / "demo" / "README.md").read_text(encoding="utf-8")

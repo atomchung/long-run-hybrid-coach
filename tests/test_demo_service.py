@@ -51,12 +51,13 @@ class FakeModel:
         self.turns = list(turns) or [model_module.ModelTurn(text="A demo answer.")]
         self.calls: list[dict[str, Any]] = []
 
-    def respond(self, *, instructions, input_items, tools):
+    def respond(self, *, instructions, input_items, tools, allow_tools=True):
         self.calls.append(
             {
                 "instructions": instructions,
                 "input_items": [dict(item) for item in input_items],
                 "tools": tools,
+                "allow_tools": allow_tools,
             }
         )
         turn = self.turns.pop(0) if len(self.turns) > 1 else self.turns[0]
@@ -82,6 +83,23 @@ def tool_turn(name: str, arguments: dict[str, Any], *, call_id: str = "call-1"):
         tool_calls=(model_module.ToolCall(call_id, name, arguments, raw),),
         output_items=(raw,),
     )
+
+
+def answer_turn(text: str) -> model_module.ModelTurn:
+    """An answer shaped the way the Responses API returns one.
+
+    ``output_items`` is the part that matters here. With ``store`` false the service carries
+    each response's own items into the next turn's input, so that is where an assistant's
+    words come from -- a double that returns text and no message item would make every
+    conversation look empty from the second turn on, which is precisely what the continuity
+    tests would then fail to notice.
+    """
+    item = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": text}],
+    }
+    return model_module.ModelTurn(text=text, output_items=(item,))
 
 
 def config(**overrides: Any) -> DemoConfig:
@@ -842,7 +860,7 @@ class ConcurrentTurnTest(unittest.TestCase):
         release = threading.Event()
 
         class Slow:
-            def respond(self, *, instructions, input_items, tools):
+            def respond(self, *, instructions, input_items, tools, allow_tools=True):
                 started.set()
                 release.wait(timeout=5)
                 return model_module.ModelTurn(text="first answer")
@@ -869,7 +887,7 @@ class ConcurrentTurnTest(unittest.TestCase):
         release = threading.Event()
 
         class Slow:
-            def respond(self, *, instructions, input_items, tools):
+            def respond(self, *, instructions, input_items, tools, allow_tools=True):
                 started.set()
                 release.wait(timeout=5)
                 return model_module.ModelTurn(
@@ -897,7 +915,7 @@ class ConcurrentTurnTest(unittest.TestCase):
         release = threading.Event()
 
         class Slow:
-            def respond(self, *, instructions, input_items, tools):
+            def respond(self, *, instructions, input_items, tools, allow_tools=True):
                 started.set()
                 release.wait(timeout=5)
                 return model_module.ModelTurn(text="answer")
@@ -921,7 +939,7 @@ class FailedTurnQuotaTest(unittest.TestCase):
             self.error = error
             self.calls = 0
 
-        def respond(self, *, instructions, input_items, tools):
+        def respond(self, *, instructions, input_items, tools, allow_tools=True):
             self.calls += 1
             raise self.error
 
@@ -963,7 +981,7 @@ class FailedTurnQuotaTest(unittest.TestCase):
             def __init__(self):
                 self.calls = 0
 
-            def respond(self, *, instructions, input_items, tools):
+            def respond(self, *, instructions, input_items, tools, allow_tools=True):
                 self.calls += 1
                 if self.calls == 1:
                     return tool_turn(boundary.READ_EVIDENCE, {"read": ["strength"]})
@@ -975,6 +993,138 @@ class FailedTurnQuotaTest(unittest.TestCase):
         session = demo.sessions.get_or_create("session-refund-mid", now=NOW)
         self.assertEqual(0, session.turns)
         self.assertEqual([], session.history)
+
+
+class ThreeTurnContinuityTest(unittest.TestCase):
+    """Three turns in one conversation, where the last two are unanswerable alone.
+
+    The committed conversation in ``fixtures/acceptance-prompts.json`` asks for two options,
+    picks "the second one" while shrinking Saturday, and then asks what "the first option"
+    would have kept. None of that resolves unless every earlier turn is in the input the
+    model is handed -- which is what this asserts, item by item, rather than asserting that
+    a reply reads well.
+
+    It is the mechanism behind the live acceptance run: that one proves the deployed service
+    does it, this one fails in CI the moment the history stops being carried.
+    """
+
+    def _three_turns(self):
+        """One conversation: a tool round on the first turn, then two plain answers."""
+        demo = service(
+            tool_turn(boundary.READ_EVIDENCE, {"read": "week"}),
+            answer_turn("Option 1 keeps the long run. Option 2 keeps the quality session."),
+            answer_turn("Option 2 it is, inside a 30-minute Saturday."),
+            answer_turn("Against option 1 you give up the long run."),
+        )
+        conversation = fixture.acceptance_conversation()["turns"]
+        replies = [
+            ask(demo, "session-continuity-1", prompt["message"]) for prompt in conversation
+        ]
+        return demo, conversation, replies
+
+    def test_each_turn_is_answered_inside_the_same_conversation(self):
+        demo, _, replies = self._three_turns()
+        self.assertEqual([1, 2, 3], [reply.body["turn"] for reply in replies])
+        self.assertEqual([1, 2, 3], [reply.log["turn"] for reply in replies])
+        self.assertEqual(1, len(demo.sessions), "three turns, one conversation")
+
+    def test_the_second_turn_is_given_the_first_one_whole(self):
+        demo, conversation, _ = self._three_turns()
+        # calls: turn one's tool round, turn one's answer, turn two, turn three.
+        second = demo._client.calls[2]["input_items"]
+        rendered = json.dumps(second)
+        self.assertIn(conversation[0]["message"], rendered)
+        self.assertIn("Option 1 keeps the long run", rendered)
+        self.assertIn(conversation[1]["message"], rendered)
+        # The tool call and its output travel together or the Responses API rejects the
+        # input for the rest of the conversation.
+        self.assertIn("function_call", {item.get("type") for item in second})
+        self.assertIn("function_call_output", {item.get("type") for item in second})
+
+    def test_the_third_turn_still_has_both_earlier_ones_in_order(self):
+        demo, conversation, _ = self._three_turns()
+        third = demo._client.calls[3]["input_items"]
+        positions = []
+        for needle in (
+            conversation[0]["message"],
+            "Option 1 keeps the long run",
+            conversation[1]["message"],
+            "Option 2 it is",
+            conversation[2]["message"],
+        ):
+            found = [
+                index for index, item in enumerate(third) if needle in json.dumps(item)
+            ]
+            self.assertTrue(found, f"missing from the third turn's input: {needle}")
+            positions.append(found[0])
+        self.assertEqual(sorted(positions), positions, "the conversation arrived out of order")
+
+    def test_the_constraint_that_arrived_mid_conversation_is_still_there(self):
+        demo, _, _ = self._three_turns()
+        rendered = json.dumps(demo._client.calls[3]["input_items"])
+        self.assertIn("Saturday is down to 30 minutes", rendered)
+
+    def test_a_replaced_conversation_is_visible_in_the_turn_number(self):
+        """What the page reads. A lost conversation answers turn one, whatever it says."""
+        demo, conversation, _ = self._three_turns()
+        demo.sessions.drop("session-continuity-1")
+        resumed = ask(demo, "session-continuity-1", conversation[2]["message"])
+        self.assertEqual(1, resumed.body["turn"])
+        self.assertEqual(
+            [conversation[2]["message"]],
+            [
+                item["content"]
+                for item in demo._client.calls[-1]["input_items"]
+                if item.get("role") == "user"
+            ],
+            "a replaced conversation carries nothing from the one it replaced",
+        )
+
+
+class TheLastRoundHasToAnswerTest(unittest.TestCase):
+    """A turn that keeps asking still ends in words.
+
+    Production, 2026-09-18: the second turn of a conversation asked for
+    ``preview_demo_plan_change`` three times, each with slightly different arguments, ran out
+    of rounds, and the visitor was handed the no-answer fallback -- which reads exactly like
+    the amnesia this whole conversation is about, while the conversation itself was intact.
+    """
+
+    def _always_asks(self):
+        return service(
+            tool_turn(boundary.PREVIEW_PLAN_CHANGE, {"change_request": {"note": "one"}},
+                      call_id="call-1"),
+            tool_turn(boundary.PREVIEW_PLAN_CHANGE, {"change_request": {"note": "two"}},
+                      call_id="call-2"),
+            answer_turn("Option 2, inside a 30-minute Saturday."),
+        )
+
+    def test_the_final_round_is_told_it_may_not_call_a_tool(self):
+        demo = self._always_asks()
+        ask(demo, "session-last-round", "I'll take the second one.")
+        self.assertEqual([True, True, False], [call["allow_tools"] for call in demo._client.calls])
+        self.assertEqual(
+            [True, True, True],
+            [bool(call["tools"]) for call in demo._client.calls],
+            "the tools stay in the request; only another call is forbidden",
+        )
+
+    def test_a_turn_that_keeps_asking_ends_in_the_model_s_words(self):
+        demo = self._always_asks()
+        reply = ask(demo, "session-last-round", "I'll take the second one.")
+        self.assertEqual("Option 2, inside a 30-minute Saturday.", reply.body["reply"])
+        self.assertEqual(3, reply.log["rounds"])
+        self.assertEqual(2, len(reply.log["acts"]), "both previews still ran")
+
+    def test_the_request_forbids_the_call_rather_than_dropping_the_tools(self):
+        body = model_module.build_request(
+            instructions="x",
+            input_items=[{"role": "user", "content": "y"}],
+            tools=boundary.tool_definitions(),
+            allow_tools=False,
+        )
+        self.assertEqual("none", body["tool_choice"])
+        self.assertTrue(body["tools"], "input carrying a function_call needs its tools declared")
 
 
 class AcceptanceCommandTest(unittest.TestCase):
@@ -993,9 +1143,12 @@ class AcceptanceCommandTest(unittest.TestCase):
         seen: list[str] = []
 
         class Recording:
-            def respond(self, *, instructions, input_items, tools):
+            def respond(self, *, instructions, input_items, tools, allow_tools=True):
+                # The *last* user item: in the conversation, everything before it is the
+                # earlier turns being carried, and the first one would record those instead
+                # of the question actually being asked.
                 seen.append(
-                    next(item["content"] for item in input_items if item.get("role") == "user")
+                    [item["content"] for item in input_items if item.get("role") == "user"][-1]
                 )
                 return model_module.ModelTurn(
                     text="Preserve the anchor, sacrifice the long run. Evidence: three "
@@ -1006,15 +1159,76 @@ class AcceptanceCommandTest(unittest.TestCase):
         demo = DemoService(config(), client=Recording(), now=lambda: NOW)
         report = acceptance.run(acceptance._InProcess(demo))
         self.assertEqual(3, len(report["turns"]))
-        self.assertEqual([prompt["message"] for prompt in fixture.acceptance_prompts()], seen)
-        self.assertEqual(3, len(demo.sessions), "one conversation per acceptance turn")
+        conversation = fixture.acceptance_conversation()
+        self.assertEqual(
+            [
+                *(prompt["message"] for prompt in fixture.acceptance_prompts()),
+                *(prompt["message"] for prompt in conversation["turns"]),
+            ],
+            seen,
+        )
+        # Three conversations for the three standalone turns, and one more holding all three
+        # turns of the committed conversation.
+        self.assertEqual(4, len(demo.sessions))
+        self.assertEqual([1, 2, 3], [turn["reported_turn"] for turn in report["conversation"]["turns"]])
         self.assertTrue(report["passed"])
+
+    def test_a_reply_that_has_lost_the_conversation_fails_the_run(self):
+        from entrypoints.demo import acceptance
+
+        class Forgot:
+            target = "stub"
+
+            def ask(self, session_id, message):
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "turn": 1,
+                    "reply": "Which option you mean is not in front of me — paste the plan.",
+                    "log": None,
+                }
+
+        report = acceptance.run(Forgot())
+        self.assertFalse(report["passed"])
+        self.assertTrue(
+            any("remembers_the_conversation" in name for name in report["hard_failures"])
+        )
+
+    def test_a_conversation_answered_as_turn_one_every_time_fails_the_run(self):
+        """The reply can read perfectly and still be a conversation that was replaced."""
+        from entrypoints.demo import acceptance
+
+        class Replaced:
+            target = "stub"
+
+            def ask(self, session_id, message):
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "turn": 1,
+                    "reply": (
+                        "Option 2, rebuilt inside a 30-minute Saturday: preserve the "
+                        "quality session, give up the long run. Uncertain: the measurement "
+                        "is unproven."
+                    ),
+                    "log": None,
+                }
+
+        report = acceptance.run(Replaced())
+        self.assertFalse(report["passed"])
+        self.assertEqual(
+            [
+                "the-second-one-and-a-shorter-saturday/continued_the_same_conversation",
+                "what-the-first-one-would-have-kept/continued_the_same_conversation",
+            ],
+            report["hard_failures"],
+        )
 
     def test_a_reply_claiming_a_write_fails_the_run(self):
         from entrypoints.demo import acceptance
 
         class Claims:
-            def respond(self, *, instructions, input_items, tools):
+            def respond(self, *, instructions, input_items, tools, allow_tools=True):
                 return model_module.ModelTurn(text="Done — I've saved that to your calendar.")
 
         demo = DemoService(config(), client=Claims(), now=lambda: NOW)
@@ -1026,7 +1240,7 @@ class AcceptanceCommandTest(unittest.TestCase):
         from entrypoints.demo import acceptance
 
         class Scores:
-            def respond(self, *, instructions, input_items, tools):
+            def respond(self, *, instructions, input_items, tools, allow_tools=True):
                 return model_module.ModelTurn(text="Your running score is 74 this week.")
 
         demo = DemoService(config(), client=Scores(), now=lambda: NOW)
@@ -1038,7 +1252,7 @@ class AcceptanceCommandTest(unittest.TestCase):
         from entrypoints.demo import acceptance
 
         class Broken:
-            def respond(self, *, instructions, input_items, tools):
+            def respond(self, *, instructions, input_items, tools, allow_tools=True):
                 raise model_module.ModelError("model_timeout", "no answer")
 
         demo = DemoService(config(), client=Broken(), now=lambda: NOW)
@@ -1054,7 +1268,7 @@ class AcceptanceCommandTest(unittest.TestCase):
             def __init__(self):
                 self.calls = 0
 
-            def respond(self, *, instructions, input_items, tools):
+            def respond(self, *, instructions, input_items, tools, allow_tools=True):
                 self.calls += 1
                 if self.calls % 2 == 1:
                     return tool_turn(
@@ -1068,7 +1282,8 @@ class AcceptanceCommandTest(unittest.TestCase):
 
         demo = DemoService(config(), client=UsesATool(), now=lambda: NOW)
         report = acceptance.run(acceptance._InProcess(demo))
-        self.assertEqual(3, len(report["turns_using_a_tool_round"]))
+        # Six: the three standalone turns and the three of the conversation.
+        self.assertEqual(6, len(report["turns_using_a_tool_round"]))
         self.assertEqual(2, report["turns"][0]["rounds"])
         self.assertIn("tool rounds ran on:", acceptance.render(report))
 
