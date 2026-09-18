@@ -442,6 +442,11 @@ class DemoService:
         text = ""
         rounds = 0
         exhausted = True
+        # Summed across this turn's rounds, because a round is not a thing a visitor has or
+        # is billed for -- the turn is. What it answers: whether the 43 KB of instructions
+        # this service re-sends on every round is being served from the provider's cache,
+        # and how much of a ten-second turn went on reasoning nobody reads.
+        usage = model_module.Usage()
         while rounds < MAX_TOOL_ROUNDS:
             rounds += 1
             # The last round may read nothing further. Without this the loop can end with
@@ -491,6 +496,8 @@ class DemoService:
                     "model_timeout": 504,
                 }.get(error.code, 502)
                 raise DemoRequestError(status, error.code, str(error)) from None
+
+            usage = usage + turn.usage
 
             # The call answered, so whatever refused the last one is not refusing now.
             self._model_quota = "ok"
@@ -596,6 +603,7 @@ class DemoService:
                 "refused": refused,
                 "reply_chars": len(text),
                 "duration_ms": int((finished - started).total_seconds() * 1000),
+                **usage.as_log(),
             },
         )
 
