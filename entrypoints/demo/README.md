@@ -118,7 +118,9 @@ Bounded in three directions, because the endpoint is anonymous: sessions expire 
 hour of silence by default, a conversation is capped at 12 turns, and the store holds 500
 sessions before the least recently touched is dropped. The hour is idle time between turns,
 not the length of a conversation, and it is long because a visitor reads a week of training
-between one turn and the next. Memory only — no volume, no database, and a deploy starts
+between one turn and the next. The two bounds meet: a conversation keeps its slot for the
+whole hour, so past 500 live conversations the store, not the clock, is what ends the oldest
+one -- and it ends the same way, as a turn answered from an empty history. Memory only — no volume, no database, and a deploy starts
 every conversation over, which is the correct lifetime for a playground.
 
 ## The model

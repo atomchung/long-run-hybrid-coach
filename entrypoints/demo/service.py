@@ -228,6 +228,11 @@ class DemoService:
         process's memory of its own last call, so a fresh container starts at ``unknown``
         and reports ``ok`` until something refuses it again.
         """
+        # The only moment anything expires when nothing is being asked. `get_or_create` is
+        # the other one, and a service with no traffic never reaches it -- so the count
+        # below would report conversations that ended an hour ago as though they were live,
+        # and a deploy check reading it would see load that is not there.
+        self.purge_expired()
         degraded = (
             bool(self._fixture_report["errors"])
             or not self.config.has_api_key
