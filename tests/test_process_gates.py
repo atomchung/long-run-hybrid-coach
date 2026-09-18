@@ -12,7 +12,13 @@ from pathlib import Path
 from scripts.change_gates import (
     CATALOGUE_EXPORT_PATHS,
     CATALOGUE_MOVED_REASON,
+    CLASSIFIED_DEMO_PATHS,
     CLASSIFIED_PACKAGE_PATHS,
+    DEMO_ACCEPTANCE_COMMAND,
+    DEMO_ACCEPTANCE_FIXTURE_PREFIX,
+    DEMO_ACCEPTANCE_PATHS,
+    DEMO_ENTRYPOINT_PREFIX,
+    DEMO_NO_GATE_PATHS,
     DEPENDENCY_PATHS,
     DEPENDENCY_PIN_MOVED_REASON,
     DEPENDENCY_PIN_UNKNOWN_REASON,
@@ -316,6 +322,205 @@ class ChangeGateTests(unittest.TestCase):
         if dirty:
             self.skipTest("uncommitted package edits: the working tree is not HEAD")
         self.assertEqual(tool_catalogue_sha256_at("HEAD"), working_tree_tool_catalogue_sha256())
+
+
+class DemoAcceptanceGateTests(unittest.TestCase):
+    """entrypoints/demo/ is outside garmin_coach_loop/, so change_gates.py names it on its
+    own rather than folding it into the package lists above -- issue #495. Issue #478 is
+    the failure this closes: a changed demo constant, a green (fake-model) unit suite, and
+    every visitor turn answering 504 until somebody ran the acceptance command by hand.
+    """
+
+    def test_a_demo_model_change_needs_the_acceptance_run(self):
+        plan = classify_changed_paths(["entrypoints/demo/model.py"])
+        self.assertTrue(plan["demo_acceptance"])
+        self.assertEqual(
+            [f"entrypoints/demo/model.py ({DEMO_ACCEPTANCE_COMMAND})"],
+            plan["demo_acceptance_reasons"],
+        )
+        # A demo settings change is not a product/MCP surface: none of those gates fire.
+        self.assertFalse(plan["live_smoke"])
+        self.assertFalse(plan["client_acceptance"])
+        self.assertFalse(plan["scan_tools"])
+        self.assertFalse(plan["plugin_resubmission"])
+
+    def test_every_named_demo_acceptance_path_needs_the_run(self):
+        for path in sorted(DEMO_ACCEPTANCE_PATHS):
+            with self.subTest(path=path):
+                plan = classify_changed_paths([path])
+                self.assertTrue(plan["demo_acceptance"], path)
+                self.assertEqual(
+                    [f"{path} ({DEMO_ACCEPTANCE_COMMAND})"], plan["demo_acceptance_reasons"]
+                )
+
+    def test_a_demo_fixture_change_needs_the_acceptance_run(self):
+        # The fixtures directory is a prefix, not a fixed set: the acceptance run replays
+        # committed prompts against whatever the fixture holds, so any file inside it moving
+        # is a changed answer.
+        plan = classify_changed_paths(["entrypoints/demo/fixtures/plan-state.json"])
+        self.assertTrue(plan["demo_acceptance"])
+        self.assertEqual(
+            [f"entrypoints/demo/fixtures/plan-state.json ({DEMO_ACCEPTANCE_COMMAND})"],
+            plan["demo_acceptance_reasons"],
+        )
+
+    def test_a_readme_only_demo_change_needs_no_live_run(self):
+        plan = classify_changed_paths(["entrypoints/demo/README.md"])
+        self.assertFalse(plan["demo_acceptance"])
+        self.assertEqual([], plan["demo_acceptance_reasons"])
+        self.assertEqual([], plan["unclassified_paths"])
+
+    def test_the_no_gate_demo_paths_need_no_live_run(self):
+        for path in sorted(DEMO_NO_GATE_PATHS):
+            with self.subTest(path=path):
+                plan = classify_changed_paths([path])
+                self.assertFalse(plan["demo_acceptance"], path)
+                self.assertEqual([], plan["unclassified_paths"])
+
+    def test_demo_tests_need_no_live_run(self):
+        # tests/ never matches DEMO_ENTRYPOINT_PREFIX -- it is not under entrypoints/demo/
+        # at all -- so, unlike acceptance.py or the README, it needs no entry of its own in
+        # DEMO_NO_GATE_PATHS to stay quiet.
+        plan = classify_changed_paths(
+            ["tests/test_demo_service.py", "tests/test_demo_boundary.py"]
+        )
+        self.assertFalse(plan["demo_acceptance"])
+
+    def test_an_unnamed_demo_file_cannot_read_as_no_gate(self):
+        """The demo's analogue of test_an_unclassified_package_file_is_not_reported_as_gate_free.
+
+        A new module under entrypoints/demo/ must not inherit silence by being new: it is
+        reported through the *same* unclassified_paths key the package uses (so a no-op diff
+        still adds only the two demo_acceptance* keys to the report -- see
+        test_a_no_op_diff_adds_only_the_two_demo_keys_to_the_report below) and it flips
+        demo_acceptance, the one gate an unrecognised demo file could plausibly need.
+        """
+        plan = classify_changed_paths(["entrypoints/demo/new_module.py"])
+        self.assertEqual(["entrypoints/demo/new_module.py"], plan["unclassified_paths"])
+        self.assertTrue(plan["demo_acceptance"])
+        self.assertEqual(
+            [f"entrypoints/demo/new_module.py ({DEMO_ACCEPTANCE_COMMAND})"],
+            plan["demo_acceptance_reasons"],
+        )
+        # It is not a live MCP boundary or a reviewed tool catalogue -- those stay off,
+        # unlike an unclassified *package* file, which conservatively trips both.
+        self.assertFalse(plan["live_smoke"])
+        self.assertFalse(plan["client_acceptance"])
+        self.assertFalse(plan["scan_tools"])
+        self.assertFalse(plan["plugin_resubmission"])
+
+    def test_deploy_artifacts_outside_the_directory_still_need_the_run(self):
+        # Dockerfile.demo and railway.demo.toml decide the model image and the health
+        # check before any test does, exactly like the files inside entrypoints/demo/ --
+        # they are just not under that prefix.
+        for path in ("Dockerfile.demo", "railway.demo.toml"):
+            with self.subTest(path=path):
+                plan = classify_changed_paths([path])
+                self.assertTrue(plan["demo_acceptance"], path)
+                self.assertEqual(
+                    [f"{path} ({DEMO_ACCEPTANCE_COMMAND})"], plan["demo_acceptance_reasons"]
+                )
+
+    def test_demo_acceptance_keys_are_always_present(self):
+        # Both keys appear in every report, false/empty when nothing demo-related changed --
+        # the same guarantee every other boolean/reasons pair in this report holds.
+        plan = classify_changed_paths(["README.md"])
+        self.assertIn("demo_acceptance", plan)
+        self.assertIn("demo_acceptance_reasons", plan)
+        self.assertFalse(plan["demo_acceptance"])
+        self.assertEqual([], plan["demo_acceptance_reasons"])
+
+    def test_package_and_demo_gates_stay_on_their_own_surface(self):
+        # A change that touches both a package file and a demo file keeps each gate scoped:
+        # the demo does not silence or widen the package's own rows, or vice versa.
+        plan = classify_changed_paths(
+            ["garmin_coach_loop/gateway.py", "entrypoints/demo/model.py"],
+            diffs_by_path={
+                "garmin_coach_loop/gateway.py": "+        callback = oauth_callback()"
+            },
+        )
+        self.assertTrue(plan["live_smoke"])
+        self.assertEqual(["garmin_coach_loop/gateway.py"], plan["live_smoke_reasons"])
+        self.assertFalse(plan["client_acceptance"])
+        self.assertTrue(plan["demo_acceptance"])
+        self.assertEqual(
+            [f"entrypoints/demo/model.py ({DEMO_ACCEPTANCE_COMMAND})"],
+            plan["demo_acceptance_reasons"],
+        )
+
+    def test_every_demo_file_is_classified_exactly_once(self):
+        """The demo's analogue of test_every_package_file_is_classified_exactly_once.
+
+        Every committed file under entrypoints/demo/ is named by DEMO_ACCEPTANCE_PATHS, the
+        fixtures prefix, or DEMO_NO_GATE_PATHS. A file none of the three covers fails here
+        until change_gates.py is told what it is -- a new demo module cannot inherit "no
+        gate" by being new, the same way a new package module cannot.
+        """
+        tracked = subprocess.run(
+            ["git", "ls-files", "entrypoints/demo"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+        demo_files = {path for path in tracked if path.startswith(DEMO_ENTRYPOINT_PREFIX)}
+        fixture_files = {
+            path for path in demo_files if path.startswith(DEMO_ACCEPTANCE_FIXTURE_PREFIX)
+        }
+        named_files = demo_files - fixture_files
+        classified_under_demo = {
+            path for path in CLASSIFIED_DEMO_PATHS if path.startswith(DEMO_ENTRYPOINT_PREFIX)
+        }
+
+        self.assertEqual(
+            set(),
+            named_files - classified_under_demo,
+            "classify these in scripts/change_gates.py before merging",
+        )
+        self.assertEqual(
+            set(),
+            classified_under_demo - named_files,
+            "scripts/change_gates.py names demo files that no longer exist",
+        )
+        self.assertTrue(
+            fixture_files,
+            "the fixture-prefix coverage this test relies on assumes at least one exists",
+        )
+        self.assertEqual(set(), DEMO_ACCEPTANCE_PATHS & DEMO_NO_GATE_PATHS)
+
+    def test_a_no_op_diff_adds_only_the_two_demo_keys_to_the_report(self):
+        """The report's contract with every other consumer of this gate.
+
+        A diff that touches neither the package nor the demo must add nothing new to look
+        at: every existing key keeps its exact shape, and the only new content this change
+        introduces is demo_acceptance/demo_acceptance_reasons, both falsy.
+        """
+        plan = classify_changed_paths(["README.md", "docs/ops/verify-production-status.md"])
+        self.assertEqual(
+            {
+                "changed_paths",
+                "unclassified_paths",
+                "live_smoke",
+                "live_smoke_reasons",
+                "client_acceptance",
+                "client_acceptance_reasons",
+                "protocol_acceptance",
+                "protocol_acceptance_reasons",
+                "scan_tools",
+                "plugin_resubmission",
+                "plugin_resubmission_reasons",
+                "demo_acceptance",
+                "demo_acceptance_reasons",
+                "notes",
+            },
+            set(plan.keys()),
+        )
+        self.assertFalse(plan["live_smoke"])
+        self.assertFalse(plan["client_acceptance"])
+        self.assertFalse(plan["scan_tools"])
+        self.assertFalse(plan["plugin_resubmission"])
+        self.assertFalse(plan["demo_acceptance"])
+        self.assertEqual([], plan["demo_acceptance_reasons"])
 
 
 class DependencyPinGateTests(unittest.TestCase):
