@@ -242,7 +242,9 @@ class AcceptanceTurnTest(unittest.TestCase):
                 demo = service(model_module.ModelTurn(text="Three options, with costs."))
                 reply = ask(demo, f"acceptance-{prompt['id']}"[:60], prompt["message"])
                 self.assertEqual(200, reply.status)
-                self.assertEqual({"reply": "Three options, with costs."}, reply.body)
+                self.assertEqual(
+                    {"reply": "Three options, with costs.", "turn": 1}, reply.body
+                )
 
     def test_the_model_is_handed_the_product_s_own_training_judgment(self):
         from garmin_coach_loop import orchestration
@@ -339,9 +341,13 @@ class SessionLifetimeTest(unittest.TestCase):
         self.assertEqual(1, demo.purge_expired())
         self.assertEqual(0, len(demo.sessions))
 
-        ask(demo, "session-ttl-aaaa", "second turn")
+        resumed = ask(demo, "session-ttl-aaaa", "second turn")
         revived = demo.sessions.get_or_create("session-ttl-aaaa", now=clock["now"])
         self.assertEqual(1, revived.turns, "an expired id resumes nothing")
+        # And says so. The page holds the same id and still shows the first turn, so this
+        # number is the only thing that distinguishes a replaced conversation from a coach
+        # that forgot the answer above it.
+        self.assertEqual(1, resumed.body["turn"], "a replaced conversation answers turn one")
 
     def test_health_stops_counting_a_session_that_has_expired(self):
         clock = {"now": NOW}
@@ -744,13 +750,14 @@ class HttpSurfaceTest(unittest.TestCase):
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read()), dict(error.headers)
 
-    def test_a_turn_answers_with_a_reply_and_nothing_else(self):
+    def test_a_turn_answers_with_a_reply_and_its_turn_number_and_nothing_else(self):
         status, body, headers = self._post(
             {"session_id": "http-session-001", "message": "What are my options?"},
             headers={"Origin": SITE_ORIGIN},
         )
         self.assertEqual(200, status)
-        self.assertEqual(["reply"], list(body))
+        self.assertEqual(["reply", "turn"], sorted(body))
+        self.assertEqual(1, body["turn"])
         self.assertEqual(SITE_ORIGIN, headers["Access-Control-Allow-Origin"])
         self.assertEqual("no-store", headers["Cache-Control"])
 
