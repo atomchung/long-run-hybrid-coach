@@ -1,7 +1,9 @@
 """The one outbound call this service makes, and every provider-specific shape it needs.
 
-Stdlib only, like the rest of the repository -- ``urllib.request`` rather than a vendor
-SDK, so the demo image installs nothing and CI keeps running on a bare interpreter.
+Stdlib only -- ``urllib.request`` rather than a vendor SDK -- so the demo image installs
+nothing. The gateway image has exactly one dependency, the MCP SDK (AGENTS.md,
+"Dependencies"); this service has none, and it must acquire neither that one nor a
+vendor's client.
 
 Everything that knows what the Responses API looks like is in this file: how a request is
 built, which output items have to be carried into the next round, how a tool result is
