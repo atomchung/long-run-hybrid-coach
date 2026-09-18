@@ -88,12 +88,24 @@ Errors are machine-readable and carry a stable code:
 | 409 | `turn_limit_reached`, `session_busy` | this conversation has spent its turns, or is already answering one |
 | 413 | `payload_too_large` | the body is past the byte limit |
 | 415 | `unsupported_media_type` | JSON only — there is no upload path |
-| 429 | `rate_limited`, `model_rate_limited` | with `Retry-After` |
-| 502 / 503 / 504 | `model_unavailable`, `model_output_truncated`, `demo_model_unconfigured`, `model_timeout` | the turn could not be answered |
+| 429 | `rate_limited`, `model_rate_limited` | too many requests, with `Retry-After` — both clear on their own |
+| 502 / 503 / 504 | `model_unavailable`, `model_output_truncated`, `demo_model_unconfigured`, `model_quota_exhausted`, `model_timeout` | the turn could not be answered |
 
 A turn that failed for any of the last row does **not** count against the conversation's
 turn budget: the visitor got no answer, and losing part of a short demo to a provider
 timeout is not their doing.
+
+`model_quota_exhausted` is a `503` here although the provider answered `429`. The provider
+uses one status for two opposite instructions — "you asked too often" and "there is no
+credit left" — and only the error body says which. A rate limit is the caller's business
+and keeps its `429` and its `Retry-After`; an account with no credit will refuse every
+request identically until somebody pays, so it is the deployment's condition, reads the
+same way as `demo_model_unconfigured`, and carries no `Retry-After` because there is no
+time after which it clears. The sentence a visitor gets says the demo is unavailable
+rather than telling them to try again shortly. The provider's own word for the refusal is
+written to the log and never into a response, and `GET /healthz` reports
+`model_quota: exhausted` from the last call that was refused — which is how a deploy check
+tells a credential that is set from one that can pay.
 
 ## Sessions
 

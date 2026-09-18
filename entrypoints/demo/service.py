@@ -48,6 +48,7 @@ __all__ = [
     "DemoRequestError",
     "DemoService",
     "HEALTH_PATH",
+    "MODEL_QUOTA_STATES",
     "RESPOND_PATH",
     "error_body",
 ]
@@ -71,6 +72,14 @@ MAX_HISTORY_CHARS = 96 * 1024
 # so every ``function_call`` still has its output and the conversation stays well formed.
 MAX_TOOL_CALLS_PER_ROUND = 4
 MAX_TOOL_CALLS_PER_TURN = 8
+
+# Everything ``/healthz`` may say about the account behind the credential, and the whole of
+# it. A deployment check branches on this field, so it is one fixed word rather than a
+# sentence, and nothing a provider wrote is ever assembled into it.
+#
+# ``unknown`` is not a quieter ``ok``. A process that has answered no request has asked the
+# provider nothing, and a credential that is set is a different fact from one that can pay.
+MODEL_QUOTA_STATES = ("unknown", "ok", "exhausted")
 
 # Distinct keys one rate-limit window counts separately. Past this they share one bucket: a
 # window that has seen thousands of addresses is a rotated header rather than thousands of
@@ -158,6 +167,11 @@ class DemoService:
         self._global_limiter = _FixedWindowLimiter()
         self._fixture_report = fixture.validate()
         self._instructions: str | None = None
+        # What the last provider call found out about the account behind the credential,
+        # in the vocabulary above. One string, written in one statement and read in
+        # another, so the thread answering ``/healthz`` and the thread answering a turn
+        # need nothing between them: the worst interleaving reports a moment ago's answer.
+        self._model_quota = "unknown"
 
     # ---------------------------------------------------------------- what the model reads
     def instructions(self) -> str:
@@ -201,12 +215,29 @@ class DemoService:
         The fixture report is part of it: a fixture that no longer validates against the
         contracts is a demo answering from a shape the product does not have, and that is a
         deployment problem rather than a request one.
+
+        So is the account behind the credential, which is a different question from whether
+        one is set. It is answered from what the last call was told rather than by calling:
+        a health check that asked the provider would bill the deployment for being watched
+        and would become this service's busiest caller.
+
+        An exhausted quota reports ``degraded``, and so answers 503. A deployment that
+        cannot pay cannot answer any request, which is the same condition as a missing
+        credential above and deserves the same alarm -- the point of the field is that the
+        check gating a deploy can see it. It cannot strand a redeploy: this is one
+        process's memory of its own last call, so a fresh container starts at ``unknown``
+        and reports ``ok`` until something refuses it again.
         """
-        degraded = bool(self._fixture_report["errors"]) or not self.config.has_api_key
+        degraded = (
+            bool(self._fixture_report["errors"])
+            or not self.config.has_api_key
+            or self._model_quota == "exhausted"
+        )
         body = {
             "status": "degraded" if degraded else "ok",
             "model": model_module.MODEL,
             "model_credential": "present" if self.config.has_api_key else "absent",
+            "model_quota": self._model_quota,
             "fixture": "invalid" if self._fixture_report["errors"] else "valid",
             "sessions": len(self._sessions),
         }
@@ -335,12 +366,39 @@ class DemoService:
                 # they have. Nothing was written: the history below is committed only once
                 # the turn has finished, so a failed turn leaves the conversation as it was.
                 self._sessions.refund_turn(session)
+                if error.code == "model_quota_exhausted":
+                    self._model_quota = "exhausted"
+                if error.provider_type:
+                    # The one place the provider's own word for a refusal is written down.
+                    # The access log in ``server`` carries this service's code and nothing
+                    # else, which is why two refusals it has to spell the same way to a
+                    # visitor used to be indistinguishable on call. Nothing else from the
+                    # body: no message, no echo of the request, no credential.
+                    LOGGER.info(
+                        json.dumps(
+                            {
+                                "event": "model_refused",
+                                "session": session.fingerprint,
+                                "code": error.code,
+                                "provider_type": error.provider_type,
+                            }
+                        )
+                    )
                 status = {
                     "demo_model_unconfigured": 503,
+                    # An account with no credit refuses every request identically, which is
+                    # the deployment's condition rather than this caller's -- the same
+                    # reading as an unconfigured credential, and the reason this is not the
+                    # 429 the provider answered with. No ``Retry-After``: there is no time
+                    # after which it clears.
+                    "model_quota_exhausted": 503,
                     "model_rate_limited": 429,
                     "model_timeout": 504,
                 }.get(error.code, 502)
                 raise DemoRequestError(status, error.code, str(error)) from None
+
+            # The call answered, so whatever refused the last one is not refusing now.
+            self._model_quota = "ok"
 
             # Everything the response produced goes into the next round's input, in order
             # and including the reasoning item -- with `store` false the provider keeps
