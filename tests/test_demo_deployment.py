@@ -13,7 +13,12 @@ which is what `python3 -m entrypoints.demo.acceptance` is for.
 
 from __future__ import annotations
 
+import ast
 import json
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -385,6 +390,155 @@ class FrontendAndBackendAgreeTest(unittest.TestCase):
 
     def test_the_acceptance_command_points_at_the_same_deployment(self):
         self.assertIn(PUBLIC_HOST, acceptance.main.__doc__ or acceptance.__doc__ or "")
+
+
+class DemoImageInstallsNothingTest(unittest.TestCase):
+    """The demo image installs no Python package, so nothing it reaches may need one.
+
+    `Dockerfile.demo` copies the whole of `garmin_coach_loop/` because the demo reuses the
+    product's training judgment rather than growing a second copy of it. The gateway has
+    one dependency, the MCP SDK; this image has none. So the two live one import apart: a
+    tidy-up that routes any module the demo can reach through `mcp_sdk_transport` gives
+    this service an import it cannot satisfy, and the process dies on boot.
+
+    CI would not notice on its own -- the SDK is installed here, so the same code imports
+    cleanly in this interpreter and only fails inside the image. Both halves are checked
+    below without one: the whole reachable import graph statically, which also sees an
+    import deferred inside a function, and a real boot with everything else unimportable.
+    """
+
+    REPO_PACKAGES = ("entrypoints", "garmin_coach_loop")
+
+    # Refuses every module that is neither this repository's nor the standard library's,
+    # which is exactly what the image has. Raised from the finder so the failure names the
+    # import rather than arriving as an attribute error further in. Names beginning with an
+    # underscore are let through: CPython reaches for generated internals such as
+    # `_sysconfigdata__darwin_darwin`, which no `stdlib_module_names` lists.
+    BLOCKER = """
+import sys
+
+_ALLOWED = set(sys.stdlib_module_names) | {"entrypoints", "garmin_coach_loop"}
+
+
+class _NothingIsInstalled:
+    def find_spec(self, fullname, path=None, target=None):
+        root = fullname.split(".")[0]
+        if root not in _ALLOWED and not root.startswith("_"):
+            raise ModuleNotFoundError(
+                "the demo image installs no package, and this needs one: " + fullname
+            )
+        return None
+
+
+sys.meta_path.insert(0, _NothingIsInstalled())
+"""
+
+    def test_the_image_installs_no_python_package(self):
+        # Directives only. The comments in that file explain at length why nothing is
+        # installed, and a substring check would read the explanation as an install.
+        directives = "\n".join(
+            line
+            for line in (ROOT / "Dockerfile.demo").read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#")
+        ).lower()
+        for installer in ("pip install", "pip3 install", "requirements", "poetry", "uv pip"):
+            with self.subTest(installer=installer):
+                self.assertNotIn(installer, directives)
+
+    def test_nothing_the_demo_can_reach_imports_a_package_the_image_lacks(self):
+        self.assertEqual([], sorted(self._foreign_imports()))
+
+    def test_the_blocker_below_refuses_a_module_that_is_genuinely_importable(self):
+        """Otherwise the boot test passes because nothing was ever being refused."""
+        with tempfile.TemporaryDirectory() as directory:
+            probe = Path(directory) / "installed_probe"
+            probe.mkdir()
+            (probe / "__init__.py").write_text("", encoding="utf-8")
+            finished = self._run(
+                "import installed_probe",
+                path_entries=[directory],
+            )
+        self.assertNotEqual(0, finished.returncode)
+        self.assertIn("installs no package", finished.stderr)
+        self.assertIn("installed_probe", finished.stderr)
+
+    def test_the_service_boots_with_nothing_but_the_standard_library_importable(self):
+        finished = self._run(
+            """
+from entrypoints.demo import server  # noqa: F401
+from entrypoints.demo.config import DemoConfig
+from entrypoints.demo.service import DemoService
+
+DemoService(DemoConfig(api_key="x"), client=object()).instructions()
+print("booted")
+"""
+        )
+        self.assertEqual(0, finished.returncode, finished.stderr)
+        self.assertIn("booted", finished.stdout)
+
+    def _run(self, program: str, *, path_entries: list[str] | None = None):
+        environment = dict(os.environ)
+        if path_entries:
+            environment["PYTHONPATH"] = ":".join([*path_entries, environment.get("PYTHONPATH", "")])
+        return subprocess.run(  # noqa: S603 - this interpreter, this repository
+            [sys.executable, "-c", self.BLOCKER + program],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=environment,
+        )
+
+    # ------------------------------------------------------------------ the import graph
+    def _foreign_imports(self) -> set[str]:
+        queue = [path for path in DEMO.rglob("*.py")]
+        seen: set[Path] = set()
+        foreign: set[str] = set()
+        while queue:
+            path = queue.pop()
+            if path in seen:
+                continue
+            seen.add(path)
+            for dotted in self._imports(path):
+                root = dotted.split(".")[0]
+                if root in sys.stdlib_module_names:
+                    continue
+                if root not in self.REPO_PACKAGES:
+                    foreign.add(f"{dotted} (imported by {path.relative_to(ROOT)})")
+                    continue
+                target = self._module_file(dotted)
+                if target is not None:
+                    queue.append(target)
+        return foreign
+
+    def _imports(self, path: Path):
+        """Every module named by an import in this file, at any nesting depth."""
+        package = path.parent.relative_to(ROOT).as_posix().replace("/", ".")
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    yield alias.name
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    parts = package.split(".")
+                    prefix = ".".join(parts[: len(parts) - (node.level - 1)])
+                    base = f"{prefix}.{node.module}" if node.module else prefix
+                else:
+                    base = node.module or ""
+                if not base:
+                    continue
+                yield base
+                for alias in node.names:
+                    yield f"{base}.{alias.name}"
+
+    def _module_file(self, dotted: str) -> Path | None:
+        parts = dotted.split(".")
+        module = ROOT.joinpath(*parts).with_suffix(".py")
+        if module.is_file():
+            return module
+        package = ROOT.joinpath(*parts) / "__init__.py"
+        return package if package.is_file() else None
+
 
 
 if __name__ == "__main__":
