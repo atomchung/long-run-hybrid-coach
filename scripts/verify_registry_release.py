@@ -6,12 +6,18 @@ operator checking a roll from a terminal can pass `--wait-minutes N` to keep ask
 production serves this commit or the deadline passes, instead of re-running by hand while a
 deployment comes up. A source/version mismatch inside this checkout is not waited on -- no
 deployment fixes it.
+
+With `--registry-output PATH`, also check the exact published version after readiness and
+write whether publication is needed to a GitHub Actions output file. An already-current
+entry succeeds; a conflicting entry or failed lookup does not.
 """
 import argparse
 import json
 import sys
 import time
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -20,6 +26,7 @@ from garmin_coach_loop.gateway import PRODUCT_VERSION
 from garmin_coach_loop.release_identity import ReleaseIdentityError, release_identity
 
 DOMAIN = "https://mcp.paceandstaystrong.com"
+REGISTRY = "https://registry.modelcontextprotocol.io/v0.1/servers"
 
 
 def verify_readyz(health, expected, version):
@@ -42,6 +49,31 @@ def registry_version():
     return registry["version"]
 
 
+def registry_publication_required():
+    """Only a missing version needs publication; a conflicting entry is an error."""
+    manifest = json.loads((ROOT / "server.json").read_text())
+    url = (f"{REGISTRY}/{quote(manifest['name'], safe='')}/versions/"
+           f"{quote(manifest['version'], safe='')}")
+    try:
+        with _open_without_redirects(url, timeout=15) as response:
+            if response.geturl() != url:
+                raise ReleaseIdentityError("Registry version lookup redirected")
+            published = json.loads(response.read())
+    except HTTPError as exc:
+        if exc.code == 404:
+            print(f"Registry does not carry version {manifest['version']}; publication required")
+            return True
+        raise
+    server = published.get("server", {})
+    if any(server.get(field) != manifest[field] for field in ("name", "version", "remotes")):
+        raise ReleaseIdentityError("published Registry version or remote differs from server.json")
+    if published.get("_meta", {}).get("io.modelcontextprotocol.registry/official", {}).get("status") != "active":
+        raise ReleaseIdentityError("published Registry version is not active")
+    print(f"Registry already carries version {manifest['version']} with the same remote; "
+          "entry is current, skipping publication")
+    return False
+
+
 def production_receipt(expected, version):
     url = DOMAIN + "/readyz"
     with _open_without_redirects(url, timeout=15) as response:
@@ -58,6 +90,8 @@ def main(argv=None):
                         help="keep polling production until it serves this source, or give up after this long")
     parser.add_argument("--poll-seconds", type=float, default=30.0,
                         help="seconds between polls while waiting")
+    parser.add_argument("--registry-output", type=Path,
+                        help="after readiness succeeds, check the Registry and append publish_required to this GitHub output file")
     args = parser.parse_args(argv)
     version = registry_version()
     expected = bundle(commit_at_head(), DOMAIN)
@@ -73,6 +107,10 @@ def main(argv=None):
             time.sleep(args.poll_seconds)
             continue
         print(json.dumps(health, sort_keys=True))
+        if args.registry_output is not None:
+            required = registry_publication_required()
+            with args.registry_output.open("a") as output:
+                output.write(f"publish_required={str(required).lower()}\n")
         return
 
 

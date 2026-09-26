@@ -146,10 +146,23 @@ reviewed commit), not with the candidate itself:
 
 5. **Let the listings follow, and check the ones that cannot.** Once Railway reports the
    deployment successful, `.github/workflows/publish-mcp-registry.yml` starts on that status,
-   verifies step 4's condition itself and publishes the Registry entry; read the entry back as
+   checks that its SHA is the current `production` ref, verifies step 4's condition itself,
+   and publishes a missing Registry version. If the exact version and remote are already
+   active, the run is green with `Registry already carries version ...; entry is current,
+   skipping publication`, and the publish job is skipped. This is the expected code-only
+   roll result and needs no manual dispatch. Read the entry back as
    [`../distribution/mcp-registry.md`](../distribution/mcp-registry.md) says, and dispatch it by
-   hand only if that run failed or never started. The listings that do **not** follow on their
-   own, and when each is owed:
+   hand only if that run failed or never started.
+
+   Railway's observed gateway and demo GitHub events contain the same project/environment
+   and no service identifier (issue #504). The source check skips demo-only `main` commits
+   and superseded promotions before polling `/readyz`. A demo event for the same SHA as
+   `production` is indistinguishable: it may verify the gateway, then ends successfully
+   without publishing when the entry is current. Exact gateway readiness and release
+   identity are still required before any new version publishes. Registry lookup failures,
+   conflicting remotes and publisher failures remain failures.
+
+   The listings that do **not** follow on their own, and when each is owed:
 
    | Listing | Owed when | Runbook |
    | --- | --- | --- |

@@ -1,8 +1,16 @@
 """Publication must follow production, and executable release dependencies are immutable."""
 import copy
+import contextlib
+import io
+import json
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.parse import quote
 
 from unittest import mock
 
@@ -84,9 +92,8 @@ class RegistryReleaseGateTests(unittest.TestCase):
     def test_verify_step_gives_up_after_ten_failed_gates_and_stops_at_the_first_pass(self):
         # The retry loop is shell in the workflow, not Python, so it is run as shell: the gate
         # is a stub that fails a set number of times, and the sleep is a no-op.
-        import os, subprocess, tempfile
         text = (ROOT / ".github/workflows/publish-mcp-registry.yml").read_text()
-        step = re.search(r"run: \|\n((?:          .*\n)+)", text).group(1)
+        step = re.search(r"Verify production serves.*?run: \|\n((?:          [^\n]*\n)+)", text, re.S).group(1)
         script = "\n".join(line[10:] for line in step.splitlines())
         self.assertIn("python3 scripts/verify_registry_release.py", script)
         with tempfile.TemporaryDirectory() as tmp:
@@ -123,22 +130,132 @@ class RegistryReleaseGateTests(unittest.TestCase):
         # gives up loudly rather than publishing when production never serves the commit.
         self.assertRegex(text, r"for attempt in 1 2 3 4 5 6 7 8 9 10; do")
         self.assertLess(text.index("exit 1"), text.index("  publish:"))
-        # A skipping run must not displace a pending publication: only an eligible event
-        # shares the publication group, everything else gets a group of its own.
-        group = re.search(r"(?m)^  group: (.+)$", text).group(1)
-        self.assertIn("'mcp-registry-publication'", group)
-        self.assertIn("github.event.deployment_status.state == 'success'", group)
-        self.assertIn("contains(github.event.deployment.environment, 'production')", group)
-        self.assertIn("github.run_id", group)
+        # Ignored and already-current events never join the publication queue.
+        self.assertNotIn("\nconcurrency:", text)
+        publish = text.split("\n  publish:", 1)[1]
+        self.assertIn("if: needs.verify-production.outputs.publish_required == 'true'", publish)
+        self.assertIn("group: mcp-registry-publication", publish)
+        self.assertIn("cancel-in-progress: false", publish)
         self.assertNotIn("releases/latest", text)
         self.assertRegex(text, r"releases/download/v[0-9]+\.[0-9]+\.[0-9]+/")
         self.assertRegex(text, r'echo "[a-f0-9]{64}  ')
         self.assertLess(text.index("sha256sum --check --strict"), text.index("tar xzf"))
         self.assertIn("needs: verify-production", text)
-        self.assertEqual(2, text.count("python3 scripts/verify_registry_release.py"))
-        self.assertEqual(1, text.count("run: python3 scripts/verify_registry_release.py"))
+        self.assertEqual(3, text.count("python3 scripts/verify_registry_release.py"))
+        self.assertEqual(2, text.count('--registry-output "$GITHUB_OUTPUT"'))
+        self.assertIn("if: steps.registry.outputs.publish_required == 'true'", publish)
         self.assertEqual(1, text.count("id-token: write"))
         self.assertGreater(text.index("id-token: write"), text.index("  publish:"))
         for workflow in (ROOT / ".github/workflows").glob("*.yml"):
             for action in re.findall(r"uses: ([^\s]+)", workflow.read_text()):
                 self.assertRegex(action, r"@[a-f0-9]{40}$")
+
+    def test_observed_demo_only_deployment_skips_but_promoted_source_is_eligible(self):
+        # Read from GitHub on 2026-09-26: deployments 6516206309 (gateway) and
+        # 6516179253 (demo). Neither payload/status names a service. The source ref,
+        # not an invented service marker, is the distinction this workflow can make.
+        gateway = {"sha": "6d55a70baac354c5fb3f2d0e37f76f72d7f31d06",
+                   "environment": "adequate-victory / production",
+                   "description": "Deployed to Railway",
+                   "payload": {"environmentId": "0e76145e-6e80-4234-bf70-fb5bf8972911"}}
+        demo = {**gateway, "sha": "5a7e9877ba3fecc69af24c5749029eba04b38a77"}
+        text = (ROOT / ".github/workflows/publish-mcp-registry.yml").read_text()
+        step = re.search(r"Select a deployment.*?run: \|\n((?:          [^\n]*\n)+)", text, re.S).group(1)
+        script = "\n".join(line[10:] for line in step.splitlines())
+        script = script.replace("$(git rev-parse HEAD)", gateway["sha"])
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "output"
+            for event, deployment, expected in (("deployment_status", gateway, "true"),
+                                                ("deployment_status", demo, "false"),
+                                                ("workflow_dispatch", demo, "true")):
+                output.write_text("")
+                result = subprocess.run(["bash", "-e", "-c", script], capture_output=True,
+                    text=True, env={**os.environ, "EVENT_NAME": event,
+                                    "DEPLOYED_SHA": deployment["sha"], "GITHUB_OUTPUT": str(output)})
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(f"eligible={expected}\n", output.read_text())
+                if expected == "false":
+                    self.assertIn("not the current production ref", result.stdout)
+        self.assertIn("if: needs.select-deployment.outputs.eligible == 'true'", text)
+
+    def published_response(self, published=None):
+        manifest = json.loads((ROOT / "server.json").read_text())
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.geturl.return_value = (f"{verify_registry_release.REGISTRY}/"
+            f"{quote(manifest['name'], safe='')}/versions/{manifest['version']}")
+        response.read.return_value = json.dumps(published if published is not None else {
+            "server": manifest,
+            "_meta": {"io.modelcontextprotocol.registry/official": {"status": "active"}},
+        }).encode()
+        return response
+
+    def test_exact_published_version_is_successful_noop_with_reason(self):
+        with mock.patch.object(verify_registry_release, "_open_without_redirects",
+                               return_value=self.published_response()), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertFalse(verify_registry_release.registry_publication_required())
+        self.assertIn("Registry already carries version", output.getvalue())
+        self.assertIn("entry is current, skipping publication", output.getvalue())
+
+    def test_only_missing_registry_version_requires_publication(self):
+        for status in (404, 400, 403, 429, 500):
+            error = HTTPError("https://registry.modelcontextprotocol.io", status, "error", {}, None)
+            with self.subTest(status=status), \
+                 mock.patch.object(verify_registry_release, "_open_without_redirects", side_effect=error), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                if status == 404:
+                    self.assertTrue(verify_registry_release.registry_publication_required())
+                else:
+                    with self.assertRaises(HTTPError):
+                        verify_registry_release.registry_publication_required()
+
+    def test_conflicting_or_inactive_registry_entry_fails_instead_of_noop(self):
+        manifest = json.loads((ROOT / "server.json").read_text())
+        for field, value in (("name", "other"), ("version", "0.0.0"),
+                             ("remotes", [{"type": "streamable-http", "url": "https://other.example/mcp"}])):
+            published = {"server": {**manifest, field: value}}
+            with self.subTest(field=field), \
+                 mock.patch.object(verify_registry_release, "_open_without_redirects",
+                                   return_value=self.published_response(published)), \
+                 self.assertRaises(ReleaseIdentityError):
+                verify_registry_release.registry_publication_required()
+        with mock.patch.object(verify_registry_release, "_open_without_redirects",
+                               return_value=self.published_response({"server": manifest})), \
+             self.assertRaisesRegex(ReleaseIdentityError, "not active"):
+            verify_registry_release.registry_publication_required()
+
+    def test_registry_output_is_written_only_after_production_and_registry_pass(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(verify_registry_release, "registry_version", return_value="1.4.1"), \
+             mock.patch.object(verify_registry_release, "bundle", return_value=self.identity), \
+             mock.patch.object(verify_registry_release, "commit_at_head", return_value="a" * 40), \
+             mock.patch.object(verify_registry_release, "production_receipt", return_value=self.health) as receipt, \
+             mock.patch.object(verify_registry_release, "registry_publication_required", return_value=False) as registry, \
+             contextlib.redirect_stdout(io.StringIO()):
+            output = Path(tmp) / "github-output"
+            verify_registry_release.main(["--registry-output", str(output)])
+            self.assertEqual("publish_required=false\n", output.read_text())
+            output.unlink()
+            registry.side_effect = ReleaseIdentityError("different remote")
+            with self.assertRaises(ReleaseIdentityError):
+                verify_registry_release.main(["--registry-output", str(output)])
+            self.assertFalse(output.exists())
+            registry.reset_mock()
+            receipt.side_effect = ReleaseIdentityError("old commit")
+            with self.assertRaises(ReleaseIdentityError):
+                verify_registry_release.main(["--registry-output", str(output)])
+            registry.assert_not_called()
+
+    def test_publisher_failure_remains_a_failure(self):
+        text = (ROOT / ".github/workflows/publish-mcp-registry.yml").read_text()
+        step = re.search(r"Authenticate with GitHub OIDC.*?run: \|\n((?:          [^\n]*\n)+)", text, re.S).group(1)
+        script = "\n".join(line[10:] for line in step.splitlines())
+        with tempfile.TemporaryDirectory() as tmp:
+            publisher = Path(tmp) / "mcp-publisher"
+            publisher.write_text('#!/bin/sh\n[ "$1" = login ] && exit 0\necho "400 genuine failure" >&2\nexit 1\n')
+            publisher.chmod(0o755)
+            result = subprocess.run(["bash", "-e", "-c", script], capture_output=True,
+                text=True, env={**os.environ, "RUNNER_TEMP": tmp})
+        self.assertEqual(1, result.returncode)
+        self.assertIn("400 genuine failure", result.stderr)

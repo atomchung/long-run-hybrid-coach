@@ -5,8 +5,8 @@ name: Publish to MCP registry
 # finished, so a workflow that waited for the deployment would deadlock it. This runs on
 # the deployment status Railway posts back to GitHub once the container is up, checks out
 # the deployed commit, and verifies /readyz against it before anything is published. The
-# manual dispatch stays for a retry. Both jobs independently verify /readyz against the
-# checked-out commit and its digests.
+# manual dispatch stays for a retry. Verification and publication independently verify
+# /readyz against the checked-out commit and its digests.
 on:
   workflow_dispatch:
   deployment_status:
@@ -14,23 +14,41 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  # GitHub keeps one running and one pending run per group, and a new arrival replaces the
-  # pending one. Every deployment status posted to this repository -- a Pages deployment, an
-  # in_progress or failed production status -- starts a run here that only skips, so those
-  # get a group of their own and cannot displace a publication waiting behind another.
-  group: ${{ (github.event_name == 'workflow_dispatch' || (github.event.deployment_status.state == 'success' && contains(github.event.deployment.environment, 'production'))) && 'mcp-registry-publication' || format('mcp-registry-ignored-{0}', github.run_id) }}
-  cancel-in-progress: false
-
 jobs:
-  verify-production:
-    # Only a successful production deployment. Railway also posts in_progress and failure
-    # statuses, and this repository's GitHub Pages deployments post their own.
+  select-deployment:
+    # Real gateway and demo events carry the same Railway project/environment, with no
+    # service identifier (issue #504). Only a SHA promoted to production can publish.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.deployment_status.state == 'success' &&
        contains(github.event.deployment.environment, 'production'))
     runs-on: ubuntu-latest
+    outputs:
+      eligible: ${{ steps.select.outputs.eligible }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: production
+          persist-credentials: false
+      - name: Select a deployment of the promoted source
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DEPLOYED_SHA: ${{ github.event.deployment.sha }}
+        run: |
+          if [ "$EVENT_NAME" = workflow_dispatch ] || [ "$DEPLOYED_SHA" = "$(git rev-parse HEAD)" ]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Deployment source is not the current production ref; skipping Registry publication"
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  verify-production:
+    needs: select-deployment
+    if: needs.select-deployment.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      publish_required: ${{ steps.registry.outputs.publish_required }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -49,8 +67,7 @@ jobs:
       # tell them apart -- every non-zero exit reads as "not deployed yet". Importing
       # the gate once, before the loop starts, is what keeps a broken checkout from
       # being reported as a slow deployment. An import, deliberately, rather than a
-      # `--help` run: `test_registry_release.py` holds that this workflow invokes the
-      # gate exactly twice, and a probe is not one of those invocations.
+      # `--help` run, because the probe must load the same imports as a real gate call.
       - name: Confirm the registry gate is importable before polling with it
         run: python3 -c "import scripts.verify_registry_release"
 
@@ -69,9 +86,19 @@ jobs:
           done
           exit 1
 
+      - name: Check whether the Registry entry is already current
+        id: registry
+        run: python3 scripts/verify_registry_release.py --registry-output "$GITHUB_OUTPUT"
+
   publish:
     needs: verify-production
+    if: needs.verify-production.outputs.publish_required == 'true'
     runs-on: ubuntu-latest
+    # Only a missing Registry version joins the publication queue. Demo-only and already
+    # current runs cannot displace a pending publication in GitHub's one-pending queue.
+    concurrency:
+      group: mcp-registry-publication
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -89,7 +116,11 @@ jobs:
       # source yet", ten times, while production was serving it perfectly.
       - name: Install the runtime dependency from the hashed lock
         run: python3 -m pip install --disable-pip-version-check --require-hashes -r requirements.lock
+      - name: Recheck production and Registry immediately before publication
+        id: registry
+        run: python3 scripts/verify_registry_release.py --registry-output "$GITHUB_OUTPUT"
       - name: Install the pinned publisher after archive verification
+        if: steps.registry.outputs.publish_required == 'true'
         # v1.8.1 upstream registry_1.8.1_checksums.txt and release asset digest agree.
         run: |
           curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
@@ -97,9 +128,8 @@ jobs:
             --output "$RUNNER_TEMP/mcp-publisher.tar.gz"
           echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  $RUNNER_TEMP/mcp-publisher.tar.gz" | sha256sum --check --strict
           tar xzf "$RUNNER_TEMP/mcp-publisher.tar.gz" -C "$RUNNER_TEMP" mcp-publisher
-      - name: Recheck production immediately before publication
-        run: python3 scripts/verify_registry_release.py
       - name: Authenticate with GitHub OIDC and publish
+        if: steps.registry.outputs.publish_required == 'true'
         run: |
           "$RUNNER_TEMP/mcp-publisher" login github-oidc
           "$RUNNER_TEMP/mcp-publisher" publish
