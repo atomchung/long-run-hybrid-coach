@@ -442,11 +442,11 @@ class DemoService:
         text = ""
         rounds = 0
         exhausted = True
-        # Summed across this turn's rounds, because a round is not a thing a visitor has or
-        # is billed for -- the turn is. What it answers: whether the 43 KB of instructions
-        # this service re-sends on every round is being served from the provider's cache,
-        # and how much of a ten-second turn went on reasoning nobody reads.
-        usage = model_module.Usage()
+        # No calls yet: the empty sum is zero. Once a round omits a count, Usage keeps
+        # that total unknown even if later rounds report it.
+        usage = model_module.Usage(
+            input_tokens=0, cached_tokens=0, output_tokens=0, reasoning_tokens=0
+        )
         while rounds < MAX_TOOL_ROUNDS:
             rounds += 1
             # The last round may read nothing further. Without this the loop can end with

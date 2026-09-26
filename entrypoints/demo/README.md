@@ -189,10 +189,12 @@ demo_model_unconfigured` rather than served from a substitute.
 
 Method, path, status, error code, a session **fingerprint** (a hash prefix, never the id
 itself), the turn number, which acts were asked for, how long it took, how long the reply
-was, and what the turn cost: `input_tokens`, `cached_tokens`, `output_tokens`,
-`reasoning_tokens`, summed across the turn's rounds because a round is not a thing anybody
-is billed for. A number the provider did not report is absent rather than zero. Never the
-visitor's message, never the athlete payload, never a header, never a credential.
+was, and token usage for successful turns: `input_tokens`, `cached_tokens`, `output_tokens`,
+`reasoning_tokens`, summed across all of the turn's model calls. A count missing from any
+round leaves that entire count absent rather than reporting a partial total. Reported zero
+is preserved; invalid counts are treated as missing. These are token counts, not a price or
+a measurement of reasoning latency. Never the visitor's message, never the athlete payload,
+never a header, never a credential.
 
 `cached_tokens` is the one worth watching. Every request re-sends the same 43 KB of
 instructions, so a cache that is not being hit is the demo paying full price for identical

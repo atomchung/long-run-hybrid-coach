@@ -1311,6 +1311,61 @@ class UsageAccountingTest(unittest.TestCase):
         for absent in ("input_tokens", "cached_tokens", "output_tokens", "reasoning_tokens"):
             self.assertNotIn(absent, reply.log)
 
+    def test_partial_rounds_cannot_look_like_complete_turn_totals(self):
+        complete = self._usage(
+            input_tokens=11500, cached_tokens=11008, output_tokens=400, reasoning_tokens=300
+        )
+        partial = self._usage(input_tokens=11500, output_tokens=400)
+        for missing in (self._usage(), partial):
+            for first, last in ((missing, complete), (complete, missing)):
+                with self.subTest(first=first, last=last):
+                    read = tool_turn(boundary.READ_EVIDENCE, {"read": "week"})
+                    demo = service(
+                        model_module.ModelTurn(
+                            text="", tool_calls=read.tool_calls,
+                            output_items=read.output_items, usage=first,
+                        ),
+                        model_module.ModelTurn(text="An answer.", usage=last),
+                    )
+                    reply = ask(demo, "session-usage-partial", "What should I do?")
+                    self.assertEqual(2, reply.log["rounds"])
+                    self.assertNotIn("cached_tokens", reply.log)
+                    self.assertNotIn("reasoning_tokens", reply.log)
+                    if missing == partial:
+                        self.assertEqual(23000, reply.log["input_tokens"])
+                        self.assertEqual(800, reply.log["output_tokens"])
+                    else:
+                        self.assertNotIn("input_tokens", reply.log)
+                        self.assertNotIn("output_tokens", reply.log)
+
+    def test_only_nonnegative_integer_counts_are_reported(self):
+        for value in (True, False, -1, 1.5, "100", None):
+            with self.subTest(value=value):
+                turn = model_module.parse_response({
+                    "output_text": "An answer.",
+                    "usage": {
+                        "input_tokens": value,
+                        "input_tokens_details": {"cached_tokens": value},
+                        "output_tokens": value,
+                        "output_tokens_details": {"reasoning_tokens": value},
+                    },
+                })
+                self.assertEqual({}, turn.usage.as_log())
+
+    def test_reported_zero_is_preserved(self):
+        turn = model_module.parse_response({
+            "output_text": "An answer.",
+            "usage": {
+                "input_tokens": 0,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens": 0,
+                "output_tokens_details": {"reasoning_tokens": 0},
+            },
+        })
+        reply = ask(service(turn), "session-usage-zero", "What should I do?")
+        for name in ("input_tokens", "cached_tokens", "output_tokens", "reasoning_tokens"):
+            self.assertEqual(0, reply.log[name])
+
     def test_the_reply_a_visitor_receives_says_nothing_about_cost(self):
         demo = service(
             model_module.ModelTurn(text="An answer.", usage=self._usage(input_tokens=11500))

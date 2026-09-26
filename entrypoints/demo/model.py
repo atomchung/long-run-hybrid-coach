@@ -108,17 +108,10 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class Usage:
-    """What one call cost, in the provider's own four numbers.
+    """The provider's token counts, for one call or a sum of calls.
 
-    ``cached`` is the part of the input the provider billed as a cache hit. It matters here
-    more than anywhere else in this repository: every request carries the same 43 KB of
-    instructions, so if that prefix is not being cached the demo is paying full price for
-    the same bytes on every round of every turn. ``reasoning`` is output nobody reads -- it
-    is generated at the same speed as the visible answer, and it is most of why a turn that
-    fetches nothing still takes ten seconds.
-
-    Absent when a response does not report it: a number this did not read is ``None``,
-    never a zero.
+    A count missing from any call leaves that sum unknown. These numbers measure token
+    usage; they do not measure a price or explain how much time reasoning took.
     """
 
     input_tokens: int | None = None
@@ -128,9 +121,9 @@ class Usage:
 
     def __add__(self, other: "Usage") -> "Usage":
         def plus(left: int | None, right: int | None) -> int | None:
-            if left is None and right is None:
+            if left is None or right is None:
                 return None
-            return (left or 0) + (right or 0)
+            return left + right
 
         return Usage(
             plus(self.input_tokens, other.input_tokens),
@@ -140,7 +133,7 @@ class Usage:
         )
 
     def as_log(self) -> dict[str, int]:
-        """Only the numbers that were reported, so a log line cannot invent a zero."""
+        """Only complete counts, so a subtotal cannot masquerade as a turn total."""
         return {
             name: value
             for name, value in (
@@ -161,7 +154,7 @@ def _usage(payload: dict[str, Any]) -> Usage:
 
     def number(source: Any, key: str) -> int | None:
         value = source.get(key) if isinstance(source, dict) else None
-        return value if isinstance(value, int) else None
+        return value if type(value) is int and value >= 0 else None
 
     return Usage(
         input_tokens=number(raw, "input_tokens"),
