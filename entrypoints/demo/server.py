@@ -36,6 +36,27 @@ from .service import (
 LOGGER = logging.getLogger("entrypoints.demo")
 
 
+class _Disconnected(Exception):
+    """The response consumer left; no provider failure or visitor text is logged."""
+
+
+def _wants_stream(accept: str) -> bool:
+    qualities: dict[str, float] = {}
+    for offer in accept.lower().split(","):
+        media, *parameters = offer.strip().split(";")
+        quality = 1.0
+        for parameter in parameters:
+            if parameter.strip().startswith("q="):
+                try:
+                    quality = float(parameter.strip()[2:])
+                except ValueError:
+                    quality = 0
+        qualities[media] = quality if 0 <= quality <= 1 else 0
+    return qualities.get("text/event-stream", 0) > 0 and qualities.get(
+        "text/event-stream", 0
+    ) >= qualities.get("application/json", 0)
+
+
 class DemoHandler(BaseHTTPRequestHandler):
     server_version = "long-run-hybrid-coach-demo"
     sys_version = ""
@@ -87,7 +108,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         return origin.strip() if origin else None
 
     def _cors_headers(self, origin: str | None) -> list[tuple[str, str]]:
-        headers = [("Vary", "Origin")]
+        headers = [("Vary", "Origin, Accept" if self.command == "POST" else "Origin")]
         if origin and origin in self._config.allowed_origins:
             headers.extend(
                 [
@@ -189,26 +210,65 @@ class DemoHandler(BaseHTTPRequestHandler):
             )
             self._finish(403, {"event": "request"})
             return
+        streaming = _wants_stream(self.headers.get("Accept") or "")
+        stream_started = False
+
+        def event(name: str, body: dict[str, Any]) -> None:
+            nonlocal stream_started
+            try:
+                if not stream_started:
+                    stream_started = True
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.send_header("X-Accel-Buffering", "no")
+                    self.send_header("Connection", "close")
+                    for key, value in self._cors_headers(origin):
+                        self.send_header(key, value)
+                    self.end_headers()
+                    self.close_connection = True
+                raw = f"event: {name}\ndata: {json.dumps(body, ensure_ascii=False)}\n\n"
+                self.wfile.write(raw.encode("utf-8"))
+                self.wfile.flush()
+            except OSError:
+                raise _Disconnected() from None
+
+        def failure(error: DemoRequestError) -> None:
+            if stream_started:
+                body = error_body(error)
+                if error.retry_after is not None:
+                    body["retry_after"] = error.retry_after
+                event("error", body)
+            else:
+                self._send(error.status, error_body(error), origin=origin,
+                           retry_after=error.retry_after)
+
         try:
-            payload = self._json_body()
-            reply = self._service.respond(payload, client_key=self._client_key())
-        except DemoRequestError as error:
-            self._send(
-                error.status, error_body(error), origin=origin, retry_after=error.retry_after
-            )
-            self._finish(error.status, {"event": "request", "code": error.code})
-            return
-        except Exception:  # noqa: BLE001 - a demo turn must not return a stack trace
-            LOGGER.exception("demo turn failed")
-            self._send(
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-                _error("internal_error", "the demo could not answer this turn"),
-                origin=origin,
-            )
-            self._finish(500, {"event": "request", "code": "internal_error"})
-            return
-        self._send(reply.status, reply.body, origin=origin, retry_after=reply.retry_after)
-        self._finish(reply.status, reply.log)
+            try:
+                payload = self._json_body()
+                callbacks = {
+                    "on_text": lambda text: event("delta", {"text": text}),
+                    "on_done": lambda body: event("done", body),
+                } if streaming else {}
+                reply = self._service.respond(
+                    payload, client_key=self._client_key(), **callbacks
+                )
+            except DemoRequestError as error:
+                failure(error)
+                self._finish(error.status, {"event": "request", "code": error.code})
+                return
+            except _Disconnected:
+                raise
+            except Exception:  # noqa: BLE001 - no provider body or stack trace in a log
+                failure(DemoRequestError(500, "internal_error", "the demo could not answer this turn"))
+                self._finish(500, {"event": "request", "code": "internal_error"})
+                return
+            if not streaming:
+                self._send(reply.status, reply.body, origin=origin, retry_after=reply.retry_after)
+            self._finish(reply.status, reply.log)
+        except (_Disconnected, OSError):
+            self._finish(499, {"event": "request", "code": "client_disconnected"})
 
     # ------------------------------------------------------------------------------- body
     def _json_body(self) -> Any:

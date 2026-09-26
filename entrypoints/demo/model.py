@@ -35,11 +35,12 @@ anything.
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable, Iterator
 
 
 # Pinned. See the module note -- this is not a default, and there is no other value.
@@ -71,6 +72,11 @@ _QUOTA_REFUSALS = frozenset({"insufficient_quota", "credit_balance_exhausted"})
 # enough that a wordy message does not truncate the JSON and take the classification with
 # it, which would quietly turn "out of credit" back into "try again shortly".
 _ERROR_BODY_LIMIT = 16384
+
+# A completed event includes the entire output, including encrypted reasoning. Bound each
+# line/event and the whole round even when the upstream is malformed or never terminates.
+_STREAM_EVENT_LIMIT = 2 * 1024 * 1024
+_STREAM_TOTAL_LIMIT = 8 * 1024 * 1024
 
 
 class ModelError(Exception):
@@ -342,6 +348,145 @@ def _refusal(error: urllib.error.HTTPError) -> tuple[str | None, bool]:
     return (kind[:64] if isinstance(kind, str) else None), bool(words & _QUOTA_REFUSALS)
 
 
+def _stream_error() -> ModelError:
+    return ModelError("model_unavailable", "the model returned an unreadable stream")
+
+
+def _sse_events(response: Any) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Read bounded UTF-8 SSE events, never forwarding the provider's event wholesale."""
+    data: list[str] = []
+    event = ""
+    event_size = total = 0
+    while True:
+        raw = response.readline(_STREAM_EVENT_LIMIT + 1)
+        if not raw:
+            if data:
+                raise _stream_error()
+            return
+        total += len(raw)
+        event_size += len(raw)
+        if event_size > _STREAM_EVENT_LIMIT or total > _STREAM_TOTAL_LIMIT:
+            raise _stream_error()
+        try:
+            line = raw.decode("utf-8").rstrip("\r\n")
+        except UnicodeDecodeError:
+            raise _stream_error() from None
+        if not line:
+            if data:
+                try:
+                    payload = json.loads("\n".join(data))
+                except json.JSONDecodeError:
+                    raise _stream_error() from None
+                if not isinstance(payload, dict):
+                    raise _stream_error()
+                yield event, payload
+            data, event, event_size = [], "", 0
+        elif line.startswith("data:"):
+            data.append(line[5:].removeprefix(" "))
+        elif line.startswith("event:"):
+            event = line[6:].strip()
+
+
+def _provider_stream_error(payload: dict[str, Any]) -> ModelError:
+    """Stable local errors only; provider messages may echo the visitor's input."""
+    body = payload.get("error")
+    body = body if isinstance(body, dict) else payload
+    code = body.get("code")
+    code = code if isinstance(code, str) else None
+    kind = body.get("type")
+    words = {word for word in (code, kind) if isinstance(word, str)}
+    if words & _QUOTA_REFUSALS:
+        return ModelError("model_quota_exhausted", "this demo is temporarily unavailable")
+    if code == "rate_limit_exceeded":
+        return ModelError("model_rate_limited", "the demo is busy; try again shortly")
+    if code in ("invalid_api_key", "authentication_error"):
+        return ModelError("demo_model_unconfigured", "the demo's model credential was not accepted")
+    if code in ("timeout", "request_timeout"):
+        return ModelError("model_timeout", "the model did not answer in time")
+    return ModelError("model_unavailable", "the model could not answer this turn")
+
+
+def _read_stream(
+    response: Any, *, on_text: Callable[[str], None], allow_tools: bool
+) -> ModelTurn:
+    # Only final_answer messages can be displayed while tools remain possible. A message
+    # with no phase can be a preamble to a tool call, so it waits for the completed body.
+    # The forced no-tools last round can stream unphased messages too. Commentary never
+    # goes to a visitor, but stays verbatim in output_items for the next provider call.
+    messages: dict[int, dict[str, Any]] = {}
+    emitted = ""
+    saw_tool = False
+    for event, payload in _sse_events(response):
+        kind = payload.get("type")
+        if not isinstance(kind, str) or (event and event != kind):
+            raise _stream_error()
+        if kind == "response.output_item.added":
+            index, item = payload.get("output_index"), payload.get("item")
+            if (type(index) is not int or index < 0 or not isinstance(item, dict)
+                    or index in messages):
+                raise _stream_error()
+            if item.get("type") == "message" and (
+                item.get("role") != "assistant" or not isinstance(item.get("id"), str)
+                or not item["id"]
+            ):
+                raise _stream_error()
+            messages[index] = item
+            saw_tool = saw_tool or item.get("type") == "function_call"
+            if saw_tool and emitted:
+                raise _stream_error()
+        elif kind == "response.output_text.delta":
+            index = payload.get("output_index")
+            if type(index) is not int:
+                raise _stream_error()
+            item = messages.get(index)
+            delta = payload.get("delta")
+            if not item or item.get("type") != "message" or not isinstance(delta, str):
+                raise _stream_error()
+            if payload.get("item_id") != item.get("id"):
+                raise _stream_error()
+            phase = item.get("phase")
+            visible = phase == "final_answer" or (phase is None and not allow_tools)
+            if visible and not saw_tool and delta:
+                emitted += delta
+                on_text(delta)
+        elif kind == "response.completed":
+            completed = payload.get("response")
+            if not isinstance(completed, dict) or completed.get("status") != "completed":
+                raise _stream_error()
+            output = completed.get("output")
+            if not isinstance(output, list) or not all(isinstance(item, dict) for item in output):
+                raise _stream_error()
+            for item in output:
+                if item.get("type") == "message":
+                    content = item.get("content")
+                    if (item.get("role") != "assistant" or not isinstance(content, list)
+                            or not all(isinstance(part, dict) for part in content)
+                            or any(part.get("type") == "output_text" and not isinstance(part.get("text"), str)
+                                   for part in content)):
+                        raise _stream_error()
+            # Do not use output_text's convenience aggregate: it may include commentary.
+            has_final = any(item.get("type") == "message" and item.get("phase") == "final_answer"
+                            for item in output)
+            visible_output = [item for item in output if item.get("type") != "message" or (
+                item.get("phase") == "final_answer" if has_final else item.get("phase") != "commentary"
+            )]
+            turn = parse_response({**completed, "output": visible_output, "output_text": None})
+            if emitted and (turn.tool_calls or not turn.text.startswith(emitted.strip())):
+                raise _stream_error()
+            return ModelTurn("" if turn.tool_calls else turn.text, turn.tool_calls, tuple(output), turn.usage)
+        elif kind in ("response.failed", "error"):
+            failure = payload.get("response") if kind == "response.failed" else payload
+            raise _provider_stream_error(failure if isinstance(failure, dict) else {})
+        elif kind == "response.incomplete":
+            incomplete = payload.get("response")
+            detail = incomplete.get("incomplete_details") if isinstance(incomplete, dict) else None
+            if isinstance(detail, dict) and detail.get("reason") == "max_output_tokens":
+                raise ModelError("model_output_truncated", "the model reached its output ceiling before it answered")
+            raise _stream_error()
+    # EOF is not completion, even if several plausible words have already arrived.
+    raise _stream_error()
+
+
 class ResponsesClient:
     """One HTTPS call per round, with the key held here and nowhere else."""
 
@@ -361,6 +506,7 @@ class ResponsesClient:
         input_items: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         allow_tools: bool = True,
+        on_text: Callable[[str], None] | None = None,
     ) -> ModelTurn:
         if not self._api_key:
             raise MissingApiKey()
@@ -370,6 +516,8 @@ class ResponsesClient:
             tools=tools,
             allow_tools=allow_tools,
         )
+        if on_text is not None:
+            body["stream"] = True
         request = urllib.request.Request(
             f"{self._base_url}/responses",
             data=json.dumps(body).encode("utf-8"),
@@ -381,6 +529,8 @@ class ResponsesClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                if on_text is not None:
+                    return _read_stream(response, on_text=on_text, allow_tools=allow_tools)
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             raise self._http_error(error) from None
@@ -391,7 +541,7 @@ class ResponsesClient:
             raise ModelError("model_unavailable", "the model could not be reached") from None
         except TimeoutError:
             raise ModelError("model_timeout", "the model did not answer in time") from None
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError, http.client.IncompleteRead):
             raise ModelError(
                 "model_unavailable", "the model returned an unreadable body"
             ) from None

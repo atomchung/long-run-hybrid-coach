@@ -103,7 +103,7 @@ class SessionStore:
     def _expire(self, now: dt.datetime) -> None:
         cutoff = now - self._ttl
         for session_id in [
-            key for key, value in self._sessions.items() if value.last_seen_at <= cutoff
+            key for key, value in self._sessions.items() if value.last_seen_at <= cutoff and not value.lock.locked()
         ]:
             del self._sessions[session_id]
 
