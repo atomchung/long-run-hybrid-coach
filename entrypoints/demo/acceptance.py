@@ -61,7 +61,7 @@ from pathlib import Path
 from typing import Any
 
 from . import fixture, model as model_module
-from .config import PUBLIC_ENDPOINT, RESPOND_PATH, from_environment
+from .config import PUBLIC_ENDPOINT, RESPOND_PATH, SITE_ORIGIN, from_environment
 from .service import DemoRequestError, DemoService
 
 
@@ -216,23 +216,34 @@ class _InProcess:
 class _OverHttp:
     """Runs the same turns against a deployed service, which also proves the deploy."""
 
-    def __init__(self, base_url: str, *, timeout: int) -> None:
+    def __init__(self, base_url: str, *, timeout: int, stream: bool = False) -> None:
         self._url = base_url.rstrip("/") + RESPOND_PATH
         self._timeout = timeout
+        self._stream = stream
 
     @property
     def target(self) -> str:
         return self._url
 
     def ask(self, session_id: str, message: str) -> dict[str, Any]:
+        started = time.monotonic()
         request = urllib.request.Request(
             self._url,
             data=json.dumps({"session_id": session_id, "message": message}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Origin": SITE_ORIGIN,
+                     "Accept": "text/event-stream, application/json" if self._stream else "application/json"},
             method="POST",
         )
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                if self._stream:
+                    if response.headers.get_content_type() != "text/event-stream":
+                        return {"ok": False, "status": response.status, "code": "stream_not_available",
+                                "message": "the deployment did not negotiate an event stream"}
+                    if response.headers.get("Access-Control-Allow-Origin") != SITE_ORIGIN:
+                        return {"ok": False, "status": response.status, "code": "cors_missing",
+                                "message": "the deployment did not allow the site's origin"}
+                    return self._read_stream(response, started=started)
                 body = json.loads(response.read().decode("utf-8"))
             return {"ok": True, "status": response.status, "reply": body.get("reply", ""),
                     "turn": body.get("turn"), "log": None}
@@ -246,6 +257,38 @@ class _OverHttp:
                     "message": detail.get("message", error.reason)}
         except Exception as error:  # noqa: BLE001 - a deployment that is not answering
             return {"ok": False, "status": 0, "code": "unreachable", "message": str(error)}
+
+
+    @staticmethod
+    def _read_stream(response: Any, *, started: float) -> dict[str, Any]:
+        delta_count = 0
+        first_text_ms = None
+        for event, body in model_module._sse_events(response):
+            if event == "delta":
+                text = body.get("text")
+                if not isinstance(text, str) or not text:
+                    break
+                delta_count += 1
+                if first_text_ms is None:
+                    first_text_ms = int((time.monotonic() - started) * 1000)
+            elif event == "done":
+                reply, turn = body.get("reply"), body.get("turn")
+                if not isinstance(reply, str) or not reply.strip() or type(turn) is not int or turn < 1:
+                    break
+                done_ms = int((time.monotonic() - started) * 1000)
+                return {"ok": True, "status": response.status, "reply": reply, "turn": turn,
+                        "log": None, "stream": {"delta_count": delta_count,
+                        "first_text_ms": first_text_ms, "done_ms": done_ms,
+                        "first_text_to_done_ms": None if first_text_ms is None else done_ms - first_text_ms}}
+            elif event == "error":
+                error = body.get("error") or {}
+                return {"ok": False, "status": response.status,
+                        "code": error.get("code", "stream_error"),
+                        "message": error.get("message", "the streamed turn failed")}
+            else:
+                break
+        return {"ok": False, "status": response.status, "code": "stream_incomplete",
+                "message": "the stream ended without a complete answer"}
 
 
 def _ask(
@@ -267,6 +310,8 @@ def _ask(
         "ok": outcome["ok"],
         "http_status": outcome["status"],
     }
+    if "stream" in outcome:
+        entry["stream"] = outcome["stream"]
     if expected_turn is not None:
         entry["expected_turn"] = expected_turn
         entry["reported_turn"] = outcome.get("turn")
@@ -349,6 +394,10 @@ def _render_turn(turn: dict[str, Any], lines: list[str]) -> None:
         check["passed"] for check in turn["checks"] if check["kind"] == "hard"
     ) else "FAIL"
     lines.append(f"[{head}] {turn['id']}  {turn['latency_ms']} ms")
+    if "stream" in turn:
+        stream = turn["stream"]
+        lines.append(f"       deltas: {stream['delta_count']}   first text: {stream['first_text_ms']} ms"
+                     f"   first text to done: {stream['first_text_to_done_ms']} ms")
     if turn.get("rounds") is not None:
         acts = ", ".join(turn.get("acts") or []) or "none"
         lines.append(f"       rounds: {turn['rounds']}   acts: {acts}")
@@ -405,10 +454,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--out", help="Where to write the JSON report (default: a temp file)")
     parser.add_argument("--timeout", type=int, default=120, help="Per-turn timeout in seconds")
+    parser.add_argument("--stream", action="store_true",
+                        help="Negotiate SSE on the deployment and report delta count and first-text latency")
     args = parser.parse_args(argv)
+    if args.stream and not args.base_url:
+        parser.error("--stream requires --base-url to verify the deployed transport")
 
     if args.base_url:
-        runner: Any = _OverHttp(args.base_url, timeout=args.timeout)
+        runner: Any = _OverHttp(args.base_url, timeout=args.timeout, stream=args.stream)
     else:
         config = from_environment()
         if not config.has_api_key:

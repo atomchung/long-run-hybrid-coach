@@ -86,8 +86,36 @@ conversation that ended.
 
 In production that is `https://demo-api.paceandstaystrong.com/demo/v1/respond`.
 
-No streaming in this version. `GET /healthz` reports whether this deployment can answer,
-and is what the platform health check reads.
+Send `Accept: text/event-stream, application/json` to receive SSE on this same route.
+Callers without that preference keep the JSON response above. The request body, locale,
+limits, model, instructions and available acts are identical.
+
+```text
+event: delta
+data: {"text":"The beginning of the answer"}
+
+event: done
+data: {"reply":"The complete answer", "turn":3}
+
+```
+
+`delta` carries final-answer text only. `done` supplies the authoritative full reply and
+turn number; it may arrive without any deltas. Reasoning, tool arguments, evidence payloads
+and intermediate commentary are never streamed. While tool calls remain possible, unphased
+text waits for completion because it may precede a tool call. The existing forced no-tools
+last round can also stream unphased text. No extra model call or prompt is added to obtain
+a stream. See OpenAI's [streaming events](https://developers.openai.com/api/docs/guides/streaming-responses)
+and [message phases](https://developers.openai.com/api/docs/guides/reasoning#phase-parameter).
+
+Before the first event, a failure can still use its normal JSON HTTP error. After the
+stream starts, `event: error` carries the same `{"error":{"code":"...","message":"..."}}`
+shape, with an optional top-level `retry_after` in seconds. EOF without `done` is failure,
+not an answer. Clients should discard unfinished text and must not retry automatically.
+History and exploratory previews commit only after the complete `done` frame is written
+and flushed successfully. An observed disconnect or any failure refunds the session turn
+and releases its lock; a successful write alone cannot prove receipt by a browser.
+
+`GET /healthz` reports whether this deployment can answer and is the platform health check.
 
 Errors are machine-readable and carry a stable code:
 
@@ -251,7 +279,16 @@ whether it said it had lost the conversation. Transcripts are written out beside
 report.
 
 `--base-url https://demo-api.paceandstaystrong.com` runs the same turns over HTTP against
-the deployed service, which also exercises the platform port, CORS and the deploy itself.
+the deployed service. Add `--stream` to check the SSE transport and its allowed site origin:
+
+```bash
+python3 -m entrypoints.demo.acceptance --base-url https://demo-api.paceandstaystrong.com --stream
+```
+
+Each streamed turn reports `delta_count`, `first_text_ms`, `done_ms` and
+`first_text_to_done_ms`. A zero delta count means the answer completed without proving
+incremental output. Read the actual timings: fake-model tests and a completed SSE response
+do not establish that this pinned model emits useful deltas on the deployed service.
 
 It grades nothing. Two of its checks are real refusals; the rest is a prompt to read the
 transcript. No test in this repository judges a coaching answer, and this command does not
@@ -294,7 +331,7 @@ so this page, the tests and whoever runs the demo read one copy.
 ## Tests
 
 ```bash
-python3 -m unittest tests.test_demo_fixture tests.test_demo_boundary tests.test_demo_service
+python3 -m unittest tests.test_demo_fixture tests.test_demo_boundary tests.test_demo_service tests.test_demo_streaming
 ```
 
 They cover the missing credential, the three acceptance turns, three turns of one

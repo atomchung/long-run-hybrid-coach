@@ -27,7 +27,7 @@ import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from garmin_coach_loop import orchestration
 
@@ -324,7 +324,11 @@ class DemoService:
         )
 
     # ------------------------------------------------------------------------- the one turn
-    def respond(self, payload: Any, *, client_key: str) -> DemoReply:
+    def respond(
+        self, payload: Any, *, client_key: str,
+        on_text: Callable[[str], None] | None = None,
+        on_done: Callable[[dict[str, Any]], None] | None = None,
+    ) -> DemoReply:
         """Answer one ``POST /demo/v1/respond``.
 
         Raises ``DemoRequestError`` for everything a caller can get wrong; the transport
@@ -410,10 +414,18 @@ class DemoService:
             raise DemoRequestError(
                 409, "session_busy", "this demo conversation is already answering a turn"
             )
+        turns_before = session.turns
         try:
             return self._answer(
-                session, message.strip(), locale=locale, now=now, started=started
+                session, message.strip(), locale=locale, now=now, started=started,
+                on_text=on_text, on_done=on_done,
             )
+        except Exception:
+            # A provider failure, an unexpected exception or a disconnected consumer all
+            # leave this turn uncommitted. Refund once, including failures after deltas.
+            if session.turns > turns_before:
+                self._sessions.refund_turn(session)
+            raise
         finally:
             session.lock.release()
 
@@ -425,6 +437,8 @@ class DemoService:
         locale: str | None,
         now: dt.datetime,
         started: dt.datetime,
+        on_text: Callable[[str], None] | None,
+        on_done: Callable[[dict[str, Any]], None] | None,
     ) -> DemoReply:
         """One turn, with this conversation's lock already held."""
         try:
@@ -432,6 +446,7 @@ class DemoService:
         except SessionLimit as limit:
             raise DemoRequestError(409, "turn_limit_reached", str(limit)) from None
 
+        previews = list(session.previews)
         items = list(session.history)
         items.append({"role": "user", "content": message})
 
@@ -460,12 +475,12 @@ class DemoService:
                     input_items=items,
                     tools=boundary.tool_definitions(),
                     allow_tools=rounds < MAX_TOOL_ROUNDS,
+                    **({"on_text": on_text} if on_text is not None else {}),
                 )
             except model_module.ModelError as error:
                 # The visitor got no answer, so this turn does not count against the few
                 # they have. Nothing was written: the history below is committed only once
                 # the turn has finished, so a failed turn leaves the conversation as it was.
-                self._sessions.refund_turn(session)
                 if error.code == "model_quota_exhausted":
                     self._model_quota = "exhausted"
                 if error.provider_type:
@@ -548,8 +563,8 @@ class DemoService:
                         # Exploratory, and this session's alone: the preview is kept so the
                         # conversation can refer back to it, and the plan it was projected
                         # against is untouched by construction.
-                        session.previews.append(result["preview"])
-                        del session.previews[:-3]
+                        previews.append(result["preview"])
+                        del previews[:-3]
                 output = model_module.function_call_output(call.call_id, result)
                 items.append(output)
                 items_chars += len(json.dumps(output, default=str))
@@ -581,9 +596,15 @@ class DemoService:
             # two questions in a row.
             items.append(model_module.assistant_message(text))
 
-        session.history = _trimmed(items)
-
+        history = _trimmed(items)
+        if on_done is not None:
+            # The transport must finish writing/flushing done before this turn becomes
+            # history. This proves a successful write, not receipt by a remote browser.
+            on_done({"reply": text, "turn": turn_index})
+        session.history = history
+        session.previews = previews
         finished = self._now()
+        session.last_seen_at = finished
         return DemoReply(
             status=200,
             # The turn number travels with the reply because the page cannot otherwise tell
