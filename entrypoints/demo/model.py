@@ -107,12 +107,71 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class Usage:
+    """The provider's token counts, for one call or a sum of calls.
+
+    A count missing from any call leaves that sum unknown. These numbers measure token
+    usage; they do not measure a price or explain how much time reasoning took.
+    """
+
+    input_tokens: int | None = None
+    cached_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+    def __add__(self, other: "Usage") -> "Usage":
+        def plus(left: int | None, right: int | None) -> int | None:
+            if left is None or right is None:
+                return None
+            return left + right
+
+        return Usage(
+            plus(self.input_tokens, other.input_tokens),
+            plus(self.cached_tokens, other.cached_tokens),
+            plus(self.output_tokens, other.output_tokens),
+            plus(self.reasoning_tokens, other.reasoning_tokens),
+        )
+
+    def as_log(self) -> dict[str, int]:
+        """Only complete counts, so a subtotal cannot masquerade as a turn total."""
+        return {
+            name: value
+            for name, value in (
+                ("input_tokens", self.input_tokens),
+                ("cached_tokens", self.cached_tokens),
+                ("output_tokens", self.output_tokens),
+                ("reasoning_tokens", self.reasoning_tokens),
+            )
+            if value is not None
+        }
+
+
+def _usage(payload: dict[str, Any]) -> Usage:
+    """The provider's ``usage`` block, read for four numbers and nothing else."""
+    raw = payload.get("usage")
+    if not isinstance(raw, dict):
+        return Usage()
+
+    def number(source: Any, key: str) -> int | None:
+        value = source.get(key) if isinstance(source, dict) else None
+        return value if type(value) is int and value >= 0 else None
+
+    return Usage(
+        input_tokens=number(raw, "input_tokens"),
+        cached_tokens=number(raw.get("input_tokens_details"), "cached_tokens"),
+        output_tokens=number(raw, "output_tokens"),
+        reasoning_tokens=number(raw.get("output_tokens_details"), "reasoning_tokens"),
+    )
+
+
+@dataclass(frozen=True)
 class ModelTurn:
     """One response: the words, the acts it asked for, and the items it produced."""
 
     text: str
     tool_calls: tuple[ToolCall, ...] = ()
     output_items: tuple[dict[str, Any], ...] = field(default=())
+    usage: Usage = field(default_factory=Usage)
 
     @property
     def reasoning_items(self) -> tuple[dict[str, Any], ...]:
@@ -245,7 +304,12 @@ def parse_response(payload: dict[str, Any]) -> ModelTurn:
                 "the model reached its output ceiling before it answered",
             )
         raise ModelError("model_unavailable", "the model returned no answer")
-    return ModelTurn(text=text, tool_calls=tool_calls, output_items=output_items)
+    return ModelTurn(
+        text=text,
+        tool_calls=tool_calls,
+        output_items=output_items,
+        usage=_usage(payload),
+    )
 
 
 def _refusal(error: urllib.error.HTTPError) -> tuple[str | None, bool]:

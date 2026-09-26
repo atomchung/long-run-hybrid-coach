@@ -1245,6 +1245,135 @@ class TheLastRoundHasToAnswerTest(unittest.TestCase):
         self.assertTrue(body["tools"], "input carrying a function_call needs its tools declared")
 
 
+class UsageAccountingTest(unittest.TestCase):
+    """What a turn cost, summed over its rounds and written to the log line.
+
+    Nothing about it reaches a visitor, and nothing but integers reaches the log. It exists
+    to answer two questions that were being guessed at: whether the 43 KB of instructions
+    re-sent on every round is served from the provider's cache, and how much of a turn's
+    output was reasoning nobody reads.
+    """
+
+    def _usage(self, **kwargs):
+        return model_module.Usage(**kwargs)
+
+    def test_a_response_reports_what_it_cost(self):
+        turn = model_module.parse_response(
+            {
+                "output_text": "An answer.",
+                "output": [],
+                "usage": {
+                    "input_tokens": 11500,
+                    "input_tokens_details": {"cached_tokens": 11008},
+                    "output_tokens": 900,
+                    "output_tokens_details": {"reasoning_tokens": 540},
+                },
+            }
+        )
+        self.assertEqual(
+            {
+                "input_tokens": 11500,
+                "cached_tokens": 11008,
+                "output_tokens": 900,
+                "reasoning_tokens": 540,
+            },
+            turn.usage.as_log(),
+        )
+
+    def test_a_response_that_reports_nothing_invents_no_zero(self):
+        turn = model_module.parse_response({"output_text": "An answer.", "output": []})
+        self.assertEqual({}, turn.usage.as_log())
+        self.assertIsNone(turn.usage.input_tokens)
+
+    def test_the_log_carries_the_whole_turn_not_one_round(self):
+        counted = self._usage(
+            input_tokens=11500, cached_tokens=11008, output_tokens=400, reasoning_tokens=300
+        )
+        demo = service(
+            model_module.ModelTurn(
+                text="",
+                tool_calls=tool_turn(boundary.READ_EVIDENCE, {"read": "week"}).tool_calls,
+                output_items=tool_turn(boundary.READ_EVIDENCE, {"read": "week"}).output_items,
+                usage=counted,
+            ),
+            model_module.ModelTurn(text="An answer.", usage=counted),
+        )
+        reply = ask(demo, "session-usage-aaa", "What should I do?")
+        self.assertEqual(2, reply.log["rounds"])
+        self.assertEqual(23000, reply.log["input_tokens"], "both rounds, not the last one")
+        self.assertEqual(22016, reply.log["cached_tokens"])
+        self.assertEqual(800, reply.log["output_tokens"])
+        self.assertEqual(600, reply.log["reasoning_tokens"])
+
+    def test_the_log_omits_what_the_provider_did_not_report(self):
+        demo = service(model_module.ModelTurn(text="An answer."))
+        reply = ask(demo, "session-usage-bbb", "What should I do?")
+        for absent in ("input_tokens", "cached_tokens", "output_tokens", "reasoning_tokens"):
+            self.assertNotIn(absent, reply.log)
+
+    def test_partial_rounds_cannot_look_like_complete_turn_totals(self):
+        complete = self._usage(
+            input_tokens=11500, cached_tokens=11008, output_tokens=400, reasoning_tokens=300
+        )
+        partial = self._usage(input_tokens=11500, output_tokens=400)
+        for missing in (self._usage(), partial):
+            for first, last in ((missing, complete), (complete, missing)):
+                with self.subTest(first=first, last=last):
+                    read = tool_turn(boundary.READ_EVIDENCE, {"read": "week"})
+                    demo = service(
+                        model_module.ModelTurn(
+                            text="", tool_calls=read.tool_calls,
+                            output_items=read.output_items, usage=first,
+                        ),
+                        model_module.ModelTurn(text="An answer.", usage=last),
+                    )
+                    reply = ask(demo, "session-usage-partial", "What should I do?")
+                    self.assertEqual(2, reply.log["rounds"])
+                    self.assertNotIn("cached_tokens", reply.log)
+                    self.assertNotIn("reasoning_tokens", reply.log)
+                    if missing == partial:
+                        self.assertEqual(23000, reply.log["input_tokens"])
+                        self.assertEqual(800, reply.log["output_tokens"])
+                    else:
+                        self.assertNotIn("input_tokens", reply.log)
+                        self.assertNotIn("output_tokens", reply.log)
+
+    def test_only_nonnegative_integer_counts_are_reported(self):
+        for value in (True, False, -1, 1.5, "100", None):
+            with self.subTest(value=value):
+                turn = model_module.parse_response({
+                    "output_text": "An answer.",
+                    "usage": {
+                        "input_tokens": value,
+                        "input_tokens_details": {"cached_tokens": value},
+                        "output_tokens": value,
+                        "output_tokens_details": {"reasoning_tokens": value},
+                    },
+                })
+                self.assertEqual({}, turn.usage.as_log())
+
+    def test_reported_zero_is_preserved(self):
+        turn = model_module.parse_response({
+            "output_text": "An answer.",
+            "usage": {
+                "input_tokens": 0,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens": 0,
+                "output_tokens_details": {"reasoning_tokens": 0},
+            },
+        })
+        reply = ask(service(turn), "session-usage-zero", "What should I do?")
+        for name in ("input_tokens", "cached_tokens", "output_tokens", "reasoning_tokens"):
+            self.assertEqual(0, reply.log[name])
+
+    def test_the_reply_a_visitor_receives_says_nothing_about_cost(self):
+        demo = service(
+            model_module.ModelTurn(text="An answer.", usage=self._usage(input_tokens=11500))
+        )
+        reply = ask(demo, "session-usage-ccc", "What should I do?")
+        self.assertEqual(["reply", "turn"], sorted(reply.body))
+
+
 class AcceptanceCommandTest(unittest.TestCase):
     """The command an operator runs once there is a credential, exercised without one."""
 

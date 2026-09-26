@@ -442,6 +442,11 @@ class DemoService:
         text = ""
         rounds = 0
         exhausted = True
+        # No calls yet: the empty sum is zero. Once a round omits a count, Usage keeps
+        # that total unknown even if later rounds report it.
+        usage = model_module.Usage(
+            input_tokens=0, cached_tokens=0, output_tokens=0, reasoning_tokens=0
+        )
         while rounds < MAX_TOOL_ROUNDS:
             rounds += 1
             # The last round may read nothing further. Without this the loop can end with
@@ -491,6 +496,8 @@ class DemoService:
                     "model_timeout": 504,
                 }.get(error.code, 502)
                 raise DemoRequestError(status, error.code, str(error)) from None
+
+            usage = usage + turn.usage
 
             # The call answered, so whatever refused the last one is not refusing now.
             self._model_quota = "ok"
@@ -596,6 +603,7 @@ class DemoService:
                 "refused": refused,
                 "reply_chars": len(text),
                 "duration_ms": int((finished - started).total_seconds() * 1000),
+                **usage.as_log(),
             },
         )
 
