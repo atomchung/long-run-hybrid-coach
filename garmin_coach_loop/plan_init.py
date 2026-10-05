@@ -688,15 +688,18 @@ def project_initialization_request(
     *,
     issued_at: dt.datetime,
     language: str = DEFAULT_LANGUAGE,
+    plan_namespace: str = "",
 ) -> dict[str, Any]:
     """Turn one coaching initialization request into a candidate first PlanState.
 
-    Pure and total: the same request, instant and language always produce the same plan,
+    Pure and total: the same request, instant, language and product namespace produce the same plan,
     byte for byte, which is what lets one confirmation bind a plan the agent never holds.
     ``language`` is one of those three inputs rather than a formatting choice made later:
     the prescriptions it renders are stored in the plan, so preparing and applying must
     pass the same value or the confirmed preview and the committed plan differ.
     """
+    if not isinstance(plan_namespace, str):
+        raise ChangeRequestError("plan_namespace must be a string")
     request = _object(initialization_request, "initialization_request")
     errors = _Errors()
     errors.try_(
@@ -771,7 +774,8 @@ def project_initialization_request(
         # applying the same request name the same plan both times.
         "plan_id": "plan-"
         + canonical_hash(
-            {"initialization_request": request, "issued_at": _utc_iso(issued_at)}
+            {"initialization_request": request, "issued_at": _utc_iso(issued_at),
+             **({"product": plan_namespace} if plan_namespace else {})}
         )[:24],
         "version": 1,
         "status": "active",

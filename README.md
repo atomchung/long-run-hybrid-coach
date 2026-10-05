@@ -253,6 +253,7 @@ python3 -m garmin_coach_loop.cli serve-gateway --host 127.0.0.1 --port 8422
 - 入口與平台設定：[entrypoints/](entrypoints/README.md)
 - MCP protocol、OAuth 與 tool 行為：[entrypoints/mcp/README.md](entrypoints/mcp/README.md)
 - 託管部署：[docs/deploy-gateway.md](docs/deploy-gateway.md)
+- 獨立教練產品與資料邊界：[docs/ops/independent-coach-products.md](docs/ops/independent-coach-products.md)
 - 帳號生命週期：[docs/account-lifecycle.md](docs/account-lifecycle.md)
 - 公開上架／reviewer 材料：[docs/distribution/](docs/distribution/README.md)
 - Release inventory：[docs/release-inventory.md](docs/release-inventory.md)

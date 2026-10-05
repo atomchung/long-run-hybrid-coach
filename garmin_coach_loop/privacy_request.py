@@ -53,7 +53,7 @@ import datetime as dt
 from pathlib import Path
 from typing import Any, Callable
 
-from . import owner_data
+from . import owner_data, product_identity
 from .gateway import PROVIDER
 from .identity import (
     IdentityError,
@@ -120,7 +120,8 @@ def _identity_record(athlete_id: str, evidence: str) -> dict[str, str]:
 
 
 def _scope_digest(
-    preview: dict[str, Any], *, owner_id: str, hmac_key: bytes
+    preview: dict[str, Any], *, owner_id: str, hmac_key: bytes,
+    product: str = product_identity.DEFAULT_PRODUCT
 ) -> str:
     """Bind a deletion scope to the account it was computed for.
 
@@ -138,7 +139,7 @@ def _scope_digest(
     changed scope fails.
     """
     return canonical_hash(
-        {"owner": binding(owner_id, key=hmac_key), "preview": preview}
+        {"owner": binding(product_identity.owner_binding_subject(owner_id, product), key=hmac_key), "preview": preview}
     )
 
 
@@ -192,6 +193,7 @@ def export_request(
     athlete_id: str,
     identity_evidence: str,
     hmac_key: bytes,
+    product: str = product_identity.DEFAULT_PRODUCT,
 ) -> dict[str, Any]:
     """The archive the athlete would have received in conversation. Reads only.
 
@@ -206,7 +208,7 @@ def export_request(
         resolve_state_dir(owner_id, state_root=state_root),
         identity_db=identity_db,
         owner_id=owner_id,
-        owner_reference=binding(owner_id, key=hmac_key),
+        owner_reference=binding(product_identity.owner_binding_subject(owner_id, product), key=hmac_key),
     )
     return {"identity": identity, "archive": archive}
 
@@ -218,6 +220,7 @@ def deletion_scope(
     athlete_id: str,
     identity_evidence: str,
     hmac_key: bytes,
+    product: str = product_identity.DEFAULT_PRODUCT,
 ) -> dict[str, Any]:
     """Exactly what a confirmed deletion would remove, and the digest that binds it.
 
@@ -248,7 +251,7 @@ def deletion_scope(
     )
     return {
         "identity": identity,
-        "scope_digest": _scope_digest(preview, owner_id=owner_id, hmac_key=hmac_key),
+        "scope_digest": _scope_digest(preview, owner_id=owner_id, hmac_key=hmac_key, product=product),
         **preview,
     }
 
@@ -368,6 +371,7 @@ def apply_deletion(
     identity_evidence: str,
     now: dt.datetime,
     hmac_key: bytes,
+    product: str = product_identity.DEFAULT_PRODUCT,
     scope_digest: str,
     confirmed: bool,
 ) -> dict[str, Any]:
@@ -405,7 +409,7 @@ def apply_deletion(
     preview = owner_data.deletion_preview(
         state_dir, identity_db=identity_db, owner_id=owner_id
     )
-    current = _scope_digest(preview, owner_id=owner_id, hmac_key=hmac_key)
+    current = _scope_digest(preview, owner_id=owner_id, hmac_key=hmac_key, product=product)
     if current != digest:
         raise PrivacyRequestError(
             "this scope digest is not this account's current one (confirmed "
@@ -420,7 +424,7 @@ def apply_deletion(
         state_dir,
         identity_db=identity_db,
         owner_id=owner_id,
-        owner_reference=binding(owner_id, key=hmac_key),
+        owner_reference=binding(product_identity.owner_binding_subject(owner_id, product), key=hmac_key),
         now=now,
     )
     try:

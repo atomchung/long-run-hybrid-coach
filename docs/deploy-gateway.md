@@ -15,6 +15,10 @@ redoing this file's reasoning from scratch. If the question is what happened at 
 OAuth/MCP trust boundary — who registered, what was refused, how far one authorization
 got — see [`ops/security-events.md`](ops/security-events.md).
 
+For two independent coach deployments, read
+[Independent coach products](ops/independent-coach-products.md) before configuring
+the second service. The product identity does not yet restrict its tool catalogue.
+
 ## Deployment shape
 
 One long-running Python process, no application server or process manager in front of
