@@ -48,9 +48,12 @@ default store writes real state from unreviewed code.
 - Dogfood from the main checkout, on `main`.
 - Develop in a worktree.
 - Anything needing its own state sets `GARMIN_COACH_LOOP_HOME`.
-- **One writer per athlete.** ChatGPT, claude.ai, a local MCP client and the CLI
-  all reach one hosted owner store; a writable local store beside it is a second
-  current plan for one Intervals calendar, which is what issue #40 is about. With
+- **One writer per athlete within each product.** Every client connected to that
+  product reaches its hosted owner store. Independent products keep independent
+  plans and records, as described in
+  [docs/ops/independent-coach-products.md](docs/ops/independent-coach-products.md);
+  their calendar delivery is not automatically coordinated. A writable local store
+  beside the same hosted product creates a second current plan. With
   a hosted coach configured, local writes refuse unless `--offline` says a
   different store is meant, and a migrated store is sealed
   (`hosted-handoff.json`) so no code path writes it at all. Moving an existing
