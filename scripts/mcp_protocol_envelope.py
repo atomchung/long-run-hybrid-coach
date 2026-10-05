@@ -55,7 +55,7 @@ _ENVELOPE_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
 
 # Deliberately invalid controls, probed beside every revision the SDK's own registry
 # names. They are not a list of revisions this product accepts -- there is no such list
-# here, and adding one is exactly what the SDK migration removed (CLAUDE.md, "One `/mcp`,
+# here, and adding one is exactly what the SDK migration removed (AGENTS.md, "One `/mcp`,
 # two protocol eras"). What they pin down is the *refusal*: a server that quietly starts
 # accepting anything shaped like a date has changed its mind about something.
 UNSUPPORTED_PROBES = ("2020-01-01", "2099-12-31", "not-a-revision")
