@@ -291,7 +291,7 @@ line ever reveals; it does not name which owners.
 durable journal of a delivery that may have partially reached Intervals, not a process
 marker -- and `run_preflight` never touches it under any circumstance. Recovering it is
 the athlete-facing `clear-delivery-attempt --confirm` path (see the working rules in this
-repository's `CLAUDE.md`), which requires confirming against the live Intervals calendar
+repository's `AGENTS.md`), which requires confirming against the live Intervals calendar
 first. That is a judgment call about what a provider actually holds; a process restart
 cannot make it safely, and does not try to.
 

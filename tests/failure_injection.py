@@ -218,7 +218,7 @@ def assert_unreconciled_delivery_fences(
     snapshot_dir: Path,
     copy_destination: Path,
 ) -> None:
-    """The four refusals CLAUDE.md names while a delivery reservation is open."""
+    """The four refusals AGENTS.md names while a delivery reservation is open."""
     after = _load_example("plan-state-v2-day-4.json")
     for session in after["week"]["sessions"]:
         if session["session_id"] in {"run-quality-01", "run-long-01"}:

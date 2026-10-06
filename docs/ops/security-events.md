@@ -96,7 +96,7 @@ Three of them are ordinary traffic, and reading them as attacks will waste an af
   inside it simply no longer resolves to a store, because `_forget_connection` dropped it
   on the `401` the provider returned. Every client connected under that grant writes one
   of these on its next call, so a revocation shows up as a *burst* across several
-  `client` handles at once, each ending when that client re-authorizes. CLAUDE.md has why
+  `client` handles at once, each ending when that client re-authorizes. AGENTS.md has why
   one revocation reaches every entry.
 
 One more has a routine cause worth knowing before it is investigated:

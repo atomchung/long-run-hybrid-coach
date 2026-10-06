@@ -35,7 +35,7 @@ that needs a different sequence has found a real difference worth recording.
 
 | # | step | what makes it pass |
 | --- | --- | --- |
-| 1 | Real OAuth | The consent screen completes and the client reports connected. Re-authorizing without revoking is safe and needs no coordination; **revoking is not** — see CLAUDE.md, one revocation signs every entry out. |
+| 1 | Real OAuth | The consent screen completes and the client reports connected. Re-authorizing without revoking is safe and needs no coordination; **revoking is not** — see AGENTS.md, one revocation signs every entry out. |
 | 2 | `startCoachSession` | A plan comes back. The formal account's email is the one displayed. `read` was chosen from the question rather than set to `all`. |
 | 3 | `prepareCoachDecision` or `prepareWorkoutDelivery` | The whole preview is shown before any confirmation is asked for, and the Intervals account it would write to is named, email first. |
 | 4 | Confirm and apply | One explicit confirmation, then the apply carries the proposal (or `proposal_hash`) and `confirmed: true` and nothing prepare already holds. |

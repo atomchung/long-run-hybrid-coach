@@ -46,8 +46,8 @@ less.
 
    **Do not revoke the authorization at intervals.icu to force this.** Authorization
    there is granted per application per athlete, so revoking signs out every connected
-   client at once and each has to reconnect by hand — see the incident recorded in
-   `CLAUDE.md`. Re-authorizing without revoking is safe, and it is all that is needed:
+   client at once and each has to reconnect by hand — see "Revoking at Intervals" in
+   `AGENTS.md`. Re-authorizing without revoking is safe, and it is all that is needed:
    the new grant replaces the old one and earlier fingerprints are kept deliberately.
 
 3. **Verify against the connection, not against the reconnect.**

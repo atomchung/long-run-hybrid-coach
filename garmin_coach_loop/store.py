@@ -40,7 +40,7 @@ STORE_SCHEMA_VERSION = "1.0"
 # PlanState, DecisionEvent, and manifest shape. Deliberately independent of
 # STORE_SCHEMA_VERSION above and the *_SCHEMA_VERSION constants in validation.py -- those
 # have stayed at "1.0" through several additive field changes, so they are not the number
-# CLAUDE.md's "land the schema change on main" warning is actually about. This is: every
+# AGENTS.md's "land the schema change on main" warning is actually about. This is: every
 # write path compares it against the value recorded in the store before touching anything
 # (see _inspect_store), and it is the one that must move in the same change that lands a
 # PlanState/DecisionEvent shape change an older checkout could not safely open or extend.

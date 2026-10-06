@@ -2927,7 +2927,7 @@ class DeliveryFencesStoreMaintenanceTests(unittest.TestCase):
         )
 
     def test_a_partial_provider_write_refuses_apply_snapshot_restore_and_copy_adopt(self):
-        """The four CLAUDE.md fences, after the first calendar write actually landed."""
+        """The four AGENTS.md fences, after the first calendar write actually landed."""
         snapshot = snapshot_store(self.state_dir, reason="before-partial")
         proposal_set, approval = _confirmed_set(self.plan, BOTH_SESSIONS)
         transport = FakeTransport()

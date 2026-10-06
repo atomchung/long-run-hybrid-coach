@@ -1,6 +1,6 @@
 """The writer-contract guard: detection before a write, and a real way back (archived issue #88).
 
-CLAUDE.md has long warned that once newer code writes a field, older code cannot open the
+AGENTS.md has long warned that once newer code writes a field, older code cannot open the
 store at all -- not just the newest commit, the whole thing -- and that the fix has been
 "merge the schema change before writing real state." That rule only ever worked if a human
 remembered it every time. These tests are the machine-checked version: the store records
