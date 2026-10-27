@@ -6,14 +6,34 @@ code continues to own training contracts, validation, approval and provider
 delivery. A client name never determines the product; deployment configuration
 does. There is no automatic data or plan synchronization.
 
-## Foundation and release boundary
+## What the training product does not collect
 
-This foundation establishes storage and authorization isolation. Both identities
-still serve the existing full coaching catalogue, instructions and provider scopes.
-**The training identity is not yet the restricted OpenAI product and must not be
-submitted as one.** Its allowed evidence, tools, OAuth scopes, public descriptions
-and independent user journey must be implemented and verified in the next task.
-A separate URL or name is not evidence of OpenAI acceptance. Track the work in
+The training product is the coach a directory listing points at. It never reads, accepts
+or keeps the categories a directory review named as health information: sleep, HRV,
+resting heart rate, body measurements and reported symptoms. Exercise heart rate, pace,
+load and how the athlete says they feel stay, read the same way the hybrid product reads
+them. `garmin_coach_loop/product_scope.py` owns the boundary, at every layer that could
+otherwise reach the data:
+
+| Layer | Training product |
+| --- | --- |
+| Intervals OAuth | Asks for `ACTIVITY:READ`, `CALENDAR:WRITE` and `SETTINGS:WRITE`; never `WELLNESS:READ`, so the consent screen has no wellness box. |
+| Provider read | Never requests `/wellness`. The context carries `recovery_not_collected` in `unknowns` instead of a permission or outage note. |
+| Catalogue | No `recordBodyMeasurement`; `startCoachSession` has no `red_flags`, `all_clear` or `recovery_signals`; `prepareCoachDecision` has no `red_flags` and no recovery or illness reason codes; retraction has no body or recovery kinds. |
+| Direct calls | The gateway refuses those fields, tools and codes with `outside_product_scope` before any handler or provider request, so a cached hybrid catalogue cannot reach them. |
+| Uploads | An Apple Health export keeps its workouts; its body, recovery, HRV and sleep records are counted under one heading in `not_kept` before any value is parsed. |
+| What the model reads | The context is shown without the recovery and symptom fields the contract still requires internally; the instructions and coaching guidance drop the body-composition section and the wearable-recovery sentences. |
+
+Without a symptom field there is no deterministic same-day symptom limit in this product.
+The instructions and tool descriptions still say that pain, illness, chest pain, dizziness
+or unusual symptoms need a human decision before training, and that nothing about them is
+recorded.
+
+The hybrid product's served bytes are unchanged; `scripts/mcp_contract_equivalence.py`
+holds them. The training surface is derived from them by named edits that must each match
+the hybrid text exactly once, so a hybrid wording change fails the training build at
+startup rather than shipping an unreviewed sentence. A separate URL or name is not
+evidence of directory acceptance; track the submission in
 [issue #519](https://github.com/atomchung/long-run-hybrid-coach/issues/519).
 
 ## Deployment configuration
@@ -72,10 +92,19 @@ operations; the latter also requires its explicit identity database. They do not
 infer a deployment from the environment. These are operator tools, not an
 athlete-facing migration or synchronization route.
 
-## Next task
+## Deploying the training product
 
-Define and implement the training product's accepted evidence and capability
-boundary using the Review Team's clarification. Share acquisition and coaching
-machinery where their behavior is common, while each product exposes only its
-own complete contract. Verify the real client flow and provider authorization,
-then prepare its own release, public information, demo and submission evidence.
+1. A separate Railway service from this repository, one replica, with its own volume
+   mounted at the state root and its own `GARMIN_COACH_LOOP_TOKEN_HMAC_KEY`.
+2. `GARMIN_COACH_LOOP_PRODUCT=training`, plus the same Intervals client id and secret the
+   hybrid service uses. A second coach does not need a second Intervals application.
+3. Register `https://<training domain>/oauth/callback` as a redirect URI on that Intervals
+   application, beside the hybrid one.
+4. Build its release identity with
+   `python3 scripts/release_bundle.py build --product training --gateway-domain https://<training domain> ...`:
+   readiness compares the catalogue this product serves, which is not the hybrid digest.
+5. Read `/readyz` back: `deployment_product` is `training`, and `status` is `ok`.
+
+The training catalogue, instructions and scopes are a new reviewed surface. Before a
+submission it needs a real client acceptance, Scan Tools and its own plugin version, as
+`scripts/change_gates.py` reports for `product_scope.py`.

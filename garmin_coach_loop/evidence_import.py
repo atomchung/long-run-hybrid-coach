@@ -303,7 +303,10 @@ def _unreadable(index: int, reason: str, saw: str | None = None) -> dict[str, An
 class _Reading:
     """What one payload yielded: rows, measurements, and everything it could not read."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, keeps_health: bool = True) -> None:
+        # False for a product that does not collect body measurements or recovery
+        # readings: those records are counted by kind before any value is parsed.
+        self.keeps_health = keeps_health
         self.activities: list[dict[str, Any]] = []
         self.measurements: list[dict[str, Any]] = []
         self.recovery: list[dict[str, Any]] = []
@@ -633,11 +636,11 @@ def _health_attributes(raw: str) -> dict[str, str]:
     return {name: value for name, value in _ATTRIBUTE.findall(raw)}
 
 
-def read_apple_health(content: str) -> _Reading:
+def read_apple_health(content: str, *, keeps_health: bool = True) -> _Reading:
     """Sessions and body measurements out of an Apple Health export, whole or partial."""
     if not isinstance(content, str) or not content.strip():
         raise EvidenceImportError("content must be non-empty Apple Health XML text")
-    reading = _Reading()
+    reading = _Reading(keeps_health=keeps_health)
     seen = False
     for index, match in enumerate(_ELEMENT.finditer(content), start=1):
         seen = True
@@ -732,8 +735,22 @@ def _read_health_recovery(
     reading.recovery.append({"date": day, field: value})
 
 
+# The one heading a product that does not collect them counts these records under.
+HEALTH_NOT_COLLECTED = (
+    "health readings this coach does not collect (sleep, HRV, resting heart rate, body "
+    "measurements)"
+)
+
+
 def _read_health_record(reading: _Reading, index: int, attributes: dict[str, str]) -> None:
     record_type = attributes.get("type", "")
+    if not reading.keeps_health and (
+        record_type in _HEALTH_RECOVERY
+        or record_type in _HEALTH_DECLINED
+        or record_type in _HEALTH_MEASUREMENTS
+    ):
+        reading.ignore(HEALTH_NOT_COLLECTED)
+        return
     recovery_field = _HEALTH_RECOVERY.get(record_type)
     if recovery_field is not None:
         _read_health_recovery(reading, index, recovery_field, attributes)
@@ -1140,8 +1157,13 @@ def read_payload(
     records: Any = None,
     column_mapping: Any = None,
     timezone_name: str = DEFAULT_TIMEZONE,
+    keeps_health: bool = True,
 ) -> dict[str, Any]:
-    """Read one upload into normalized rows. Writes nothing and reaches nothing."""
+    """Read one upload into normalized rows. Writes nothing and reaches nothing.
+
+    Only an Apple Health export carries body measurements and recovery readings, so
+    ``keeps_health`` reaches that reader alone.
+    """
     if format_name not in IMPORT_FORMATS:
         raise EvidenceImportError(
             f"format must be one of {', '.join(IMPORT_FORMATS)}, found {format_name!r}"
@@ -1159,7 +1181,7 @@ def read_payload(
         if format_name == "csv":
             reading, mapping = read_csv(content, column_mapping=column_mapping)
         elif format_name == "apple_health_xml":
-            reading, mapping = read_apple_health(content), None
+            reading, mapping = read_apple_health(content, keeps_health=keeps_health), None
         else:
             reading, mapping = read_fit(content, timezone_name=timezone_name), None
     return {

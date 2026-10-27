@@ -847,6 +847,16 @@ def _activity_date(row: dict[str, Any]) -> dt.date | None:
         return None
 
 
+# The one `unknowns` line a context carries in place of a recovery read when its product
+# does not collect recovery readings. Nothing here waits on a retry or a permission, so it
+# names what to judge from instead of what to repair.
+RECOVERY_NOT_COLLECTED_NOTE = (
+    "recovery_not_collected: this coach does not read sleep, HRV, resting heart rate or "
+    "body measurements; judge readiness from training evidence and what the athlete says "
+    "about how they feel"
+)
+
+
 def _wellness_date(row: dict[str, Any]) -> dt.date | None:
     raw = row.get("id")
     if not isinstance(raw, str):
@@ -1941,6 +1951,7 @@ def fetch_domain(
     threshold_sec_per_km: int | float | None = None,
     structured_dates: frozenset[dt.date] = frozenset(),
     baseline_max_hr: Any = None,
+    read_wellness: bool = True,
 ) -> SourceDomain:
     """Fetch and map one CoachContext activity/recovery domain from intervals.icu.
 
@@ -1988,6 +1999,11 @@ def fetch_domain(
     ``baseline_max_hr`` is the PlanState figure the read of the provider's own Run
     sport settings exists to be compared against, and the whole reason that request is
     or is not made -- see below.
+
+    ``read_wellness=False`` is a product that does not collect recovery readings at all
+    (``product_scope``): the wellness endpoint is never requested, and the recovery half
+    reads unknown with ``RECOVERY_NOT_COLLECTED_NOTE`` -- a design, so it must not read as
+    an outage or as a permission the athlete could restore.
     """
     active_fetch = fetch if fetch is not None else _default_fetch
     activities, activities_malformed_rows = _fetch_activities(credentials, window, fetch=active_fetch)
@@ -2006,9 +2022,13 @@ def fetch_domain(
     # activity one, and so does any failure a later change invents.
     wellness_unread: str | None = None
     try:
-        wellness, wellness_malformed_rows = _fetch_wellness(
-            credentials, window, fetch=active_fetch
-        )
+        if not read_wellness:
+            wellness, wellness_malformed_rows = [], 0
+            wellness_unread = RECOVERY_NOT_COLLECTED_NOTE
+        else:
+            wellness, wellness_malformed_rows = _fetch_wellness(
+                credentials, window, fetch=active_fetch
+            )
     except ProviderUnavailableError:
         wellness, wellness_malformed_rows = [], 0
         wellness_unread = "intervals_wellness_read_failed"

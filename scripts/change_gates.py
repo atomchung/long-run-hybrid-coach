@@ -53,6 +53,10 @@ MODEL_FACING_PATHS = frozenset(
         "garmin_coach_loop/orchestration.md",
         "garmin_coach_loop/orchestration.py",
         "garmin_coach_loop/hybrid_training.md",
+        # The training product's catalogue, instructions, guidance and scopes are derived
+        # here; the hybrid digest cannot see a change that moves only them. Its wiring into
+        # OAuth and the provider read lives in gateway.py, which is live-smoke gated.
+        "garmin_coach_loop/product_scope.py",
     }
 )
 

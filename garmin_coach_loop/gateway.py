@@ -69,6 +69,7 @@ from . import (
     mcp_transport,
     orchestration,
     product_identity,
+    product_scope,
     security_log,
     token_envelope,
 )
@@ -1475,14 +1476,15 @@ def _client_redirect(redirect_uri: str, params: dict[str, str], client_state: st
     )
 
 
-def _intervals_scope(requested: Any) -> str:
+def _intervals_scope(requested: Any, scopes: tuple[str, ...]) -> str:
     """What to ask Intervals for, in the form Intervals reads it.
 
     The client's own scope request is honoured, but not verbatim: RFC 6749 delimits
     scopes with spaces and Intervals delimits them with commas, so a client that built
     its request from ``scopes_supported`` correctly would otherwise be authorized for
     nothing. ``normalize_scope_names`` accepts either and drops anything that is not a
-    scope name, and an empty result falls back to the four this product declares.
+    scope name, and an empty result falls back to ``scopes``, the set this deployment's
+    product declares (``product_scope.oauth_scopes``).
 
     **Narrowing only.** The request is intersected with those four rather than forwarded:
     a client may ask for less than this product needs -- and then finds out at the first
@@ -1491,10 +1493,8 @@ def _intervals_scope(requested: Any) -> str:
     provider's configuration, not this gateway's guarantee, and the athlete's consent
     screen is not the place to discover the difference.
     """
-    names = tuple(
-        name for name in normalize_scope_names(requested) if name in INTERVALS_OAUTH_SCOPES
-    )
-    return ",".join(names or INTERVALS_OAUTH_SCOPES)
+    names = tuple(name for name in normalize_scope_names(requested) if name in scopes)
+    return ",".join(names or scopes)
 
 
 # RFC 7636 4.1: a code verifier is 43 to 128 characters drawn from the unreserved set.
@@ -2285,6 +2285,10 @@ class CoachGateway:
         now: Callable[[], dt.datetime] | None = None,
     ):
         self.config = config
+        # What this deployment's product serves and accepts. Built here so a training
+        # surface that no longer derives from the hybrid text refuses the boot.
+        self.surface = product_scope.surface(config.product)
+        self.oauth_scopes = product_scope.oauth_scopes(config.product, INTERVALS_OAUTH_SCOPES)
         self.fetch = fetch
         self._now = now or (lambda: dt.datetime.now(dt.timezone.utc))
         # Everything this process handed out or accepted that a later call may name
@@ -2314,11 +2318,11 @@ class CoachGateway:
             and self.config.deployment_identity
             and self.config.release_identity["gateway_artifact_sha256"]
             == gateway_artifact_sha256()
-            # Rebuilt from the running `TOOLS` and compared, the way the package digest
-            # is. A declared hash nobody recomputes proves only what the deployer typed;
-            # this proves what `/mcp` will answer `tools/list` with.
+            # Rebuilt from the catalogue this product serves and compared, the way the
+            # package digest is. A declared hash nobody recomputes proves only what the
+            # deployer typed; this proves what `/mcp` will answer `tools/list` with.
             and self.config.release_identity["tool_catalogue_sha256"]
-            == mcp_transport.tool_catalogue_sha256()
+            == self.surface.tool_catalogue_sha256()
             and source_commit_matches
         )
         return {
@@ -2449,6 +2453,11 @@ class CoachGateway:
             self, self._HANDLERS[kind]
         )
         try:
+            refused = product_scope.refusal(self.config.product, kind, body)
+            if refused is not None:
+                raise GatewayError(
+                    HTTPStatus.BAD_REQUEST, product_scope.OUTSIDE_SCOPE_ERROR, refused
+                )
             tool = self._FENCED_BY_MAINTENANCE.get(kind)
             if tool is not None:
                 _refuse_during_maintenance(self._state_dir(owner_id), tool)
@@ -3454,7 +3463,7 @@ class CoachGateway:
                 client_id=client_id,
             )
         # Resolve provider scope before sealing the authorization request.
-        provider_scope = _intervals_scope(query.get("scope"))
+        provider_scope = _intervals_scope(query.get("scope"), self.oauth_scopes)
         request = {
             "client_id": client_id,
             "client_redirect_uri": redirect_uri,
@@ -4453,7 +4462,7 @@ class CoachGateway:
             observations, unknowns = self._pre_plan_observations(
                 state_dir, token, window, recovery_signals=recovery_signals
             )
-            coaching_guidance = orchestration.training_judgment()
+            coaching_guidance = self.surface.training_judgment()
             if _no_activity_evidence(observations):
                 # issue #225: this is the turn that most needs the training judgment,
                 # and also the one where silence about an empty Intervals account costs
@@ -4539,8 +4548,10 @@ class CoachGateway:
                 payload={"read": list(groups)},
                 until=now + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS),
             )
-        judgment = orchestration.training_judgment()
-        view, index = context_view.project_context(context, groups)
+        judgment = self.surface.training_judgment()
+        view, index = context_view.project_context(
+            product_scope.visible_context(self.config.product, context), groups
+        )
         plan_state: dict[str, Any] = {
             "present": True,
             "plan_id": current["plan_id"],
@@ -4956,10 +4967,11 @@ class CoachGateway:
         context = self._retained_context(owner_id, context_id=context_id)
         if context is None:
             raise GatewayError(HTTPStatus.CONFLICT, "context_expired", _CONTEXT_NOT_HELD)
-        evidence, holds = context_view.group_slice(context, groups)
+        shown = product_scope.visible_context(self.config.product, context)
+        evidence, holds = context_view.group_slice(shown, groups)
         focused: dict[str, Any] | None = None
         if focus is not None:
-            evidence, focused = context_view.focus_slice(context, evidence, focus)
+            evidence, focused = context_view.focus_slice(shown, evidence, focus)
         answer = {
             "status": "passed",
             **self._envelope(),
@@ -4967,7 +4979,7 @@ class CoachGateway:
             "as_of": context.get("as_of"),
             "evidence": evidence,
             "groups": holds,
-            "evidence_index": context_view.evidence_index(context, groups),
+            "evidence_index": context_view.evidence_index(shown, groups),
         }
         if focused is not None:
             answer["focused"] = focused
@@ -5091,7 +5103,10 @@ class CoachGateway:
                 "goal": None,
                 "delivery": None,
                 "pending_delivery_attempt_id": None,
-                "unknowns": ["no PlanState exists for this account", *STATE_READ_UNKNOWNS],
+                "unknowns": [
+                    "no PlanState exists for this account",
+                    *product_scope.state_read_unknowns(self.config.product, STATE_READ_UNKNOWNS),
+                ],
             }
         current = read_current_plan(state_dir)
         plan = current["current_plan"]
@@ -5104,7 +5119,9 @@ class CoachGateway:
             **_plan_summary(plan),
             "delivery": _delivery_view(plan, self._local_day(owner_id, body)),
             "pending_delivery_attempt_id": attempt.get("attempt_id") if attempt else None,
-            "unknowns": list(STATE_READ_UNKNOWNS),
+            "unknowns": list(
+                product_scope.state_read_unknowns(self.config.product, STATE_READ_UNKNOWNS)
+            ),
         }
 
     # -- athlete-reported evidence ------------------------------------------------------
@@ -5468,6 +5485,7 @@ class CoachGateway:
             # Read by the FIT reader alone, and only when the file itself states no
             # offset: every other format writes local time already.
             timezone_name=timezone_name,
+            keeps_health=product_scope.reads_recovery(self.config.product),
         )
         if len(reading["activities"]) > MAX_IMPORT_ROWS:
             raise _invalid(
@@ -5488,7 +5506,7 @@ class CoachGateway:
             resolutions=body.get("resolutions"),
             now=self._now(),
         )
-        return {
+        answer = {
             "status": "passed",
             **self._envelope(),
             "import_id": result["import_id"],
@@ -5523,6 +5541,12 @@ class CoachGateway:
             "unreadable": self._shown(result["unreadable"], self._IMPORT_ECHO),
             "note": result["note"],
         }
+        if not product_scope.reads_recovery(self.config.product):
+            # Never filled for this product; a receipt naming them would advertise records
+            # it does not keep. What the file held of them is counted in `not_kept`.
+            for key in ("measurements_added", "measurements_skipped", "recovery_added", "recovery_skipped"):
+                del answer[key]
+        return answer
 
     def retract_athlete_record(
         self, owner_id: str, token: str, body: dict[str, Any]
@@ -6592,6 +6616,7 @@ class CoachGateway:
             provided_recovery_signals=recovery_signals,
             now=now,
             domain=domain,
+            read_recovery=product_scope.reads_recovery(self.config.product),
         )
         if report.get("status") != "passed":
             raise GatewayError(
@@ -7639,7 +7664,9 @@ INTERVALS_OAUTH_SCOPES: tuple[str, ...] = (
 )
 
 
-def protected_resource_metadata(base_url: str) -> dict[str, Any]:
+def protected_resource_metadata(
+    base_url: str, scopes: tuple[str, ...] = INTERVALS_OAUTH_SCOPES
+) -> dict[str, Any]:
     """RFC 9728: which authorization server guards this MCP endpoint.
 
     One document, naming this same gateway as its own authorization server -- which it
@@ -7656,11 +7683,13 @@ def protected_resource_metadata(base_url: str) -> dict[str, Any]:
         "resource": f"{base_url}{MCP_PATH}",
         "authorization_servers": [base_url],
         "bearer_methods_supported": ["header"],
-        "scopes_supported": list(INTERVALS_OAUTH_SCOPES),
+        "scopes_supported": list(scopes),
     }
 
 
-def authorization_server_metadata(base_url: str) -> dict[str, Any]:
+def authorization_server_metadata(
+    base_url: str, scopes: tuple[str, ...] = INTERVALS_OAUTH_SCOPES
+) -> dict[str, Any]:
     """RFC 8414 for this gateway's own authorization server.
 
     The endpoints named here are this gateway's: ``/oauth/authorize`` starts a flow it
@@ -7684,7 +7713,7 @@ def authorization_server_metadata(base_url: str) -> dict[str, Any]:
         "grant_types_supported": ["authorization_code"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
-        "scopes_supported": list(INTERVALS_OAUTH_SCOPES),
+        "scopes_supported": list(scopes),
     }
 
 
@@ -7782,9 +7811,9 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             elif kind in {"protected_resource_metadata", "authorization_server_metadata"}:
                 base_url = self._require_public_base_url()
                 payload = (
-                    protected_resource_metadata(base_url)
+                    protected_resource_metadata(base_url, gateway.oauth_scopes)
                     if kind == "protected_resource_metadata"
-                    else authorization_server_metadata(base_url)
+                    else authorization_server_metadata(base_url, gateway.oauth_scopes)
                 )
                 status = HTTPStatus.OK
             elif kind == "openai_apps_challenge":
@@ -8315,7 +8344,7 @@ class CoachGatewayServer(ThreadingHTTPServer):
         # before the socket is bound: an MCP layer that cannot come up is a broken
         # deployment, and it should be a refused boot beside the state-root and identity
         # checks rather than a 500 on whichever athlete's request arrives first.
-        self.mcp_runtime = mcp_sdk_transport.SdkTransport(PRODUCT_VERSION)
+        self.mcp_runtime = mcp_sdk_transport.SdkTransport(PRODUCT_VERSION, gateway.surface)
         self.mcp_runtime.start()
         try:
             super().__init__(address, handler_class)
