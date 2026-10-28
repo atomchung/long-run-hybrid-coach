@@ -11,6 +11,39 @@ Requirements below are from the official submission pages
 `developers.openai.com/plugins/build/mcp-server`, `developers.openai.com/plugins/build/auth`),
 read 2026-08-18, plus the eligibility research recorded on issue #97.
 
+## The Plugin entry
+
+Since 1.4.11 the OpenAI directory reviews the **Plugin entry**, not the full product
+(issue #519): a second Railway service of the same code, `coach-plugin`, with its own
+store and `GARMIN_COACH_LOOP_HEALTH_DATA=off`
+([`../ops/independent-coach-products.md`](../ops/independent-coach-products.md)). The
+full product keeps its own URL and its own entries in every other directory. Everything
+below applies to the Plugin entry, with these differences:
+
+| Item | Full product | Plugin entry |
+| --- | --- | --- |
+| MCP server URL | `https://mcp.paceandstaystrong.com/mcp` | `https://openai-mcp.paceandstaystrong.com/mcp`, a custom domain on `coach-plugin` (until it exists, `https://coach-plugin-production.up.railway.app/mcp`) |
+| Submission packet | [`chatgpt-app-submission.json`](../../chatgpt-app-submission.json) | [`chatgpt-app-submission.training.json`](../../chatgpt-app-submission.training.json) |
+| Long description | the one in [`README.md`](README.md) | `app_info.description` in the Plugin packet: no health category is named, because none is read or kept |
+| Catalogue Scan Tools should find | the table in [`README.md`](README.md) | that table without `recordBodyMeasurement`, and with `startCoachSession` not destructive |
+| `/readyz` before scanning | `deployment_product: hybrid` | `deployment_product: training`, `health_data: off`, `status: ok` |
+| Domain verification | the production service's variables | `GARMIN_COACH_LOOP_OPENAI_APPS_CHALLENGE` on `coach-plugin`, read back from the Plugin URL |
+
+Display name, subtitle, category, logo, website, support, privacy and terms URLs, and the
+starter prompts are the same. `tests/test_distribution_surface.py` holds the Plugin
+packet to the catalogue a health-data-off deployment serves, and fails if its listing or
+a reviewer case names sleep, HRV, resting heart rate, body measurements, symptoms or
+wellness.
+
+Two things are the Plugin entry's own before submitting:
+
+- **The reviewer account starts empty on this entry.** Its store is independent, so the
+  plan, delivered workouts and probable-match fixtures the test cases ask for have to be
+  set up through the Plugin URL, not copied from the full product.
+- **The privacy policy covers both entries.** If it describes health data without saying
+  which entry processes it, a reviewer reading it beside this listing sees a
+  contradiction; it should say the Plugin entry does not read or keep those categories.
+
 ## Shape
 
 **MCP-only.** The skills half is not part of the first submission. What a client reads without
