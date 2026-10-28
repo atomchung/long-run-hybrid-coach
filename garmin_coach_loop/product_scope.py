@@ -148,6 +148,53 @@ def visible_context(health_data: bool, context: dict[str, Any]) -> dict[str, Any
     return shown
 
 
+# Keys and notes stripped from every answer, wherever they sit in it. `visible_context`
+# shapes the context; this is the last pass over the whole answer, for the parts built
+# beside it -- validation warnings, top-level unknowns, pre-plan observations, a record
+# kept while the switch was on -- and for any path added after it.
+_HIDDEN_ANSWER_KEYS = frozenset(
+    {
+        "body_measurements",
+        "reported_recovery",
+        "recovery_trends",
+        "recovery_signals",
+        "recovery_recording",
+    }
+)
+_NOTE_KEYS = frozenset({"unknowns", "warnings"})
+# Matched anywhere in a note: validation prefixes its messages ("context: red flag ...").
+_HIDDEN_NOTE_MARKERS = ("red flag ", "recovery freshness ", *sorted(_HIDDEN_UNKNOWNS))
+
+
+def visible_answer(health_data: bool, answer: dict[str, Any]) -> dict[str, Any]:
+    """One tool result as this deployment hands it to the model."""
+    if health_data:
+        return answer
+    return _strip(answer)
+
+
+def _strip(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _notes(item) if key in _NOTE_KEYS else _strip(item)
+            for key, item in value.items()
+            if key not in _HIDDEN_ANSWER_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip(item) for item in value]
+    return value
+
+
+def _notes(value: Any) -> Any:
+    if not isinstance(value, list):
+        return _strip(value)
+    return [
+        item
+        for item in value
+        if not (isinstance(item, str) and any(marker in item for marker in _HIDDEN_NOTE_MARKERS))
+    ]
+
+
 def state_read_unknowns(health_data: bool, unknowns: tuple[str, ...]) -> tuple[str, ...]:
     """``getCoachState``'s standing unknowns, without asking for symptoms it cannot take."""
     if health_data:

@@ -43,6 +43,7 @@ from garmin_coach_loop.source_intervals import RECOVERY_NOT_COLLECTED_NOTE
 from test_evidence_import import APPLE_XML
 from test_gateway import CLIENT_ID_VALUE, CLIENT_SECRET_VALUE, HMAC_KEY, NOW, TOKEN_A, FakeIntervals
 from test_plan_init import initialization_request
+from scripts.release_bundle import expected_deployment_identity_from_env
 
 
 NO_HEALTH = product_scope.surface(False)
@@ -362,6 +363,26 @@ class TrainingGatewayTests(unittest.TestCase):
         self.assertEqual("off", self.gateways["training"].health()["health_data"])
         self.assertEqual("on", self.gateways["hybrid"].health()["health_data"])
 
+    def test_no_answer_carries_a_health_note_or_a_record_kept_while_on(self):
+        # A deployment flipped from on to off still holds what it kept while on; nothing
+        # the model is handed may carry it, including the pre-plan observations, and no
+        # validation note or unknown may ask for a reading this deployment refuses.
+        gateway, owner = self.gateways["hybrid"], self.owners["hybrid"]
+        imported = gateway.route("history_import", owner, TOKEN_A, {"format": "apple_health_xml", "content": APPLE_XML})
+        self.assertTrue(imported["measurements_added"])
+        switched = CoachGateway(
+            dataclasses.replace(gateway.config, health_data=False), fetch=gateway.fetch, now=lambda: NOW
+        )
+        before_plan = switched.route("session", owner, TOKEN_A, {"read": ["all"]})
+        self.assertIn("pre_plan_observations", before_plan)
+        self.assertNotIn("body_measurements", json.dumps(before_plan))
+        planned = self._with_first_plan("training")
+        answer = planned.route("session", self.owners["training"], TOKEN_A, {"read": ["all"]})
+        notes = json.dumps([answer["unknowns"], answer["validation"]], ensure_ascii=False)
+        for hidden in ("red flag", "red_flags_not_confirmed", "sleep_data_unavailable", "recovery freshness"):
+            self.assertNotIn(hidden, notes)
+        self.assertIn("red flag", json.dumps(gateway.route("session", owner, TOKEN_A, {"read": ["all"]})))
+
     def test_turning_health_data_on_serves_the_same_plan_with_health_data(self):
         gateway, owner = self._with_first_plan("training"), self.owners["training"]
         before = gateway.route("session", owner, TOKEN_A, {"read": ["all"]})
@@ -410,6 +431,25 @@ class HealthDataSettingTests(unittest.TestCase):
         for value in ("yes", "1", "true"):
             with self.subTest(value=value), self.assertRaises(GatewayConfigError):
                 load_config({**env, switch: value})
+
+    def test_the_trusted_runner_expects_the_identity_each_product_reports(self):
+        # The gateway binds its deployment identity to the product's own root; the release
+        # check has to name the same one, or a training deployment can never verify.
+        env = {
+            "GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT": str(self.root),
+            "GARMIN_COACH_LOOP_TOKEN_HMAC_KEY": HMAC_KEY.decode(),
+            "GARMIN_COACH_LOOP_INTERVALS_CLIENT_ID": CLIENT_ID_VALUE,
+            "GARMIN_COACH_LOOP_INTERVALS_CLIENT_SECRET": CLIENT_SECRET_VALUE,
+            "GARMIN_COACH_LOOP_DEPLOYMENT_ENVIRONMENT": "production",
+            "GARMIN_COACH_LOOP_DEPLOYMENT_INSTANCE_ID": "coach-1",
+        }
+        for product in ("hybrid", "training"):
+            with self.subTest(product=product):
+                configured = {**env, "GARMIN_COACH_LOOP_PRODUCT": product}
+                self.assertEqual(
+                    load_config(configured).deployment_identity,
+                    expected_deployment_identity_from_env(configured),
+                )
 
 
 if __name__ == "__main__":

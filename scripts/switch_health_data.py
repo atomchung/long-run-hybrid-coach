@@ -137,14 +137,29 @@ def switch(
     live = read(domain)
     if live.get("status") == "ok" and live.get("health_data") == wanted:
         return live
-    commit = (live.get("release_identity") or {}).get("git_commit")
-    if not commit:
+    identity = live.get("release_identity") or {}
+    commit = identity.get("git_commit")
+    if not commit or not identity.get("gateway_domain"):
         raise SwitchError(f"{domain} reports no release identity; deploy it once before switching")
     if not commit_present(commit):
         raise SwitchError(f"commit {commit} is not in this checkout; run git fetch and retry")
-    bundle = build(commit, domain, health_data)
-    for command in railway_commands(service, staged_variables(bundle, health_data), scope):
-        execute(command)
+    # Built for the domain the running release names, not the URL used to reach it: the
+    # issuer, audience and OAuth callback come from it, so another value would sign every
+    # connection out.
+    bundle = build(commit, identity["gateway_domain"], health_data)
+    stage, redeploy = railway_commands(service, staged_variables(bundle, health_data), scope)
+    try:
+        execute(stage)
+    except subprocess.CalledProcessError as exc:
+        raise SwitchError(f"staging the variables failed; nothing was redeployed: {exc}") from exc
+    try:
+        execute(redeploy)
+    except subprocess.CalledProcessError as exc:
+        raise SwitchError(
+            f"the variables are staged as health_data={wanted} but the redeploy failed, so "
+            "they ship with whatever deploys next. Re-run to retry, or run the other value "
+            f"to put them back: {exc}"
+        ) from exc
     deadline = clock() + wait_seconds
     while True:
         try:

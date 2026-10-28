@@ -53,6 +53,7 @@ from garmin_coach_loop.release_identity import (  # noqa: E402
     release_identity,
     sha256_text,
 )
+from garmin_coach_loop import product_identity  # noqa: E402
 from garmin_coach_loop.gateway import (  # noqa: E402
     CLIENT_ID_ENV_VAR,
     MIN_HMAC_KEY_CHARACTERS,
@@ -269,10 +270,19 @@ def expected_deployment_identity_from_env(env: dict[str, str]) -> dict[str, str]
             f"{TOKEN_HMAC_KEY_ENV_VAR} must be at least "
             f"{MIN_HMAC_KEY_CHARACTERS} characters"
         )
+    # The gateway binds its identity to the product's own root, not the configured base,
+    # so a training deployment's expectation has to name the same directory.
+    product = str(
+        env.get(product_identity.PRODUCT_ENV_VAR) or product_identity.DEFAULT_PRODUCT
+    ).strip()
+    try:
+        state_root = product_identity.product_state_root(
+            Path(str(env[STATE_ROOT_ENV_VAR]).strip()).expanduser().resolve(), product
+        )
+    except product_identity.ProductIdentityError as exc:
+        raise ReleaseIdentityError(str(exc)) from exc
     return make_deployment_identity(
-        resolved_state_root=Path(str(env[STATE_ROOT_ENV_VAR]).strip())
-        .expanduser()
-        .resolve(),
+        resolved_state_root=state_root,
         intervals_client_id=str(env[CLIENT_ID_ENV_VAR]).strip(),
         environment=str(env[DEPLOYMENT_ENVIRONMENT_ENV_VAR]),
         instance_id=str(env[DEPLOYMENT_INSTANCE_ID_ENV_VAR]),

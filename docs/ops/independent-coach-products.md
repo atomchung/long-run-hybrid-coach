@@ -30,7 +30,13 @@ otherwise reach the data:
 | Catalogue | No `recordBodyMeasurement`; `startCoachSession` has no `red_flags`, `all_clear` or `recovery_signals`; `prepareCoachDecision` has no `red_flags` and no recovery or illness reason codes; retraction has no body or recovery kinds. |
 | Direct calls | The gateway refuses those fields, tools and codes with `outside_product_scope` before any handler or provider request, so a cached full catalogue cannot reach them. |
 | Uploads | An Apple Health export keeps its workouts; its body, recovery, HRV and sleep records are counted under one heading in `not_kept` before any value is parsed. |
-| What the model reads | The context is shown without the recovery and symptom fields the contract still requires internally; the instructions and coaching guidance drop the body-composition section and the wearable-recovery sentences. |
+| What the model reads | The context is shown without the recovery and symptom fields the contract still requires internally; every answer is stripped of health records and of validation notes and unknowns that ask for a refused reading (`product_scope.visible_answer`); the instructions and coaching guidance drop the body-composition section and the wearable-recovery sentences. |
+
+Two limits, both known. Free text -- a subjective note, an activity note, a change summary
+-- is kept as the athlete or model wrote it, so a sentence that mentions sleep is stored as
+that sentence; no field is parsed for it. And a deployment flipped from on to off still
+holds the records it kept while on: they are not read, handed to the model or retractable
+one by one while off, and leave with account-data deletion.
 
 The boundary is data, not judgment: the server neither reads these categories from
 Intervals nor stores them, and what it serves says only that. How to answer an athlete who

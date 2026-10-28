@@ -2477,7 +2477,9 @@ class CoachGateway:
             tool = self._FENCED_BY_MAINTENANCE.get(kind)
             if tool is not None:
                 _refuse_during_maintenance(self._state_dir(owner_id), tool)
-            answer = handler(owner_id, token, body)
+            answer = product_scope.visible_answer(
+                self.config.health_data, handler(owner_id, token, body)
+            )
             if kind == "session":
                 disclosure = self._client_disclosure(owner_id, token, client_origin)
                 if disclosure is not None:

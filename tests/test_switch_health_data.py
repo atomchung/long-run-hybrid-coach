@@ -8,6 +8,7 @@ reported before `/readyz` says so.
 
 from __future__ import annotations
 
+import subprocess
 import unittest
 
 from garmin_coach_loop.gateway import RELEASE_ID_ENV_VAR, RELEASE_TOOL_CATALOGUE_SHA_ENV_VAR
@@ -15,6 +16,7 @@ from garmin_coach_loop.product_scope import HEALTH_DATA_ENV_VAR
 from scripts import switch_health_data as switch_script
 
 DOMAIN = "https://coach-plugin.example"
+RELEASE_DOMAIN = "https://coach.example-custom.com"
 COMMIT = "a" * 40
 BUNDLE = {
     "release_id": "gclr-new",
@@ -31,12 +33,12 @@ def _reading(health_data: str, release_id: str, status: str = "ok") -> dict:
     return {
         "status": status,
         "health_data": health_data,
-        "release_identity": {"release_id": release_id, "git_commit": COMMIT},
+        "release_identity": {"release_id": release_id, "git_commit": COMMIT, "gateway_domain": RELEASE_DOMAIN},
     }
 
 
 class SwitchTests(unittest.TestCase):
-    def _switch(self, readings: list[dict], **extra):
+    def _switch(self, readings: list[dict], fail_on: str | None = None, **extra):
         self.commands: list[list[str]] = []
         self.built: list[tuple] = []
         queue = list(readings)
@@ -48,6 +50,11 @@ class SwitchTests(unittest.TestCase):
             self.built.append((commit, domain, health_data))
             return BUNDLE
 
+        def execute(command: list[str]) -> None:
+            self.commands.append(command)
+            if command[1] == fail_on:
+                raise subprocess.CalledProcessError(1, command)
+
         return switch_script.switch(
             True,
             service="coach-plugin",
@@ -55,7 +62,7 @@ class SwitchTests(unittest.TestCase):
             scope=[],
             read=read,
             build=build,
-            execute=self.commands.append,
+            execute=execute,
             commit_present=lambda commit: True,
             sleep=lambda seconds: None,
             **extra,
@@ -66,7 +73,9 @@ class SwitchTests(unittest.TestCase):
             [_reading("off", "gclr-old"), _reading("off", "gclr-old", "blocked"), _reading("on", "gclr-new")]
         )
         self.assertEqual("on", confirmed["health_data"])
-        self.assertEqual([(COMMIT, DOMAIN, True)], self.built)
+        # Built for the domain the running release names, not the URL /readyz was read on:
+        # the issuer, audience and callback come from it.
+        self.assertEqual([(COMMIT, RELEASE_DOMAIN, True)], self.built)
         stage, redeploy = self.commands
         self.assertEqual(["railway", "variables", "--service", "coach-plugin", "--skip-deploys"], stage[:5])
         staged = dict(arg.split("=", 1) for arg in stage[5:] if arg != "--set")
@@ -86,6 +95,17 @@ class SwitchTests(unittest.TestCase):
             self._switch([_reading("off", "gclr-old")], wait_seconds=0)
         self.assertIn("previous deployment", str(caught.exception))
         self.assertEqual(2, len(self.commands))
+
+    def test_a_failed_redeploy_says_the_variables_are_already_staged(self):
+        with self.assertRaises(switch_script.SwitchError) as caught:
+            self._switch([_reading("off", "gclr-old")], fail_on="redeploy")
+        self.assertIn("staged as health_data=on", str(caught.exception))
+
+    def test_a_failed_stage_redeploys_nothing(self):
+        with self.assertRaises(switch_script.SwitchError) as caught:
+            self._switch([_reading("off", "gclr-old")], fail_on="variables")
+        self.assertIn("nothing was redeployed", str(caught.exception))
+        self.assertEqual(1, len(self.commands))
 
     def test_no_release_identity_stages_nothing(self):
         with self.assertRaises(switch_script.SwitchError):
