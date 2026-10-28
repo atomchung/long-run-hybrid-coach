@@ -757,9 +757,8 @@ class TrainingSubmissionPacketTests(SubmissionPacketTests):
     PACKET = TRAINING_SUBMISSION_PACKET
     TOOLS = product_scope.surface(False).tools
 
-    # Named by the review that rejected 1.4.10 as health information. The Plugin entry
-    # neither reads nor keeps them, so neither its listing nor a reviewer case asks
-    # for them.
+    # The listing names excluded categories only to disclose the collection boundary.
+    # Its remaining copy and positive reviewer cases must not offer those categories.
     HEALTH_TERMS = (
         "sleep",
         "hrv",
@@ -771,8 +770,21 @@ class TrainingSubmissionPacketTests(SubmissionPacketTests):
         "wellness",
     )
 
-    def test_nothing_it_submits_names_a_category_the_entry_does_not_collect(self):
-        texts = {"description": self.packet["app_info"]["description"]}
+    def test_excluded_categories_are_disclosed_without_offering_them(self):
+        description = self.packet["app_info"]["description"]
+        boundary, remaining = description.split("\n\n", 1)
+        self.assertIn(
+            "does not fetch Intervals.icu wellness summaries or provide dedicated inputs",
+            boundary,
+        )
+        self.assertIn("The service receives only the arguments sent in MCP tool calls.", remaining)
+        self.assertIn(
+            "Messages and files a user shares with ChatGPT or another client "
+            "do not automatically reach this service.",
+            remaining,
+        )
+        self.assertNotIn("Apple Health", description)
+        texts = {"description": remaining}
         for case in self.packet["test_cases"]:
             texts[case["description"]] = case["user_prompt"] + " " + case["expected_output"]
         for name, text in texts.items():
