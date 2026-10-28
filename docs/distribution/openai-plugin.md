@@ -22,12 +22,16 @@ below applies to the Plugin entry, with these differences:
 
 | Item | Full product | Plugin entry |
 | --- | --- | --- |
-| MCP server URL | `https://mcp.paceandstaystrong.com/mcp` | `https://openai-mcp.paceandstaystrong.com/mcp`, a custom domain on `coach-plugin` (until it exists, `https://coach-plugin-production.up.railway.app/mcp`) |
+| MCP server URL | `https://mcp.paceandstaystrong.com/mcp` | `https://plugin-mcp.paceandstaystrong.com/mcp`, a custom domain on `coach-plugin` (until it exists, `https://coach-plugin-production.up.railway.app/mcp`) |
 | Submission packet | [`chatgpt-app-submission.json`](../../chatgpt-app-submission.json) | [`chatgpt-app-submission.training.json`](../../chatgpt-app-submission.training.json) |
 | Long description | the one in [`README.md`](README.md) | `app_info.description` in the Plugin packet: no health category is named, because none is read or kept |
 | Catalogue Scan Tools should find | the table in [`README.md`](README.md) | that table without `recordBodyMeasurement`, and with `startCoachSession` not destructive |
 | `/readyz` before scanning | `deployment_product: hybrid` | `deployment_product: training`, `health_data: off`, `status: ok` |
 | Domain verification | the production service's variables | `GARMIN_COACH_LOOP_OPENAI_APPS_CHALLENGE` on `coach-plugin`, read back from the Plugin URL |
+
+The hostname says `plugin` on purpose. A ChatGPT user can still add the full product's
+URL as their own MCP connection, so the two addresses must not read as the same thing;
+issue #519's earlier candidate `openai-mcp` named the platform rather than the entry.
 
 Display name, subtitle, category, logo, website, support, privacy and terms URLs, and the
 starter prompts are the same. `tests/test_distribution_surface.py` holds the Plugin
