@@ -8,10 +8,10 @@ says they feel are training evidence and stay either way.
 
 The two are separate settings so the capability can move without moving anybody's plan:
 ``GARMIN_COACH_LOOP_HEALTH_DATA`` is ``on`` or ``off`` per deployment, and unset it follows
-the product (on for hybrid, off for training). Authorization does not follow it. Every
-deployment asks Intervals for the same scopes, so turning health data on later needs no
-athlete to consent again; what the switch decides is what this server reads, keeps and
-hands the model.
+the product (on for hybrid, off for training). ``GatewayConfig.intervals_oauth_scopes``
+owns the requested permissions: a training deployment with health data off omits wellness
+access, while the full product keeps its existing scopes. The switch itself neither
+expands an existing grant nor asks the athlete to authorize a new capability.
 
 With health data off the exclusion is made at every layer that could otherwise reach the
 data, because a field missing from a schema is only a suggestion to a client:
