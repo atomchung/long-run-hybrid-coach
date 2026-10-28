@@ -161,6 +161,7 @@ class ChangeGateTests(unittest.TestCase):
         # even though the served tool catalogue is untouched.
         for path in (
             "chatgpt-app-submission.json",
+            "chatgpt-app-submission.training.json",
             "server.json",
             "plugins/long-run-hybrid-coach/.codex-plugin/plugin.json",
         ):

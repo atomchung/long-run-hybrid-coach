@@ -21,6 +21,7 @@ import json
 import unittest
 from pathlib import Path
 
+from garmin_coach_loop import product_scope
 from garmin_coach_loop.gateway import PRODUCT_VERSION
 from garmin_coach_loop.mcp_transport import (
     RETIRED_TOOLS,
@@ -35,7 +36,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / ".agents" / "skills" / "garmin-coach-loop"
 
 # The release candidate this repository currently carries.
-RELEASE_CANDIDATE_VERSION = "1.4.10"
+RELEASE_CANDIDATE_VERSION = "1.4.11"
 
 # What the catalogue is, at that version.
 RELEASE_CANDIDATE_TOOL_COUNT = 23
@@ -54,6 +55,18 @@ RELEASE_CANDIDATE_INSTRUCTIONS_SHA256 = (
 )
 RELEASE_CANDIDATE_SKILL_SHA256 = (
     "8932154ff3321e62be79cc7468389059139c5328281b0807daa6b6dc18d406fb"
+)
+
+# The Plugin entry: the surface a deployment with health data off serves, which is
+# the one the OpenAI directory reviews (issue #519). It is derived from the full surface
+# above, so it moves whenever that does -- and also when only the derivation in
+# `product_scope.py` moves, which the full digests cannot see.
+RELEASE_CANDIDATE_WITHOUT_HEALTH_TOOL_COUNT = 22
+RELEASE_CANDIDATE_WITHOUT_HEALTH_TOOL_CATALOGUE_SHA256 = (
+    "da469a84bfa7d3bddaacf7cb52f5911cadc03406cb192019b1a2655a793b0c93"
+)
+RELEASE_CANDIDATE_WITHOUT_HEALTH_INSTRUCTIONS_SHA256 = (
+    "d083c59b82214ac0c97d9ac6431118b8151d29fdb6d0a61e9c0dff5dc5dd3275"
 )
 
 # Names a client may still hold in a cached catalogue. They are answered as a refusal
@@ -94,6 +107,25 @@ class ReleaseCandidateSurfaceTests(unittest.TestCase):
             "a new reviewed surface: update RELEASE_CANDIDATE_INSTRUCTIONS_SHA256 in the "
             "same commit, bump the version, and re-run client acceptance before "
             "resubmitting.",
+        )
+
+    def test_the_surface_without_health_data_is_the_one_this_release_states(self):
+        """What Scan Tools reads off the Plugin deployment, written down like the rest."""
+        served = product_scope.surface(False)
+        self.assertEqual(RELEASE_CANDIDATE_WITHOUT_HEALTH_TOOL_COUNT, len(served.tools))
+        self.assertEqual(
+            RELEASE_CANDIDATE_WITHOUT_HEALTH_TOOL_CATALOGUE_SHA256,
+            served.tool_catalogue_sha256(),
+            "the catalogue without health data moved. If that is intended, the Plugin "
+            "entry is a new reviewed surface: update this constant in the same commit, "
+            "bump the version, and run Scan Tools against the Plugin deployment.",
+        )
+        self.assertEqual(
+            RELEASE_CANDIDATE_WITHOUT_HEALTH_INSTRUCTIONS_SHA256,
+            sha256_text(served.instructions()),
+            "the instructions without health data moved. If that is intended, update "
+            "this constant in the same commit and re-run client acceptance against the "
+            "Plugin deployment before resubmitting.",
         )
 
     def test_the_canonical_skill_digest_is_the_one_this_release_states(self):

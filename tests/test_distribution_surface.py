@@ -40,6 +40,7 @@ from garmin_coach_loop.gateway import (
     _METADATA_PATH_SUFFIX,
 )
 from garmin_coach_loop import mcp_transport
+from garmin_coach_loop import product_scope
 from garmin_coach_loop.mcp_transport import TOOLS
 
 
@@ -79,6 +80,7 @@ DISTRIBUTION = ROOT / "docs" / "distribution"
 DOSSIER = DISTRIBUTION / "README.md"
 DOSSIER_CONFORMANCE = DISTRIBUTION / "openai-review-conformance.md"
 SUBMISSION_PACKET = ROOT / "chatgpt-app-submission.json"
+TRAINING_SUBMISSION_PACKET = ROOT / "chatgpt-app-submission.training.json"
 
 _MARKDOWN_LINK = re.compile(r"\]\(([^)]+)\)")
 
@@ -690,21 +692,24 @@ class SubmissionPacketTests(unittest.TestCase):
     product does not have.
     """
 
+    PACKET = SUBMISSION_PACKET
+    TOOLS = TOOLS
+
     @classmethod
     def setUpClass(cls):
-        assert SUBMISSION_PACKET.exists(), f"missing: {SUBMISSION_PACKET}"
-        cls.packet = json.loads(SUBMISSION_PACKET.read_text(encoding="utf-8"))
+        assert cls.PACKET.exists(), f"missing: {cls.PACKET}"
+        cls.packet = json.loads(cls.PACKET.read_text(encoding="utf-8"))
 
     def test_the_packet_declares_every_running_tool_and_no_others(self):
         self.assertEqual(
-            [tool.name for tool in TOOLS],
+            [tool.name for tool in self.TOOLS],
             list(self.packet["tools"]),
             "the submission packet and the running catalogue name different tools; "
             "a reviewer would be reading a product this deployment does not serve",
         )
 
     def test_every_declared_hint_is_the_running_one(self):
-        for tool in TOOLS:
+        for tool in self.TOOLS:
             with self.subTest(tool=tool.name):
                 declared = self.packet["tools"][tool.name]["annotations"]
                 self.assertEqual(
@@ -718,7 +723,7 @@ class SubmissionPacketTests(unittest.TestCase):
 
     def test_every_tool_says_why_for_each_of_the_three_hints(self):
         """A hint without a reason is what the review asks for and cannot be given."""
-        for tool in TOOLS:
+        for tool in self.TOOLS:
             with self.subTest(tool=tool.name):
                 reasons = self.packet["tools"][tool.name]["justifications"]
                 self.assertEqual(
@@ -731,6 +736,59 @@ class SubmissionPacketTests(unittest.TestCase):
                 )
                 for name, text in reasons.items():
                     self.assertTrue(text.strip(), name)
+
+    def test_every_case_triggers_only_tools_the_catalogue_has(self):
+        names = {tool.name for tool in self.TOOLS}
+        for case in self.packet["test_cases"] + self.packet["negative_test_cases"]:
+            with self.subTest(case=case["description"]):
+                for name in (case["tools_triggered"] or "").split(","):
+                    if name.strip():
+                        self.assertIn(name.strip(), names)
+
+
+class TrainingSubmissionPacketTests(SubmissionPacketTests):
+    """The Plugin entry's packet, held to the catalogue a deployment with health data off serves.
+
+    The OpenAI directory reviews the Plugin entry (issue #519), not the full product, so
+    its packet restates the catalogue `product_scope.surface(False)` serves: one tool
+    fewer, and `startCoachSession` no longer destructive once it stores no readings.
+    """
+
+    PACKET = TRAINING_SUBMISSION_PACKET
+    TOOLS = product_scope.surface(False).tools
+
+    # Named by the review that rejected 1.4.10 as health information. The Plugin entry
+    # neither reads nor keeps them, so neither its listing nor a reviewer case asks
+    # for them.
+    HEALTH_TERMS = (
+        "sleep",
+        "hrv",
+        "resting heart rate",
+        "body weight",
+        "body fat",
+        "weight of",
+        "symptom",
+        "wellness",
+    )
+
+    def test_nothing_it_submits_names_a_category_the_entry_does_not_collect(self):
+        texts = {"description": self.packet["app_info"]["description"]}
+        for case in self.packet["test_cases"]:
+            texts[case["description"]] = case["user_prompt"] + " " + case["expected_output"]
+        for name, text in texts.items():
+            for term in self.HEALTH_TERMS:
+                with self.subTest(text=name, term=term):
+                    self.assertNotIn(term, text.lower())
+
+    def test_it_keeps_the_full_packets_shape_and_case_counts(self):
+        full = json.loads(SUBMISSION_PACKET.read_text(encoding="utf-8"))
+        self.assertEqual(list(full), list(self.packet))
+        self.assertEqual(len(full["test_cases"]), len(self.packet["test_cases"]))
+        self.assertEqual(
+            len(full["negative_test_cases"]), len(self.packet["negative_test_cases"])
+        )
+        for field in ("display_name", "subtitle", "category"):
+            self.assertEqual(full["app_info"][field], self.packet["app_info"][field])
 
 
 class SubmissionDossierTests(unittest.TestCase):

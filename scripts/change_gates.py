@@ -202,6 +202,7 @@ CLASSIFIED_DEMO_PATHS = DEMO_ACCEPTANCE_PATHS | DEMO_NO_GATE_PATHS
 SUBMISSION_ARTIFACT_PATHS = frozenset(
     {
         "chatgpt-app-submission.json",
+        "chatgpt-app-submission.training.json",
         "server.json",
         "plugins/long-run-hybrid-coach/.codex-plugin/plugin.json",
     }
