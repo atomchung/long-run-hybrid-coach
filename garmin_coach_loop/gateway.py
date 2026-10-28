@@ -449,6 +449,13 @@ class GatewayConfig:
     def identity_db_path(self) -> Path:
         return identity_db_path(self.product_state_root)
 
+    @property
+    def intervals_oauth_scopes(self) -> tuple[str, ...]:
+        """Permissions this deployment requests; the full product keeps its scopes."""
+        if self.product == "training" and not self.health_data:
+            return tuple(scope for scope in INTERVALS_OAUTH_SCOPES if scope != "WELLNESS:READ")
+        return INTERVALS_OAUTH_SCOPES
+
 
 def identity_db_path(state_root: Path | str) -> Path:
     """Where one state root keeps its owner registry.
@@ -1491,26 +1498,25 @@ def _client_redirect(redirect_uri: str, params: dict[str, str], client_state: st
     )
 
 
-def _intervals_scope(requested: Any) -> str:
+def _intervals_scope(requested: Any, *, allowed_scopes: tuple[str, ...] | None = None) -> str:
     """What to ask Intervals for, in the form Intervals reads it.
 
     The client's own scope request is honoured, but not verbatim: RFC 6749 delimits
     scopes with spaces and Intervals delimits them with commas, so a client that built
     its request from ``scopes_supported`` correctly would otherwise be authorized for
     nothing. ``normalize_scope_names`` accepts either and drops anything that is not a
-    scope name, and an empty result falls back to the four this product declares.
+    scope name, and an empty result falls back to this deployment's allowed scopes.
 
-    **Narrowing only.** The request is intersected with those four rather than forwarded:
+    **Narrowing only.** The request is intersected with those scopes rather than forwarded:
     a client may ask for less than this product needs -- and then finds out at the first
     call it cannot make -- but it may not ask the athlete to grant more than the coach
     was built to use. Whether the provider would have refused a wider scope anyway is the
     provider's configuration, not this gateway's guarantee, and the athlete's consent
     screen is not the place to discover the difference.
     """
-    names = tuple(
-        name for name in normalize_scope_names(requested) if name in INTERVALS_OAUTH_SCOPES
-    )
-    return ",".join(names or INTERVALS_OAUTH_SCOPES)
+    allowed = INTERVALS_OAUTH_SCOPES if allowed_scopes is None else allowed_scopes
+    names = tuple(name for name in normalize_scope_names(requested) if name in allowed)
+    return ",".join(names or allowed)
 
 
 # RFC 7636 4.1: a code verifier is 43 to 128 characters drawn from the unreserved set.
@@ -3481,7 +3487,9 @@ class CoachGateway:
                 client_id=client_id,
             )
         # Resolve provider scope before sealing the authorization request.
-        provider_scope = _intervals_scope(query.get("scope"))
+        provider_scope = _intervals_scope(
+            query.get("scope"), allowed_scopes=self.config.intervals_oauth_scopes
+        )
         request = {
             "client_id": client_id,
             "client_redirect_uri": redirect_uri,
@@ -7682,7 +7690,9 @@ INTERVALS_OAUTH_SCOPES: tuple[str, ...] = (
 )
 
 
-def protected_resource_metadata(base_url: str) -> dict[str, Any]:
+def protected_resource_metadata(
+    base_url: str, *, scopes: tuple[str, ...] = INTERVALS_OAUTH_SCOPES
+) -> dict[str, Any]:
     """RFC 9728: which authorization server guards this MCP endpoint.
 
     One document, naming this same gateway as its own authorization server -- which it
@@ -7690,8 +7700,8 @@ def protected_resource_metadata(base_url: str) -> dict[str, Any]:
     issues the token ``/mcp`` accepts. Intervals is where the athlete consents, not what
     the client authenticates to.
 
-    ``scopes_supported`` is the same four names the authorization server advertises, from
-    the same constant. RFC 9728 recommends it, and a client that reads only this document
+    ``scopes_supported`` names the same deployment permissions as the authorization
+    server. RFC 9728 recommends it, and a client that reads only this document
     -- which is the one the ``401`` challenge names -- would otherwise have to fetch the
     other one before it could tell the athlete what it is about to ask Intervals for.
     """
@@ -7699,11 +7709,13 @@ def protected_resource_metadata(base_url: str) -> dict[str, Any]:
         "resource": f"{base_url}{MCP_PATH}",
         "authorization_servers": [base_url],
         "bearer_methods_supported": ["header"],
-        "scopes_supported": list(INTERVALS_OAUTH_SCOPES),
+        "scopes_supported": list(scopes),
     }
 
 
-def authorization_server_metadata(base_url: str) -> dict[str, Any]:
+def authorization_server_metadata(
+    base_url: str, *, scopes: tuple[str, ...] = INTERVALS_OAUTH_SCOPES
+) -> dict[str, Any]:
     """RFC 8414 for this gateway's own authorization server.
 
     The endpoints named here are this gateway's: ``/oauth/authorize`` starts a flow it
@@ -7727,7 +7739,7 @@ def authorization_server_metadata(base_url: str) -> dict[str, Any]:
         "grant_types_supported": ["authorization_code"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
-        "scopes_supported": list(INTERVALS_OAUTH_SCOPES),
+        "scopes_supported": list(scopes),
     }
 
 
@@ -7825,9 +7837,9 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             elif kind in {"protected_resource_metadata", "authorization_server_metadata"}:
                 base_url = self._require_public_base_url()
                 payload = (
-                    protected_resource_metadata(base_url)
+                    protected_resource_metadata(base_url, scopes=gateway.config.intervals_oauth_scopes)
                     if kind == "protected_resource_metadata"
-                    else authorization_server_metadata(base_url)
+                    else authorization_server_metadata(base_url, scopes=gateway.config.intervals_oauth_scopes)
                 )
                 status = HTTPStatus.OK
             elif kind == "openai_apps_challenge":

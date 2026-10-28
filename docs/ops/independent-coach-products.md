@@ -13,9 +13,16 @@ Whether a deployment reads health data is a setting of its own,
 records it holds. Unset, it follows the product: `on` for `hybrid`, `off` for `training`.
 Any other value refuses startup. `/readyz` reports it as `health_data`.
 
-Authorization does not follow the switch. Every deployment asks Intervals for the same
-four scopes, `WELLNESS:READ` included, so turning health data on later needs no athlete
-to consent again. The switch decides what the server reads, keeps and hands the model.
+The Plugin entry (`product: training`, health data off) requests only `ACTIVITY:READ`,
+`CALENDAR:WRITE` and `SETTINGS:WRITE`. Its OAuth discovery documents advertise the same
+three scopes, and its authorization redirect omits `WELLNESS:READ` even if a client asks
+for it. `GatewayConfig.intervals_oauth_scopes` owns this selection. The full product
+keeps its existing four scopes regardless of the switch.
+
+This does not revoke or narrow a provider grant already issued. Turning health data on
+does not expand an existing token: a connection without wellness access needs a new
+authorization before it can read that data. An athlete-facing notice and reauthorization
+flow for a future Plugin capability are not implemented by this permission reduction.
 
 With health data off a deployment never reads, accepts or keeps the categories a
 directory review named as health information: sleep, HRV, resting heart rate, body
@@ -151,3 +158,4 @@ client still holding the full catalogue is refused with `outside_product_scope`.
 it on serves the full catalogue to every client of that URL at once, so a directory
 listing reviewed without health data needs a new submission before its reviewed surface
 matches what the URL serves; until then, do not turn it on for a listed URL.
+The switch does not authorize new permissions for existing connections.

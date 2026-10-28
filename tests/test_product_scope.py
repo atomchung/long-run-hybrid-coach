@@ -4,8 +4,8 @@ Harmful cases: a wellness request, a recovery or symptom field, a body measureme
 health record out of an upload, or an excluded name in what the model is handed. False-
 positive controls: the ordinary training flow -- first plan, a session read with how the
 athlete feels, a subjective note, an activity upload -- still works, the full surface is
-byte-for-byte what it was, authorization asks for the same scopes either way, and turning
-the switch on later serves the same athlete's plan with health data.
+byte-for-byte what it was, the full product keeps its authorization scopes, and turning
+the switch on later preserves the same athlete's plan.
 """
 
 from __future__ import annotations
@@ -169,14 +169,34 @@ class TrainingSurfaceTests(unittest.TestCase):
         self.assertEqual([tool.name for tool in NO_HEALTH.tools], listed)
         self.assertNotIn("recordBodyMeasurement", listed)
 
-    def test_authorization_asks_for_the_same_scopes_whatever_the_switch_says(self):
-        # The switch decides what this server reads, never what the athlete consents to,
-        # so turning health data on later needs no second consent.
-        self.assertIn("WELLNESS:READ", INTERVALS_OAUTH_SCOPES)
+    def test_only_the_health_data_off_plugin_omits_the_wellness_permission(self):
+        with tempfile.TemporaryDirectory() as root:
+            for product, health_data, expected in (
+                ("hybrid", True, INTERVALS_OAUTH_SCOPES),
+                ("hybrid", False, INTERVALS_OAUTH_SCOPES),
+                ("training", True, INTERVALS_OAUTH_SCOPES),
+                ("training", False, ("ACTIVITY:READ", "CALENDAR:WRITE", "SETTINGS:WRITE")),
+            ):
+                config = GatewayConfig(
+                    state_root=Path(root), token_hmac_key=HMAC_KEY,
+                    intervals_client_id=CLIENT_ID_VALUE, intervals_client_secret=CLIENT_SECRET_VALUE,
+                    product=product, health_data=health_data,
+                )
+                with self.subTest(product=product, health_data=health_data):
+                    self.assertEqual(expected, config.intervals_oauth_scopes)
         self.assertEqual(",".join(INTERVALS_OAUTH_SCOPES), _intervals_scope(None))
+
+    def test_plugin_discovery_and_scope_fallback_cannot_request_wellness(self):
+        allowed = ("ACTIVITY:READ", "CALENDAR:WRITE", "SETTINGS:WRITE")
+        for requested in (None, "", "WELLNESS:READ", ",".join(INTERVALS_OAUTH_SCOPES)):
+            with self.subTest(requested=requested):
+                self.assertEqual(",".join(allowed), _intervals_scope(requested, allowed_scopes=allowed))
+        self.assertEqual(
+            "ACTIVITY:READ", _intervals_scope("ACTIVITY:READ WELLNESS:READ", allowed_scopes=allowed)
+        )
         base = "https://openai-mcp.example"
-        self.assertEqual(list(INTERVALS_OAUTH_SCOPES), protected_resource_metadata(base)["scopes_supported"])
-        self.assertEqual(list(INTERVALS_OAUTH_SCOPES), authorization_server_metadata(base)["scopes_supported"])
+        self.assertEqual(list(allowed), protected_resource_metadata(base, scopes=allowed)["scopes_supported"])
+        self.assertEqual(list(allowed), authorization_server_metadata(base, scopes=allowed)["scopes_supported"])
 
     def test_state_read_unknowns_stop_asking_for_red_flags(self):
         without = product_scope.state_read_unknowns(False, STATE_READ_UNKNOWNS)

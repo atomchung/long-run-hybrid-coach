@@ -24,9 +24,10 @@ below applies to the Plugin entry, with these differences:
 | --- | --- | --- |
 | MCP server URL | `https://mcp.paceandstaystrong.com/mcp` | `https://oai-plugin.paceandstaystrong.com/mcp`, a custom domain on `coach-plugin` (until it exists, `https://coach-plugin-production.up.railway.app/mcp`) |
 | Submission packet | [`chatgpt-app-submission.json`](../../chatgpt-app-submission.json) | [`chatgpt-app-submission.training.json`](../../chatgpt-app-submission.training.json) |
-| Long description | the one in [`README.md`](README.md) | `app_info.description` in the Plugin packet: no health category is named, because none is read or kept |
+| Long description | the one in [`README.md`](README.md) | `app_info.description` in the Plugin packet: states the excluded collection categories and separates client conversations from MCP inputs |
 | Catalogue Scan Tools should find | the table in [`README.md`](README.md) | that table without `recordBodyMeasurement`, and with `startCoachSession` not destructive |
 | `/readyz` before scanning | `deployment_product: hybrid` | `deployment_product: training`, `health_data: off`, `status: ok` |
+| Intervals permissions requested | activity, wellness, calendar and settings | activity, calendar and settings; no `WELLNESS:READ` |
 | Domain verification | the production service's variables | `GARMIN_COACH_LOOP_OPENAI_APPS_CHALLENGE` on `coach-plugin`, read back from the Plugin URL |
 
 The hostname says `oai-plugin` on purpose. A ChatGPT user can still add the full

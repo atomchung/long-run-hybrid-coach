@@ -2037,6 +2037,19 @@ class McpDiscoveryTests(McpTestCase):
         )
         self.assertFalse((self.state_root / "owners").exists())
 
+    def test_the_plugin_discovery_documents_omit_wellness(self):
+        config = replace(self.config, product="training", health_data=False)
+        self.server.gateway = CoachGateway(config, fetch=self.fake, now=lambda: self.now)
+        expected = ["ACTIVITY:READ", "CALENDAR:WRITE", "SETTINGS:WRITE"]
+        for path in (
+            "/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server",
+            "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server/mcp",
+        ):
+            with self.subTest(path=path):
+                status, payload = self.get(path)
+                self.assertEqual(200, status)
+                self.assertEqual(expected, payload["scopes_supported"])
+
     def test_the_authorization_server_metadata_points_at_this_gateways_own_endpoints(self):
         status, payload = self.get("/.well-known/oauth-authorization-server")
 
@@ -3561,6 +3574,23 @@ class McpAuthorizationServerTests(McpTestCase):
         self.assertEqual(
             ",".join(INTERVALS_OAUTH_SCOPES), self.query_of(headers["Location"])["scope"]
         )
+
+    def test_the_plugin_authorize_redirect_never_requests_wellness(self):
+        self.config = replace(self.config, product="training", health_data=False)
+        self.gateway = CoachGateway(self.config, fetch=self.fake, now=lambda: self.now)
+        self.server.gateway = self.gateway
+        self.client_id = self.registered_client_id(CLIENT_REDIRECT_URI)
+        for requested, expected in (
+            (None, "ACTIVITY:READ,CALENDAR:WRITE,SETTINGS:WRITE"),
+            ("", "ACTIVITY:READ,CALENDAR:WRITE,SETTINGS:WRITE"),
+            (",".join(INTERVALS_OAUTH_SCOPES), "ACTIVITY:READ,CALENDAR:WRITE,SETTINGS:WRITE"),
+            ("WELLNESS:READ", "ACTIVITY:READ,CALENDAR:WRITE,SETTINGS:WRITE"),
+            ("ACTIVITY:READ WELLNESS:READ", "ACTIVITY:READ"),
+        ):
+            with self.subTest(requested=requested):
+                status, headers, _ = self.authorize(scope=requested)
+                self.assertEqual(302, status)
+                self.assertEqual(expected, self.query_of(headers["Location"])["scope"])
 
     # -- two clients, one athlete -----------------------------------------------------
 
