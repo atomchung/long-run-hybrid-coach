@@ -114,10 +114,13 @@ class TrainingSurfaceTests(unittest.TestCase):
         served = "\n".join(
             (_served_text(NO_HEALTH), NO_HEALTH.instructions(), NO_HEALTH.training_judgment())
         )
-        # The instructions name the categories once, to tell the model not to ask; the
+        # The instructions name the categories once, to say they are not stored; the
         # catalogue and the guidance name none of them.
         instructions = NO_HEALTH.instructions()
-        boundary = "This coach takes no sleep, HRV, resting heart rate, body measurement or\n  symptom; never ask for or record one."
+        boundary = (
+            "Sleep, HRV, resting heart rate, body measurements and symptoms are not stored\n"
+            "  here."
+        )
         self.assertEqual(1, instructions.count(boundary))
         served = served.replace(boundary, "")
         for name in EXCLUDED_NAMES:
@@ -216,9 +219,21 @@ class RefusalTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 self.assertIsNone(product_scope.refusal(False, kind, body))
 
-    def test_a_symptom_refusal_states_the_human_decision(self):
+    def test_a_symptom_refusal_says_only_what_is_not_collected(self):
         refused = product_scope.refusal(False, "session", {"red_flags": {"chest_pain": True}})
-        self.assertIn("human decision", refused)
+        self.assertEqual(f"red_flags is not accepted. {product_scope._NOT_COLLECTED}", refused)
+
+    def test_the_boundary_is_data_and_the_response_is_the_models_own(self):
+        # Only what is read and stored is withheld. How to answer an athlete who feels
+        # unwell -- whether to ask, rest the day or change the plan -- is the client
+        # model's judgment, so nothing here instructs it or forbids a change.
+        apply = NO_HEALTH.tools_by_name["applyCoachDecision"].description
+        self.assertNotIn("symptom", apply)
+        subjective = NO_HEALTH.tools_by_name["recordSubjectiveState"].description
+        self.assertIn("Symptoms are not stored here.", subjective)
+        for guidance in ("human decision", "lower-risk", "adjust the plan"):
+            self.assertNotIn(guidance, subjective)
+        self.assertNotIn("never ask for or record", NO_HEALTH.instructions())
 
 
 class TrainingImportTests(unittest.TestCase):

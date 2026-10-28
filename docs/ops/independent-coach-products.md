@@ -32,11 +32,12 @@ otherwise reach the data:
 | Uploads | An Apple Health export keeps its workouts; its body, recovery, HRV and sleep records are counted under one heading in `not_kept` before any value is parsed. |
 | What the model reads | The context is shown without the recovery and symptom fields the contract still requires internally; the instructions and coaching guidance drop the body-composition section and the wearable-recovery sentences. |
 
-Without a symptom field there is no deterministic same-day symptom limit while the switch
-is off.
-The instructions and tool descriptions still say that pain, illness, chest pain, dizziness
-or unusual symptoms need a human decision before training, and that nothing about them is
-recorded.
+The boundary is data, not judgment: the server neither reads these categories from
+Intervals nor stores them, and what it serves says only that. How to answer an athlete who
+mentions a poor night or feeling unwell -- whether to ask, rest the day or change the plan
+-- is the client model's own call, as in any conversation; the shared instruction not to
+diagnose stays. Without a symptom field there is no deterministic same-day symptom limit
+while the switch is off.
 
 The full surface's served bytes are unchanged; `scripts/mcp_contract_equivalence.py`
 holds them. The surface without health data is derived from them by named edits that must
@@ -124,14 +125,20 @@ submission they need a real client acceptance, Scan Tools and their own plugin v
 ## Flipping the switch
 
 No code change and no athlete action: every connection already holds the full scopes, and
-the plan, records and connections stay where the product put them.
+the plan, records and connections stay where the product put them. One command does it,
+from a checkout that has the running commit and a directory linked to the Railway project:
 
-1. Set `GARMIN_COACH_LOOP_HEALTH_DATA` to the new value with `--skip-deploys`.
-2. Rebuild the release identity with the matching `--health-data` and stage its
-   `GARMIN_COACH_LOOP_RELEASE_*` variables. The catalogue digest moves with the switch, so
-   a flip without a new identity reports `blocked`, `/readyz` answers 503, and Railway's
-   health check keeps the previous deployment serving.
-3. Redeploy and read `/readyz` back: `health_data` is the new value and `status` is `ok`.
+```bash
+python3 scripts/switch_health_data.py off   # or on; --service defaults to coach-plugin
+```
+
+It reads the running commit off `/readyz`, builds that commit's release identity for the
+new setting, stages `GARMIN_COACH_LOOP_HEALTH_DATA` and the `GARMIN_COACH_LOOP_RELEASE_*`
+variables together without a deploy, redeploys the same source, and reads `/readyz` back
+until `health_data` is the new value and `status` is `ok`. Changing only the variable in
+the dashboard is not a flip: the catalogue digest moves with the switch, so the new
+deployment reports `blocked`, `/readyz` answers 503, and Railway's health check keeps the
+previous deployment serving.
 
 Turning it off takes effect for every client of that URL once the deployment is live: a
 client still holding the full catalogue is refused with `outside_product_scope`. Turning

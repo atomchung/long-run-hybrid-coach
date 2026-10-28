@@ -84,10 +84,6 @@ _NOT_COLLECTED = (
     "This coach does not collect sleep, HRV, resting heart rate, body measurements or "
     "symptoms."
 )
-_SYMPTOM_BOUNDARY = (
-    "Pain, illness, chest pain, dizziness or unusual symptoms need a human decision "
-    "before training; they are not recorded here."
-)
 
 def refusal(health_data: bool, kind: str, body: dict[str, Any]) -> str | None:
     """Why this deployment will not accept one call, or ``None`` when it will.
@@ -103,9 +99,7 @@ def refusal(health_data: bool, kind: str, body: dict[str, Any]) -> str | None:
         return f"{_NOT_COLLECTED} Nothing was stored."
     present = [name for name in _EXCLUDED_FIELDS.get(kind, ()) if body.get(name) is not None]
     if present:
-        named = ", ".join(present)
-        boundary = f" {_SYMPTOM_BOUNDARY}" if {"red_flags", "all_clear"} & set(present) else ""
-        return f"{named} is not accepted. {_NOT_COLLECTED}{boundary}"
+        return f"{', '.join(present)} is not accepted. {_NOT_COLLECTED}"
     if kind == "decision_prepare":
         change = body.get("change_request")
         codes = change.get("reason_codes") if isinstance(change, dict) else None
@@ -234,7 +228,7 @@ def _subjective_state(tool: mcp_transport.Tool) -> mcp_transport.Tool:
         "Symptoms do not come here: pain, illness, chest pain, dizziness or unusual "
         "symptoms are startCoachSession's red_flags, which limit the day rather than "
         "wait to be read.",
-        f"Symptoms do not come here. {_SYMPTOM_BOUNDARY}",
+        "Symptoms are not stored here.",
     )
     return dataclasses.replace(tool, description=text)
 
@@ -273,11 +267,10 @@ def _history_import(tool: mcp_transport.Tool) -> mcp_transport.Tool:
 
 
 def _apply_decision(tool: mcp_transport.Tool) -> mcp_transport.Tool:
+    # The full product routes a symptom through red_flags first; without that field a
+    # change made because the athlete feels unwell is applied like any other.
     text = _once(
-        tool.description,
-        "Report new symptoms through startCoachSession before applying.",
-        "Do not apply after the athlete reports a new symptom; it needs a human decision "
-        "first.",
+        tool.description, " Report new symptoms through startCoachSession before applying.", ""
     )
     return dataclasses.replace(tool, description=text)
 
@@ -331,8 +324,8 @@ def instructions_without_health(text: str) -> str:
         "- How they feel: `recordSubjectiveState`, in their words; symptoms to\n"
         "  `startCoachSession.red_flags` before apply. Nothing fires on a stored note.",
         "- How they feel: `recordSubjectiveState`, in their words. Nothing fires on a stored\n"
-        "  note. This coach takes no sleep, HRV, resting heart rate, body measurement or\n"
-        "  symptom; never ask for or record one.",
+        "  note. Sleep, HRV, resting heart rate, body measurements and symptoms are not stored\n"
+        "  here.",
     )
 
 
