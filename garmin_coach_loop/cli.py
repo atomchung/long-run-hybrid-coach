@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from . import product_identity
 from .athlete_evidence import (
     AthleteEvidenceError,
     record_availability,
@@ -743,7 +744,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     adopt.add_argument(
         "--state-root", type=Path, default=None,
-        help=f"gateway state root; defaults to {STATE_ROOT_ENV_VAR}",
+        help=f"gateway base state root; defaults to {STATE_ROOT_ENV_VAR}; "
+             f"product selected by {product_identity.PRODUCT_ENV_VAR}",
     )
     adopt.add_argument(
         "--mode", default="link", choices=list(ADOPTION_MODES),
@@ -845,7 +847,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     import_store.add_argument(
         "--state-root", type=Path, default=None,
-        help=f"gateway state root; defaults to {STATE_ROOT_ENV_VAR}",
+        help=f"gateway base state root; defaults to {STATE_ROOT_ENV_VAR}; "
+             f"product selected by {product_identity.PRODUCT_ENV_VAR}",
     )
     import_store.add_argument(
         "--confirm", action="store_true",
@@ -867,7 +870,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     archive.add_argument(
         "--state-root", type=Path, default=None,
-        help=f"gateway state root; defaults to {STATE_ROOT_ENV_VAR}",
+        help=f"gateway base state root; defaults to {STATE_ROOT_ENV_VAR}; "
+             f"product selected by {product_identity.PRODUCT_ENV_VAR}",
     )
     archive.add_argument(
         "--reason", default="superseded",
@@ -1010,7 +1014,8 @@ def _add_privacy_request_account(parser: argparse.ArgumentParser) -> None:
     """
     parser.add_argument(
         "--state-root", type=Path, default=None,
-        help=f"gateway state root; defaults to {STATE_ROOT_ENV_VAR}",
+        help=f"gateway base state root; defaults to {STATE_ROOT_ENV_VAR}; "
+             f"product selected by {product_identity.PRODUCT_ENV_VAR}",
     )
     parser.add_argument(
         "--athlete-id", required=True,
@@ -1035,13 +1040,22 @@ def _add_privacy_request_evidence(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _configured_product() -> str:
+    return product_identity.validate_product(
+        os.environ.get(product_identity.PRODUCT_ENV_VAR, product_identity.DEFAULT_PRODUCT).strip()
+    )
+
+
 def _privacy_request_root(args: argparse.Namespace) -> Path:
     configured_root = args.state_root or os.environ.get(STATE_ROOT_ENV_VAR)
     if not configured_root:
         raise ValueError(
             f"no gateway state root; pass --state-root or set {STATE_ROOT_ENV_VAR}"
         )
-    return resolve_state_root(configured_root)
+    product = _configured_product()
+    root = product_identity.product_state_root(resolve_state_root(configured_root), product)
+    product_identity.verify_product_state(root, product)
+    return root
 
 
 def _token_hmac_key() -> bytes:
@@ -1085,12 +1099,7 @@ def _owner_state_dir(args: argparse.Namespace) -> Path:
         raise ValueError("name exactly one of --state-dir or --athlete-id")
     if args.state_dir is not None:
         return args.state_dir
-    configured_root = args.state_root or os.environ.get(STATE_ROOT_ENV_VAR)
-    if not configured_root:
-        raise ValueError(
-            f"no gateway state root; pass --state-root or set {STATE_ROOT_ENV_VAR}"
-        )
-    state_root = resolve_state_root(configured_root)
+    state_root = _privacy_request_root(args)
     owner_id = owner_for_provider_athlete(
         identity_db_path(state_root), PROVIDER, args.athlete_id
     )
@@ -1305,12 +1314,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "adopt-owner-store":
             # The owner has to already exist: an athlete id typed at a terminal is not an
             # authorization, so this resolves an owner and never creates one.
-            configured_root = args.state_root or os.environ.get(STATE_ROOT_ENV_VAR)
-            if not configured_root:
-                raise ValueError(
-                    f"no gateway state root; pass --state-root or set {STATE_ROOT_ENV_VAR}"
-                )
-            state_root = resolve_state_root(configured_root)
+            state_root = _privacy_request_root(args)
             owner_id = owner_for_provider_athlete(
                 identity_db_path(state_root), PROVIDER, args.athlete_id
             )
@@ -1405,6 +1409,7 @@ def main(argv: list[str] | None = None) -> int:
                 athlete_id=args.athlete_id,
                 identity_evidence=args.identity_evidence,
                 hmac_key=_token_hmac_key(),
+                product=_configured_product(),
             )
             _write_private_bundle(out, served["archive"])
             report = {
@@ -1431,6 +1436,7 @@ def main(argv: list[str] | None = None) -> int:
                         identity_evidence=args.identity_evidence,
                         now=dt.datetime.now(dt.timezone.utc),
                         hmac_key=_token_hmac_key(),
+                        product=_configured_product(),
                         scope_digest=args.scope_digest or "",
                         confirmed=True,
                     ),
@@ -1449,6 +1455,7 @@ def main(argv: list[str] | None = None) -> int:
                         athlete_id=args.athlete_id,
                         identity_evidence=args.identity_evidence,
                         hmac_key=_token_hmac_key(),
+                        product=_configured_product(),
                     ),
                     "state_root": str(state_root),
                     "next": (

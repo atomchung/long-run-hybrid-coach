@@ -21,10 +21,11 @@ that moves.
 
 **What did not move.** Everything a client or a reviewer can see stays where it was:
 
-- The tool catalogue is still ``mcp_transport.TOOLS``, still hashed by
-  ``mcp_transport.tool_catalogue_sha256``, and the descriptors below are that module's
-  own ``Tool.descriptor()`` output handed to the SDK unmodified.
-- ``instructions`` is still ``orchestration.instructions()``.
+- The tool catalogue is still ``mcp_transport.TOOLS`` for the hybrid product -- the
+  training product serves ``product_scope``'s derivation of it -- still hashed by
+  ``mcp_transport.tool_catalogue_sha256``, and the descriptors below are each tool's own
+  ``Tool.descriptor()`` output handed to the SDK unmodified.
+- ``instructions`` is still ``orchestration.instructions()`` for the hybrid product.
 - Authentication, owner isolation, the ``Origin`` check and the OAuth routes all run in
   ``gateway.py`` *before* anything here is reached, exactly as they did.
 - A tool call still ends in ``CoachGateway.route`` through the same authenticated
@@ -56,7 +57,7 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.shared.exceptions import MCPError
 from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS, MODERN_PROTOCOL_VERSIONS
 
-from . import mcp_transport, orchestration
+from . import mcp_transport, product_scope
 from .source_intervals import (
     ProviderQuotaScope,
     adopt_provider_quota_scope,
@@ -144,7 +145,7 @@ def _request_state(ctx: Any) -> _RequestState:
 # --------------------------------------------------------------------------------------
 
 
-def _tool_descriptors() -> list[types.Tool]:
+def _tool_descriptors(surface: product_scope.Surface) -> list[types.Tool]:
     """``mcp_transport``'s own catalogue, validated into the SDK's wire model.
 
     ``model_validate`` rather than a hand-built model: the descriptor dictionary is the
@@ -153,31 +154,7 @@ def _tool_descriptors() -> list[types.Tool]:
     JSON Schema keyword -- so no field is dropped, renamed or defaulted on the way out.
     ``tests/test_mcp_sdk_transport.py`` holds the round trip to equality, tool by tool.
     """
-    return [types.Tool.model_validate(tool.descriptor()) for tool in mcp_transport.TOOLS]
-
-
-async def _on_list_tools(ctx: Any, params: Any) -> types.ListToolsResult:
-    del ctx, params
-    return types.ListToolsResult(tools=_tool_descriptors())
-
-
-async def _on_list_prompts(ctx: Any, params: Any) -> types.ListPromptsResult:
-    del ctx, params
-    return types.ListPromptsResult(
-        prompts=[
-            types.Prompt.model_validate(descriptor())
-            for descriptor, _ in orchestration.PROMPTS.values()
-        ]
-    )
-
-
-async def _on_get_prompt(ctx: Any, params: types.GetPromptRequestParams) -> types.GetPromptResult:
-    """Serve one of the prompts this server has, or say plainly that a name is not one."""
-    del ctx
-    served = orchestration.PROMPTS.get(params.name)
-    if served is None:
-        raise MCPError(types.INVALID_PARAMS, f"unknown prompt: {params.name!r}")
-    return types.GetPromptResult.model_validate(served[1]())
+    return [types.Tool.model_validate(tool.descriptor()) for tool in surface.tools]
 
 
 def _retired_tool_result(name: str) -> types.CallToolResult:
@@ -201,7 +178,9 @@ def _retired_tool_result(name: str) -> types.CallToolResult:
     )
 
 
-async def _on_call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
+async def _on_call_tool(
+    surface: product_scope.Surface, ctx: Any, params: types.CallToolRequestParams
+) -> types.CallToolResult:
     """One tool call, from either era, into ``CoachGateway.route``.
 
     The blocking work -- provider reads, store writes, file locks -- runs on a worker
@@ -214,7 +193,7 @@ async def _on_call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.
     name = params.name
     if name in mcp_transport.RETIRED_TOOLS:
         return _retired_tool_result(name)
-    tool = mcp_transport.TOOLS_BY_NAME.get(name)
+    tool = surface.tools_by_name.get(name)
     if tool is None:
         # A name this server does not serve is a protocol-level mistake by the client,
         # not a coaching refusal: there is no tool whose result it could be.
@@ -269,24 +248,55 @@ async def _on_call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.
     return await anyio.to_thread.run_sync(run)
 
 
-def build_server(server_version: str) -> Server[Any]:
+def build_server(
+    server_version: str, surface: product_scope.Surface = product_scope.FULL_SURFACE
+) -> Server[Any]:
     """The SDK server this deployment serves, built from this product's own surface.
 
-    ``name``, ``title`` and ``instructions`` are ``mcp_transport``'s and
-    ``orchestration``'s, unchanged: they are reviewed bytes, and the SDK is the thing
-    that carries them onto whichever wire the client is speaking. No resources, sampling
-    or logging are registered -- each would be a second way to reach the same state -- so
-    the capabilities the SDK advertises are derived from exactly the four handlers here.
+    ``name`` and ``title`` are ``mcp_transport``'s; the tools, prompts and
+    ``instructions`` are the deployment's product surface (``product_scope``), which for
+    the hybrid product is ``mcp_transport.TOOLS`` and ``orchestration``'s text unchanged:
+    they are reviewed bytes, and the SDK is the thing that carries them onto whichever
+    wire the client is speaking. No resources, sampling or logging are registered -- each
+    would be a second way to reach the same state -- so the capabilities the SDK
+    advertises are derived from exactly the four handlers here.
     """
+
+    async def on_list_tools(ctx: Any, params: Any) -> types.ListToolsResult:
+        del ctx, params
+        return types.ListToolsResult(tools=_tool_descriptors(surface))
+
+    async def on_list_prompts(ctx: Any, params: Any) -> types.ListPromptsResult:
+        del ctx, params
+        return types.ListPromptsResult(
+            prompts=[
+                types.Prompt.model_validate(descriptor())
+                for descriptor, _ in surface.prompts.values()
+            ]
+        )
+
+    async def on_get_prompt(
+        ctx: Any, params: types.GetPromptRequestParams
+    ) -> types.GetPromptResult:
+        """Serve one of the prompts this server has, or say plainly that a name is not one."""
+        del ctx
+        served = surface.prompts.get(params.name)
+        if served is None:
+            raise MCPError(types.INVALID_PARAMS, f"unknown prompt: {params.name!r}")
+        return types.GetPromptResult.model_validate(served[1]())
+
+    async def on_call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
+        return await _on_call_tool(surface, ctx, params)
+
     return Server(
         mcp_transport.SERVER_NAME,
         version=server_version,
         title=mcp_transport.SERVER_TITLE,
-        instructions=orchestration.instructions(),
-        on_list_tools=_on_list_tools,
-        on_call_tool=_on_call_tool,
-        on_list_prompts=_on_list_prompts,
-        on_get_prompt=_on_get_prompt,
+        instructions=surface.instructions(),
+        on_list_tools=on_list_tools,
+        on_call_tool=on_call_tool,
+        on_list_prompts=on_list_prompts,
+        on_get_prompt=on_get_prompt,
     )
 
 
@@ -312,8 +322,13 @@ class SdkTransport:
     and it answers one JSON body per POST rather than opening an SSE stream.
     """
 
-    def __init__(self, server_version: str) -> None:
+    def __init__(
+        self,
+        server_version: str,
+        surface: product_scope.Surface = product_scope.FULL_SURFACE,
+    ) -> None:
         self._server_version = server_version
+        self._surface = surface
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._manager: StreamableHTTPSessionManager | None = None
@@ -351,7 +366,7 @@ class SdkTransport:
             self._ready.set()
 
     async def _serve(self) -> None:
-        server = build_server(self._server_version)
+        server = build_server(self._server_version, self._surface)
         manager = StreamableHTTPSessionManager(server, json_response=True, stateless=True)
         self._stopping = asyncio.Event()
         async with manager.run():

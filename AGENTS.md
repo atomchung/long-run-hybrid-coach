@@ -87,9 +87,12 @@ container says what is answering.
    owner of valid delivery states; an earlier state never proves a later hop.
 9. Do not diagnose. Pain, illness, chest pain, dizziness, or unusual symptoms
    require a lower-risk human decision.
-10. Coaching capability is entry-agnostic: every entry, including a new one,
-    must be able to express any coaching act the validation layer accepts.
-    Entries differ only in data sources and in operator tooling.
+10. Within one product, every entry must express every coaching act that product
+    accepts. Independent products may declare different evidence and capabilities,
+    while sharing training contracts, validation, approval and delivery code.
+    Each product owns its identity registry, records and current PlanState; client
+    names never select the product. No cross-product data or plan synchronization
+    is implicit. A migration or new athlete interaction requires an owner decision.
 11. Invariant 5 binds the validator; this binds the prompt. A Skill or hosted
     instruction must not become a shadow coach either. It owns only the
     product-specific orchestration a competent model cannot infer: what the
@@ -361,9 +364,12 @@ default store writes real state from unreviewed code.
 - Dogfood from the main checkout, on `main`.
 - Develop in a worktree.
 - Anything needing its own state sets `GARMIN_COACH_LOOP_HOME`.
-- **One writer per athlete.** ChatGPT, claude.ai, a local MCP client and the CLI
-  all reach one hosted owner store; a writable local store beside it is a second
-  current plan for one Intervals calendar, which is what issue #40 is about. With
+- **One writer per athlete within each product.** Every client connected to that
+  product reaches its hosted owner store. Independent products keep independent
+  plans and records, as described in
+  [docs/ops/independent-coach-products.md](docs/ops/independent-coach-products.md);
+  their calendar delivery is not automatically coordinated. A writable local store
+  beside the same hosted product creates a second current plan. With
   a hosted coach configured, local writes refuse unless `--offline` says a
   different store is meant, and a migrated store is sealed
   (`hosted-handoff.json`) so no code path writes it at all. Moving an existing

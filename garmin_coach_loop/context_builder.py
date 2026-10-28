@@ -378,6 +378,7 @@ def build_context_with_domain(
     use_local_health_db: bool = True,
     provided_recovery_signals: dict[str, Any] | None = None,
     domain: SourceDomain | None = None,
+    read_recovery: bool = True,
 ) -> tuple[dict[str, Any], SourceDomain]:
     """``build_context``, plus the provider domain it built, so a caller can build again
     without reading the provider a second time.
@@ -399,6 +400,10 @@ def build_context_with_domain(
     Returns the domain unconditionally: this function raises rather than returning
     without one, so an optional value here would be a case no caller could ever hit and
     every caller would have to write code for.
+
+    ``read_recovery=False`` builds for a product that does not collect recovery readings:
+    the provider's wellness is never requested and no supplied readings are accepted, so
+    the group is absent for one stated reason rather than for a missing upload.
     """
     if source not in VALID_SOURCES:
         raise ContextBuildError(f"unknown --source: {source!r}; expected one of {VALID_SOURCES}")
@@ -413,6 +418,10 @@ def build_context_with_domain(
     if provided_recovery_signals is not None and use_local_health_db:
         raise ContextBuildError(
             "provided_recovery_signals and use_local_health_db=True contradict each other"
+        )
+    if not read_recovery and (provided_recovery_signals is not None or use_local_health_db):
+        raise ContextBuildError(
+            "read_recovery=False takes neither supplied readings nor a local health db"
         )
 
     resolved_now = now if now is not None else dt.datetime.now(dt.timezone.utc)
@@ -506,6 +515,7 @@ def build_context_with_domain(
                 # one predicate -- the divergence note's own -- answers both "is it worth
                 # reading" and "is it worth reporting".
                 baseline_max_hr=baseline.get("max_hr"),
+                read_wellness=read_recovery,
             )
         else:  # "personal-os" -- the only other member of VALID_SOURCES, checked above
             # Lazy on purpose -- see module docstring. A machine with no personal-os
@@ -555,7 +565,7 @@ def build_context_with_domain(
         recovery_signals = _merged_recovery_signals(
             window, domain, provided_recovery_signals
         )
-        if recovery_signals is None:
+        if recovery_signals is None and read_recovery:
             recovery_signals_unknown = (
                 "recovery_signals: no local health db configured; recent recovery state "
                 "unverified"

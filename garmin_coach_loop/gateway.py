@@ -68,6 +68,8 @@ from . import (
     mcp_sdk_transport,
     mcp_transport,
     orchestration,
+    product_identity,
+    product_scope,
     security_log,
     token_envelope,
 )
@@ -423,10 +425,29 @@ class GatewayConfig:
     deployment_identity: dict[str, str] | None = None
     deployed_git_commit: str | None = None
     startup_drain_seconds: float = 0.0
+    product: str = product_identity.DEFAULT_PRODUCT
+    # Whether this deployment reads and keeps health data. Separate from `product`, which
+    # decides whose records these are, so the switch can move without moving anybody's
+    # plan. Unset, it follows the product's default (`product_scope.health_data_default`).
+    health_data: bool | None = None
+
+    def __post_init__(self) -> None:
+        try:
+            product_identity.product_state_root(self.state_root, self.product)
+        except product_identity.ProductIdentityError as exc:
+            raise GatewayConfigError(str(exc)) from exc
+        if self.health_data is None:
+            object.__setattr__(
+                self, "health_data", product_scope.health_data_default(self.product)
+            )
+
+    @property
+    def product_state_root(self) -> Path:
+        return product_identity.product_state_root(self.state_root, self.product)
 
     @property
     def identity_db_path(self) -> Path:
-        return identity_db_path(self.state_root)
+        return identity_db_path(self.product_state_root)
 
 
 def identity_db_path(state_root: Path | str) -> Path:
@@ -557,6 +578,17 @@ def load_config(
         state_root = resolve_state_root(str(source[STATE_ROOT_ENV_VAR]).strip())
     except StateStoreError as exc:
         raise GatewayConfigError(f"{STATE_ROOT_ENV_VAR} is unusable: {exc}") from exc
+    product = str(source.get(product_identity.PRODUCT_ENV_VAR, product_identity.DEFAULT_PRODUCT)).strip()
+    try:
+        health_data = product_scope.health_data_setting(
+            source.get(product_scope.HEALTH_DATA_ENV_VAR)
+        )
+    except product_scope.ProductScopeError as exc:
+        raise GatewayConfigError(str(exc)) from exc
+    try:
+        effective_state_root = product_identity.product_state_root(state_root, product)
+    except product_identity.ProductIdentityError as exc:
+        raise GatewayConfigError(str(exc)) from exc
     raw_release = {
         "release_id": source.get(RELEASE_ID_ENV_VAR, ""),
         "git_commit": source.get(RELEASE_COMMIT_ENV_VAR, ""),
@@ -604,7 +636,7 @@ def load_config(
     try:
         deployment = (
             make_deployment_identity(
-                resolved_state_root=state_root,
+                resolved_state_root=effective_state_root,
                 intervals_client_id=str(source[CLIENT_ID_ENV_VAR]).strip(),
                 environment=str(raw_deployment["environment"]),
                 instance_id=str(raw_deployment["instance_id"]),
@@ -624,6 +656,8 @@ def load_config(
         )
     return GatewayConfig(
         state_root=state_root,
+        product=product,
+        health_data=health_data,
         token_hmac_key=key.encode("utf-8"),
         intervals_client_id=str(source[CLIENT_ID_ENV_VAR]).strip(),
         intervals_client_secret=str(source[CLIENT_SECRET_ENV_VAR]).strip(),
@@ -2267,6 +2301,9 @@ class CoachGateway:
         now: Callable[[], dt.datetime] | None = None,
     ):
         self.config = config
+        # What this deployment serves and accepts. Built here so a surface without health
+        # data that no longer derives from the full text refuses the boot.
+        self.surface = product_scope.surface(config.health_data)
         self.fetch = fetch
         self._now = now or (lambda: dt.datetime.now(dt.timezone.utc))
         # Everything this process handed out or accepted that a later call may name
@@ -2296,17 +2333,19 @@ class CoachGateway:
             and self.config.deployment_identity
             and self.config.release_identity["gateway_artifact_sha256"]
             == gateway_artifact_sha256()
-            # Rebuilt from the running `TOOLS` and compared, the way the package digest
-            # is. A declared hash nobody recomputes proves only what the deployer typed;
-            # this proves what `/mcp` will answer `tools/list` with.
+            # Rebuilt from the catalogue this product serves and compared, the way the
+            # package digest is. A declared hash nobody recomputes proves only what the
+            # deployer typed; this proves what `/mcp` will answer `tools/list` with.
             and self.config.release_identity["tool_catalogue_sha256"]
-            == mcp_transport.tool_catalogue_sha256()
+            == self.surface.tool_catalogue_sha256()
             and source_commit_matches
         )
         return {
             "status": "ok" if ready else "blocked",
             "api_version": API_VERSION,
             "product_version": PRODUCT_VERSION,
+            "deployment_product": self.config.product,
+            "health_data": "on" if self.config.health_data else "off",
             "release_identity": self.config.release_identity,
             "deployment_identity": self.config.deployment_identity,
             "source_git_commit": self.config.deployed_git_commit,
@@ -2430,10 +2469,17 @@ class CoachGateway:
             self, self._HANDLERS[kind]
         )
         try:
+            refused = product_scope.refusal(self.config.health_data, kind, body)
+            if refused is not None:
+                raise GatewayError(
+                    HTTPStatus.BAD_REQUEST, product_scope.OUTSIDE_SCOPE_ERROR, refused
+                )
             tool = self._FENCED_BY_MAINTENANCE.get(kind)
             if tool is not None:
                 _refuse_during_maintenance(self._state_dir(owner_id), tool)
-            answer = handler(owner_id, token, body)
+            answer = product_scope.visible_answer(
+                self.config.health_data, handler(owner_id, token, body)
+            )
             if kind == "session":
                 disclosure = self._client_disclosure(owner_id, token, client_origin)
                 if disclosure is not None:
@@ -2699,7 +2745,7 @@ class CoachGateway:
         return {"unresolved_delivery": view}
 
     def _state_dir(self, owner_id: str) -> Path:
-        return resolve_state_dir(owner_id, state_root=self.config.state_root)
+        return resolve_state_dir(owner_id, state_root=self.config.product_state_root)
 
     def _credentials(self, token: str) -> IntervalsCredentials:
         return IntervalsCredentials(token, OAUTH_ATHLETE_ID, "bearer")
@@ -2763,7 +2809,8 @@ class CoachGateway:
         return self._local_date(owner_id, self._now(), body=body).isoformat()
 
     def _owner_binding(self, owner_id: str) -> str:
-        return binding(owner_id, key=self.config.token_hmac_key)
+        scoped_owner = product_identity.owner_binding_subject(owner_id, self.config.product)
+        return binding(scoped_owner, key=self.config.token_hmac_key)
 
     # How long a log handle is. Sixteen hex characters of a keyed SHA-256 is 64 bits,
     # which is a trade rather than a guarantee: at a million accounts the chance that any
@@ -3471,6 +3518,7 @@ class CoachGateway:
         # asks the *provider's* reply, not the request.
         scope = str(sealed.pop("scope", "") or "")
         sealed["iat"] = self._unix_now()
+        sealed = product_identity.product_claims(sealed, self.config.product)
         state = token_envelope.seal(
             sealed,
             kind=token_envelope.AUTHORIZE_STATE,
@@ -3519,6 +3567,11 @@ class CoachGateway:
                 "invalid_request",
             ) from exc
 
+        if not product_identity.token_product(opened, self.config.product):
+            raise self._oauth_refusal(
+                security_log.PROVIDER_CALLBACK, security_log.UNKNOWN_AUTHORIZE_STATE,
+                "invalid_request",
+            )
         redirect_uri = str(opened.get("client_redirect_uri") or "")
         client_state = str(opened.get("client_state") or "")
         client_id = str(opened.get("client_id") or "")
@@ -3559,7 +3612,7 @@ class CoachGateway:
         )
         self._record_entry(str(redeemed.get("owner_id") or ""), redirect_uri)
         issued = token_envelope.seal(
-            {
+            product_identity.product_claims({
                 "intervals_token": redeemed["access_token"],
                 # Carried so the token endpoint can state the granted scope without a
                 # second provider call; it is the provider's own answer, normalized.
@@ -3571,7 +3624,7 @@ class CoachGateway:
                 "client_redirect_uri": redirect_uri,
                 "resource": opened.get("resource"),
                 "iat": self._unix_now(),
-            },
+            }, self.config.product),
             kind=token_envelope.AUTHORIZATION_CODE,
             key=self.config.token_hmac_key,
         )
@@ -3661,6 +3714,10 @@ class CoachGateway:
             raise self._token_refusal(
                 security_log.INVALID_AUTHORIZATION_CODE, "invalid_grant", client_id=presented
             ) from exc
+        if not product_identity.token_product(opened, self.config.product):
+            raise self._token_refusal(
+                security_log.INVALID_AUTHORIZATION_CODE, "invalid_grant", client_id=presented
+            )
         client_id = str(opened.get("client_id") or "")
         if presented != client_id:
             # A public client authenticates with nothing, so ``client_id`` is all it can
@@ -3752,7 +3809,7 @@ class CoachGateway:
             if epoch is not None:
                 payload["revocation_epoch"] = epoch
         access_token = token_envelope.seal(
-            payload,
+            product_identity.product_claims(payload, self.config.product),
             kind=token_envelope.ACCESS_TOKEN,
             key=self.config.token_hmac_key,
         )
@@ -3836,6 +3893,8 @@ class CoachGateway:
         # for why the id itself does not travel in a token sent on every request.
         client = str(opened.get("client") or "")
         audience = str(opened.get("aud") or "")
+        if not product_identity.token_product(opened, self.config.product):
+            raise self._mcp_refusal(security_log.AUDIENCE_MISMATCH, client=client)
         if audience.casefold() != f"{base_url}{MCP_PATH}".casefold():
             raise self._mcp_refusal(security_log.AUDIENCE_MISMATCH, client=client)
         provider_token = opened.get("intervals_token")
@@ -3995,7 +4054,7 @@ class CoachGateway:
             redirect_uris.append(checked)
         issued_at = self._unix_now()
         client_id = token_envelope.seal(
-            {"redirect_uris": redirect_uris, "iat": issued_at},
+            product_identity.product_claims({"redirect_uris": redirect_uris, "iat": issued_at}, self.config.product),
             kind=token_envelope.CLIENT_REGISTRATION,
             key=self.config.token_hmac_key,
         )
@@ -4042,6 +4101,8 @@ class CoachGateway:
             )
         except EnvelopeError as exc:
             raise self._unknown_client(client_id) from exc
+        if not product_identity.token_product(opened, self.config.product):
+            raise self._unknown_client(client_id)
         uris = opened.get("redirect_uris")
         if not isinstance(uris, list) or not uris or not all(isinstance(u, str) for u in uris):
             raise self._unknown_client(client_id)
@@ -4419,7 +4480,7 @@ class CoachGateway:
             observations, unknowns = self._pre_plan_observations(
                 state_dir, token, window, recovery_signals=recovery_signals
             )
-            coaching_guidance = orchestration.training_judgment()
+            coaching_guidance = self.surface.training_judgment()
             if _no_activity_evidence(observations):
                 # issue #225: this is the turn that most needs the training judgment,
                 # and also the one where silence about an empty Intervals account costs
@@ -4505,8 +4566,10 @@ class CoachGateway:
                 payload={"read": list(groups)},
                 until=now + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS),
             )
-        judgment = orchestration.training_judgment()
-        view, index = context_view.project_context(context, groups)
+        judgment = self.surface.training_judgment()
+        view, index = context_view.project_context(
+            product_scope.visible_context(self.config.health_data, context), groups
+        )
         plan_state: dict[str, Any] = {
             "present": True,
             "plan_id": current["plan_id"],
@@ -4922,10 +4985,11 @@ class CoachGateway:
         context = self._retained_context(owner_id, context_id=context_id)
         if context is None:
             raise GatewayError(HTTPStatus.CONFLICT, "context_expired", _CONTEXT_NOT_HELD)
-        evidence, holds = context_view.group_slice(context, groups)
+        shown = product_scope.visible_context(self.config.health_data, context)
+        evidence, holds = context_view.group_slice(shown, groups)
         focused: dict[str, Any] | None = None
         if focus is not None:
-            evidence, focused = context_view.focus_slice(context, evidence, focus)
+            evidence, focused = context_view.focus_slice(shown, evidence, focus)
         answer = {
             "status": "passed",
             **self._envelope(),
@@ -4933,7 +4997,7 @@ class CoachGateway:
             "as_of": context.get("as_of"),
             "evidence": evidence,
             "groups": holds,
-            "evidence_index": context_view.evidence_index(context, groups),
+            "evidence_index": context_view.evidence_index(shown, groups),
         }
         if focused is not None:
             answer["focused"] = focused
@@ -5057,7 +5121,10 @@ class CoachGateway:
                 "goal": None,
                 "delivery": None,
                 "pending_delivery_attempt_id": None,
-                "unknowns": ["no PlanState exists for this account", *STATE_READ_UNKNOWNS],
+                "unknowns": [
+                    "no PlanState exists for this account",
+                    *product_scope.state_read_unknowns(self.config.health_data, STATE_READ_UNKNOWNS),
+                ],
             }
         current = read_current_plan(state_dir)
         plan = current["current_plan"]
@@ -5070,7 +5137,9 @@ class CoachGateway:
             **_plan_summary(plan),
             "delivery": _delivery_view(plan, self._local_day(owner_id, body)),
             "pending_delivery_attempt_id": attempt.get("attempt_id") if attempt else None,
-            "unknowns": list(STATE_READ_UNKNOWNS),
+            "unknowns": list(
+                product_scope.state_read_unknowns(self.config.health_data, STATE_READ_UNKNOWNS)
+            ),
         }
 
     # -- athlete-reported evidence ------------------------------------------------------
@@ -5434,6 +5503,7 @@ class CoachGateway:
             # Read by the FIT reader alone, and only when the file itself states no
             # offset: every other format writes local time already.
             timezone_name=timezone_name,
+            keeps_health=self.config.health_data,
         )
         if len(reading["activities"]) > MAX_IMPORT_ROWS:
             raise _invalid(
@@ -5454,7 +5524,7 @@ class CoachGateway:
             resolutions=body.get("resolutions"),
             now=self._now(),
         )
-        return {
+        answer = {
             "status": "passed",
             **self._envelope(),
             "import_id": result["import_id"],
@@ -5489,6 +5559,12 @@ class CoachGateway:
             "unreadable": self._shown(result["unreadable"], self._IMPORT_ECHO),
             "note": result["note"],
         }
+        if not self.config.health_data:
+            # Never filled for this product; a receipt naming them would advertise records
+            # it does not keep. What the file held of them is counted in `not_kept`.
+            for key in ("measurements_added", "measurements_skipped", "recovery_added", "recovery_skipped"):
+                del answer[key]
+        return answer
 
     def retract_athlete_record(
         self, owner_id: str, token: str, body: dict[str, Any]
@@ -6247,6 +6323,7 @@ class CoachGateway:
             request,
             issued_at=issued_at,
             language=athlete_evidence.profile_language(profile),
+            plan_namespace=(self.config.product if self.config.product != product_identity.DEFAULT_PRODUCT else ""),
         )
         plan = projection["plan"]
         validation = self._validate_initial_plan(
@@ -6557,6 +6634,7 @@ class CoachGateway:
             provided_recovery_signals=recovery_signals,
             now=now,
             domain=domain,
+            read_recovery=self.config.health_data,
         )
         if report.get("status") != "passed":
             raise GatewayError(
@@ -8280,7 +8358,7 @@ class CoachGatewayServer(ThreadingHTTPServer):
         # before the socket is bound: an MCP layer that cannot come up is a broken
         # deployment, and it should be a refused boot beside the state-root and identity
         # checks rather than a 500 on whichever athlete's request arrives first.
-        self.mcp_runtime = mcp_sdk_transport.SdkTransport(PRODUCT_VERSION)
+        self.mcp_runtime = mcp_sdk_transport.SdkTransport(PRODUCT_VERSION, gateway.surface)
         self.mcp_runtime.start()
         try:
             super().__init__(address, handler_class)
@@ -8405,13 +8483,18 @@ def run_preflight(
     or the first read failed hours later. Returns the number of stale owner locks
     reclaimed, purely so the caller can log a count (see ``_reap_stale_owner_locks``).
     """
+    state_root = config.product_state_root
     try:
-        config.state_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+        state_root.mkdir(parents=True, mode=0o700, exist_ok=True)
     except OSError as exc:
         raise GatewayConfigError(
             f"gateway state root is not usable: {exc.strerror or exc}"
         ) from exc
-    _probe_state_root_writable(config.state_root)
+    try:
+        product_identity.bind_product_state(state_root, config.product)
+    except (product_identity.ProductIdentityError, OSError) as exc:
+        raise GatewayConfigError("gateway product storage binding failed") from exc
+    _probe_state_root_writable(state_root)
     try:
         ensure_registry(config.identity_db_path)
     except IdentityError as exc:
@@ -8419,7 +8502,7 @@ def run_preflight(
         # `ensure_registry`); prefixing it again here would just repeat that phrase.
         raise GatewayConfigError(f"gateway {exc}") from exc
     return _reap_stale_owner_locks(
-        config.state_root,
+        state_root,
         startup_drain_seconds=config.startup_drain_seconds,
         sleep=sleep,
     )

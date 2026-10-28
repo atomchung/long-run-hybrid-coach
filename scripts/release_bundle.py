@@ -53,6 +53,7 @@ from garmin_coach_loop.release_identity import (  # noqa: E402
     release_identity,
     sha256_text,
 )
+from garmin_coach_loop import product_identity  # noqa: E402
 from garmin_coach_loop.gateway import (  # noqa: E402
     CLIENT_ID_ENV_VAR,
     MIN_HMAC_KEY_CHARACTERS,
@@ -75,6 +76,15 @@ SKILL = ".agents/skills/garmin-coach-loop"
 _CATALOGUE_PROGRAM = (
     "from garmin_coach_loop.mcp_transport import tool_catalogue_sha256;"
     "print(tool_catalogue_sha256())"
+)
+# A deployment with health data off serves a surface derived in code (`product_scope`), so
+# its catalogue and its instructions are both read by running the commit's package.
+_SURFACE_WITHOUT_HEALTH_PROGRAM = (
+    "import json;"
+    "from garmin_coach_loop.product_scope import surface;"
+    "served = surface(False);"
+    "print(json.dumps({'tool_catalogue_sha256': served.tool_catalogue_sha256(),"
+    " 'instructions': served.instructions()}))"
 )
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 DEFAULT_GATEWAY_DOMAIN = "https://mcp.paceandstaystrong.com"
@@ -117,6 +127,42 @@ def git_tree(commit: str, prefix: str, suffixes: tuple[str, ...] | None = None) 
     ]
 
 
+def _run_package(package: list[tuple[str, bytes]], program: str, *args: str) -> subprocess.CompletedProcess:
+    """Run one program against the commit's own package, written to a scratch directory."""
+    with tempfile.TemporaryDirectory() as directory:
+        for name, body in package:
+            target = Path(directory) / PACKAGE / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(body)
+        return subprocess.run(
+            [sys.executable, "-c", program, *args],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": directory, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+
+
+def surface_without_health(package: list[tuple[str, bytes]]) -> tuple[str, str]:
+    """The catalogue digest and served instructions with health data off, at the commit."""
+    result = _run_package(package, _SURFACE_WITHOUT_HEALTH_PROGRAM)
+    try:
+        served = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        served = None
+    if (
+        result.returncode != 0
+        or not isinstance(served, dict)
+        or not SHA256_RE.fullmatch(str(served.get("tool_catalogue_sha256")))
+        or not isinstance(served.get("instructions"), str)
+    ):
+        raise ReleaseIdentityError(
+            "could not build the surface without health data at this commit: "
+            + (result.stderr.strip().splitlines() or ["no output"])[-1]
+        )
+    return served["tool_catalogue_sha256"], served["instructions"]
+
+
 def tool_catalogue_digest(package: list[tuple[str, bytes]]) -> str:
     """Hash the catalogue by running the code that builds it, at the released commit.
 
@@ -126,18 +172,7 @@ def tool_catalogue_digest(package: list[tuple[str, bytes]]) -> str:
     commit other than the checkout still describes *that* commit rather than whatever
     the working tree currently holds.
     """
-    with tempfile.TemporaryDirectory() as directory:
-        for name, body in package:
-            target = Path(directory) / PACKAGE / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(body)
-        result = subprocess.run(
-            [sys.executable, "-c", _CATALOGUE_PROGRAM],
-            cwd=directory,
-            capture_output=True,
-            text=True,
-            env={**os.environ, "PYTHONPATH": directory, "PYTHONDONTWRITEBYTECODE": "1"},
-        )
+    result = _run_package(package, _CATALOGUE_PROGRAM)
     digest = result.stdout.strip()
     if result.returncode != 0 or not SHA256_RE.fullmatch(digest):
         if "tool_catalogue_sha256" in result.stderr:
@@ -152,19 +187,23 @@ def tool_catalogue_digest(package: list[tuple[str, bytes]]) -> str:
     return digest
 
 
-def bundle(commit: str, domain: str) -> dict:
+def bundle(commit: str, domain: str, health_data: bool = True) -> dict:
     # Terminal newlines are stripped to match `orchestration.instructions()`, which is the
     # value `prompts/get` actually serves; hashing Git's conventional final newline would
     # bind a string no client ever receives.
     instructions = git_text(commit, INSTRUCTIONS).rstrip("\r\n")
     package = git_tree(commit, PACKAGE, (".py", ".md"))
+    if health_data:
+        catalogue = tool_catalogue_digest(package)
+    else:
+        catalogue, instructions = surface_without_health(package)
     skill = git_tree(commit, SKILL)
     if not skill:
         raise ReleaseIdentityError("this commit carries no canonical Agent Skill to bind")
     identity = {
         "git_commit": commit,
         "instructions_sha256": sha256_text(instructions),
-        "tool_catalogue_sha256": tool_catalogue_digest(package),
+        "tool_catalogue_sha256": catalogue,
         "skill_sha256": package_artifact_sha256(skill),
         "gateway_artifact_sha256": package_artifact_sha256(package),
         "gateway_domain": domain,
@@ -231,10 +270,19 @@ def expected_deployment_identity_from_env(env: dict[str, str]) -> dict[str, str]
             f"{TOKEN_HMAC_KEY_ENV_VAR} must be at least "
             f"{MIN_HMAC_KEY_CHARACTERS} characters"
         )
+    # The gateway binds its identity to the product's own root, not the configured base,
+    # so a training deployment's expectation has to name the same directory.
+    product = str(
+        env.get(product_identity.PRODUCT_ENV_VAR) or product_identity.DEFAULT_PRODUCT
+    ).strip()
+    try:
+        state_root = product_identity.product_state_root(
+            Path(str(env[STATE_ROOT_ENV_VAR]).strip()).expanduser().resolve(), product
+        )
+    except product_identity.ProductIdentityError as exc:
+        raise ReleaseIdentityError(str(exc)) from exc
     return make_deployment_identity(
-        resolved_state_root=Path(str(env[STATE_ROOT_ENV_VAR]).strip())
-        .expanduser()
-        .resolve(),
+        resolved_state_root=state_root,
         intervals_client_id=str(env[CLIENT_ID_ENV_VAR]).strip(),
         environment=str(env[DEPLOYMENT_ENVIRONMENT_ENV_VAR]),
         instance_id=str(env[DEPLOYMENT_INSTANCE_ID_ENV_VAR]),
@@ -394,7 +442,7 @@ def verify_release(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
-    build = sub.add_parser("build"); build.add_argument("--gateway-domain", required=True); build.add_argument("--output", required=True); build.add_argument("--git-commit")
+    build = sub.add_parser("build"); build.add_argument("--gateway-domain", required=True); build.add_argument("--output", required=True); build.add_argument("--git-commit"); build.add_argument("--health-data", default="on", choices=("on", "off"))
     verify = sub.add_parser("verify"); verify.add_argument("--bundle", required=True); verify.add_argument("--receipt", required=True); verify.add_argument("--expected-deployment-identity", required=True)
     expected = sub.add_parser("deployment-identity"); expected.add_argument("--env-file", required=True); expected.add_argument("--output", required=True)
     observe = sub.add_parser("observe")
@@ -407,7 +455,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "build":
             domain = normalise_gateway_domain(args.gateway_domain); commit = args.git_commit or commit_at_head()
-            result = bundle(commit, domain); output = outside_repo(Path(args.output)); output.parent.mkdir(parents=True, exist_ok=True); output.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            result = bundle(commit, domain, args.health_data == "on"); output = outside_repo(Path(args.output)); output.parent.mkdir(parents=True, exist_ok=True); output.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             print(result["release_id"]); return 0
         if args.command == "deployment-identity":
             identity = expected_deployment_identity_from_env(
