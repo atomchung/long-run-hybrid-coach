@@ -1,26 +1,31 @@
-"""What each coach product reads, accepts and hands the model.
+"""Whether a deployment reads health data, and what it hands the model when it does not.
 
-``product_identity`` decides which product a deployment is and keeps their state apart.
-This module decides what the training product is: the coach a directory listing points
-at, which never reads or keeps the categories a directory review named as health
-information -- sleep, HRV, resting heart rate, body measurements and reported symptoms.
-Exercise heart rate, pace, load and how the athlete says they feel stay: they are
-training evidence, and the hybrid product reads them the same way.
+``product_identity`` decides whose records a deployment holds. This module decides one
+capability on top of that: whether the deployment reads and keeps the categories a
+directory review named as health information -- sleep, HRV, resting heart rate, body
+measurements and reported symptoms. Exercise heart rate, pace, load and how the athlete
+says they feel are training evidence and stay either way.
 
-The exclusion is made at every layer that could otherwise reach the data, because a field
-missing from a schema is only a suggestion to a client:
+The two are separate settings so the capability can move without moving anybody's plan:
+``GARMIN_COACH_LOOP_HEALTH_DATA`` is ``on`` or ``off`` per deployment, and unset it follows
+the product (on for hybrid, off for training). Authorization does not follow it. Every
+deployment asks Intervals for the same scopes, so turning health data on later needs no
+athlete to consent again; what the switch decides is what this server reads, keeps and
+hands the model.
 
-- Intervals is never asked for ``WELLNESS:READ`` and the wellness endpoint is never
-  requested -- not read and then dropped.
+With health data off the exclusion is made at every layer that could otherwise reach the
+data, because a field missing from a schema is only a suggestion to a client:
+
+- The wellness endpoint is never requested -- not read and then dropped.
 - The catalogue omits the tool, the input fields and the reason codes that carry them,
   and ``refusal`` refuses them on a direct call as well.
 - An upload keeps its sessions and counts its body and recovery records as not kept.
 - The instructions and coaching guidance the model is handed do not ask for them.
 
-The hybrid product's served bytes are the reviewed ones and are not touched. The training
-surface is derived from them by named edits, each required to match the hybrid text
-exactly once: when that text changes, building the training surface fails at startup
-rather than serving a sentence nobody re-read.
+The full surface's served bytes are the reviewed ones and are not touched. The surface
+without health data is derived from them by named edits, each required to match the full
+text exactly once: when that text changes, building it fails at startup rather than
+serving a sentence nobody re-read.
 """
 
 from __future__ import annotations
@@ -35,20 +40,32 @@ from . import mcp_transport, orchestration
 from .product_identity import DEFAULT_PRODUCT, validate_product
 
 
-TRAINING_PRODUCT = "training"
+HEALTH_DATA_ENV_VAR = "GARMIN_COACH_LOOP_HEALTH_DATA"
+_HEALTH_DATA_VALUES = {"on": True, "off": False}
 
 
 class ProductScopeError(RuntimeError):
-    """The training surface no longer matches the hybrid text it is derived from."""
+    """A health data setting is unknown, or the derived surface no longer matches."""
+
+
+def health_data_default(product: str) -> bool:
+    """What a deployment of ``product`` does when the switch is not set."""
+    return validate_product(product) == DEFAULT_PRODUCT
+
+
+def health_data_setting(value: str | None) -> bool | None:
+    """The switch as configured: ``True``/``False``, or ``None`` when it is not set."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if text not in _HEALTH_DATA_VALUES:
+        raise ProductScopeError(f"{HEALTH_DATA_ENV_VAR} must be on or off")
+    return _HEALTH_DATA_VALUES[text]
 
 
 # --------------------------------------------------------------------------------------
-# What the training product never reaches
+# What a deployment without health data never reaches
 # --------------------------------------------------------------------------------------
-
-# Intervals grants each scope as its own consent box, so a scope that is never requested
-# is a box the athlete is never shown.
-_WITHHELD_SCOPES = frozenset({"WELLNESS:READ"})
 
 _EXCLUDED_TOOLS = frozenset({"recordBodyMeasurement"})
 _EXCLUDED_KINDS = frozenset({"body_measurement_record"})
@@ -72,30 +89,15 @@ _SYMPTOM_BOUNDARY = (
     "before training; they are not recorded here."
 )
 
-def is_training(product: str) -> bool:
-    return validate_product(product) == TRAINING_PRODUCT
+def refusal(health_data: bool, kind: str, body: dict[str, Any]) -> str | None:
+    """Why this deployment will not accept one call, or ``None`` when it will.
 
-
-def oauth_scopes(product: str, scopes: tuple[str, ...]) -> tuple[str, ...]:
-    """The Intervals scopes this product asks for, in the hybrid order."""
-    if not is_training(product):
-        return scopes
-    return tuple(scope for scope in scopes if scope not in _WITHHELD_SCOPES)
-
-
-def reads_recovery(product: str) -> bool:
-    """Whether this product reads wellness, recovery readings and body measurements."""
-    return not is_training(product)
-
-
-def refusal(product: str, kind: str, body: dict[str, Any]) -> str | None:
-    """Why this product will not accept one call, or ``None`` when it will.
-
-    Checked by the gateway before any handler runs, so a client holding a cached hybrid
-    catalogue, or calling the route directly, reaches the same boundary the training
-    catalogue describes. A null field is an omitted one; anything else is a statement.
+    Checked by the gateway before any handler runs, so a client holding a cached full
+    catalogue, or calling the route directly, reaches the same boundary the catalogue
+    without health data describes. A null field is an omitted one; anything else is a
+    statement.
     """
-    if not is_training(product):
+    if health_data:
         return None
     if kind in _EXCLUDED_KINDS:
         return f"{_NOT_COLLECTED} Nothing was stored."
@@ -118,7 +120,7 @@ def refusal(product: str, kind: str, body: dict[str, Any]) -> str | None:
     return None
 
 
-# What the model is not shown of a training context. The held context keeps the
+# What the model is not shown of a context when health data is off. The held context keeps the
 # contract's required recovery keys -- unknown, empty or null, since nothing filled them --
 # because validation and the decision record are shared code; an empty sleep row is still
 # an invitation to ask about sleep, so the model is handed the context without them.
@@ -139,9 +141,9 @@ _HIDDEN_UNKNOWNS = frozenset(
 )
 
 
-def visible_context(product: str, context: dict[str, Any]) -> dict[str, Any]:
-    """The part of one validated context this product shows the model."""
-    if not is_training(product):
+def visible_context(health_data: bool, context: dict[str, Any]) -> dict[str, Any]:
+    """The part of one validated context this deployment shows the model."""
+    if health_data:
         return context
     shown = {key: value for key, value in context.items() if key not in _HIDDEN_CONTEXT_FIELDS}
     for key, hidden in (("freshness", "recovery"), ("constraints", "red_flags")):
@@ -152,9 +154,9 @@ def visible_context(product: str, context: dict[str, Any]) -> dict[str, Any]:
     return shown
 
 
-def state_read_unknowns(product: str, unknowns: tuple[str, ...]) -> tuple[str, ...]:
+def state_read_unknowns(health_data: bool, unknowns: tuple[str, ...]) -> tuple[str, ...]:
     """``getCoachState``'s standing unknowns, without asking for symptoms it cannot take."""
-    if not is_training(product):
+    if health_data:
         return unknowns
     edited = tuple(
         entry.replace("(red flags, soreness, availability)", "(soreness, availability)")
@@ -166,14 +168,14 @@ def state_read_unknowns(product: str, unknowns: tuple[str, ...]) -> tuple[str, .
 
 
 # --------------------------------------------------------------------------------------
-# Deriving the training surface from the hybrid one
+# Deriving the surface without health data from the full one
 # --------------------------------------------------------------------------------------
 
 
 def _once(text: str, old: str, new: str) -> str:
     if text.count(old) != 1:
         raise ProductScopeError(
-            f"training edit no longer matches the hybrid text exactly once: {old[:80]!r}"
+            f"health-data edit no longer matches the full text exactly once: {old[:80]!r}"
         )
     return text.replace(old, new)
 
@@ -181,13 +183,13 @@ def _once(text: str, old: str, new: str) -> str:
 def _drop(mapping: dict[str, Any], *names: str) -> None:
     for name in names:
         if name not in mapping:
-            raise ProductScopeError(f"training edit names a field the hybrid lacks: {name}")
+            raise ProductScopeError(f"health-data edit names a field the full surface lacks: {name}")
         del mapping[name]
 
 
 def _without(values: list[Any], excluded: frozenset[str]) -> list[Any]:
     if not excluded <= set(values):
-        raise ProductScopeError(f"training edit names values the hybrid lacks: {sorted(excluded)}")
+        raise ProductScopeError(f"health-data edit names values the full surface lacks: {sorted(excluded)}")
     return [value for value in values if value not in excluded]
 
 
@@ -202,7 +204,7 @@ def _session(tool: mcp_transport.Tool) -> mcp_transport.Tool:
     )
     output = copy.deepcopy(tool.output_schema)
     _drop(output["properties"], "recovery_recording")
-    # The hybrid tool is destructive only because a recovery upload overwrites a stated
+    # The full tool is destructive only because a recovery upload overwrites a stated
     # reading; without one, reconciliation is the append-only plan chain it always was.
     annotations = {**tool.annotations, "destructiveHint": False}
     return dataclasses.replace(
@@ -301,12 +303,12 @@ _TOOL_EDITS: dict[str, Callable[[mcp_transport.Tool], mcp_transport.Tool]] = {
 }
 
 
-def training_tools(tools: tuple[mcp_transport.Tool, ...]) -> tuple[mcp_transport.Tool, ...]:
-    """The training catalogue: the hybrid tools, less the excluded ones, edited."""
+def tools_without_health(tools: tuple[mcp_transport.Tool, ...]) -> tuple[mcp_transport.Tool, ...]:
+    """The catalogue without health data: the full tools, less the excluded ones, edited."""
     names = {tool.name for tool in tools}
     missing = (_EXCLUDED_TOOLS | set(_TOOL_EDITS)) - names
     if missing:
-        raise ProductScopeError(f"training edits name tools the hybrid lacks: {sorted(missing)}")
+        raise ProductScopeError(f"health-data edits name tools the full surface lacks: {sorted(missing)}")
     return tuple(
         _TOOL_EDITS.get(tool.name, lambda unchanged: unchanged)(tool)
         for tool in tools
@@ -314,8 +316,8 @@ def training_tools(tools: tuple[mcp_transport.Tool, ...]) -> tuple[mcp_transport
     )
 
 
-def training_instructions(text: str) -> str:
-    """The orchestration prompt without the routes this product does not have."""
+def instructions_without_health(text: str) -> str:
+    """The orchestration prompt without the routes this deployment does not have."""
     text = _once(
         text,
         "- A stated weight or body fat goes to `recordBodyMeasurement`; a session no device\n"
@@ -337,8 +339,8 @@ def training_instructions(text: str) -> str:
 _BODY_COMPOSITION_HEADING = "\n\n## Body composition is a lens, not a target\n"
 
 
-def training_judgment(text: str) -> str:
-    """The training guidance without the readings this product does not take."""
+def judgment_without_health(text: str) -> str:
+    """The coaching guidance without the readings this deployment does not take."""
     head, found, tail = text.partition(_BODY_COMPOSITION_HEADING)
     if not found or "\n## " in tail or _BODY_COMPOSITION_HEADING in tail:
         raise ProductScopeError("body composition is no longer the last guidance section")
@@ -364,7 +366,7 @@ def training_judgment(text: str) -> str:
 
 
 # --------------------------------------------------------------------------------------
-# One surface per product
+# One surface per health data setting
 # --------------------------------------------------------------------------------------
 
 
@@ -377,9 +379,9 @@ def _prompt_messages(description: str, text: str) -> dict[str, Any]:
 
 @dataclasses.dataclass(frozen=True)
 class Surface:
-    """Everything a client of one product is handed: tools, prompts and instructions."""
+    """Everything a client of one deployment is handed: tools, prompts and instructions."""
 
-    product: str
+    health_data: bool
     tools: tuple[mcp_transport.Tool, ...]
     instructions: Callable[[], str]
     training_judgment: Callable[[], str]
@@ -390,7 +392,7 @@ class Surface:
 
     @functools.cached_property
     def prompts(self) -> dict[str, tuple[Callable[[], Any], Callable[[], Any]]]:
-        if not is_training(self.product):
+        if self.health_data:
             return orchestration.PROMPTS
         return {
             orchestration.PROMPT_NAME: (
@@ -409,10 +411,10 @@ class Surface:
         return mcp_transport.tool_catalogue_sha256(self.tools)
 
 
-# Looked up at call time rather than bound here, so the hybrid surface is exactly
+# Looked up at call time rather than bound here, so the full surface is exactly
 # whatever `orchestration` answers -- the module the release binds and the tests patch.
-HYBRID_SURFACE = Surface(
-    product=DEFAULT_PRODUCT,
+FULL_SURFACE = Surface(
+    health_data=True,
     tools=mcp_transport.TOOLS,
     instructions=lambda: orchestration.instructions(),
     training_judgment=lambda: orchestration.training_judgment(),
@@ -420,20 +422,20 @@ HYBRID_SURFACE = Surface(
 
 
 @functools.cache
-def _training_surface() -> Surface:
+def _surface_without_health() -> Surface:
     surface = Surface(
-        product=TRAINING_PRODUCT,
-        tools=training_tools(mcp_transport.TOOLS),
-        instructions=lambda: training_instructions(orchestration.instructions()),
-        training_judgment=lambda: training_judgment(orchestration.training_judgment()),
+        health_data=False,
+        tools=tools_without_health(mcp_transport.TOOLS),
+        instructions=lambda: instructions_without_health(orchestration.instructions()),
+        training_judgment=lambda: judgment_without_health(orchestration.training_judgment()),
     )
-    # Derived once here so a hybrid text change fails the deployment's startup, not the
+    # Derived once here so a full text change fails the deployment's startup, not the
     # first athlete's turn.
     surface.instructions()
     surface.training_judgment()
     return surface
 
 
-def surface(product: str) -> Surface:
+def surface(health_data: bool) -> Surface:
     """The surface one deployment serves; built eagerly so a stale edit refuses boot."""
-    return _training_surface() if is_training(product) else HYBRID_SURFACE
+    return FULL_SURFACE if health_data else _surface_without_health()

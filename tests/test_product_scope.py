@@ -1,10 +1,11 @@
-"""The training product never reads, accepts or keeps the health categories it excludes.
+"""With health data off, a deployment never reads, accepts or keeps the excluded categories.
 
 Harmful cases: a wellness request, a recovery or symptom field, a body measurement, a
 health record out of an upload, or an excluded name in what the model is handed. False-
 positive controls: the ordinary training flow -- first plan, a session read with how the
-athlete feels, a subjective note, an activity upload -- still works, and the hybrid
-product is byte-for-byte what it was.
+athlete feels, a subjective note, an activity upload -- still works, the full surface is
+byte-for-byte what it was, authorization asks for the same scopes either way, and turning
+the switch on later serves the same athlete's plan with health data.
 """
 
 from __future__ import annotations
@@ -29,9 +30,11 @@ from garmin_coach_loop.gateway import (
     STATE_READ_UNKNOWNS,
     CoachGateway,
     GatewayConfig,
+    GatewayConfigError,
     GatewayError,
     _intervals_scope,
     authorization_server_metadata,
+    load_config,
     protected_resource_metadata,
     run_preflight,
 )
@@ -42,8 +45,8 @@ from test_gateway import CLIENT_ID_VALUE, CLIENT_SECRET_VALUE, HMAC_KEY, NOW, TO
 from test_plan_init import initialization_request
 
 
-TRAINING = product_scope.surface("training")
-HYBRID = product_scope.surface("hybrid")
+NO_HEALTH = product_scope.surface(False)
+FULL = product_scope.surface(True)
 
 # Names the training surface must not hand the model. A guard on what the model is told,
 # not proof of what the code processes -- the gateway tests below hold that.
@@ -70,17 +73,16 @@ def _served_text(surface: product_scope.Surface) -> str:
 
 class TrainingSurfaceTests(unittest.TestCase):
     def test_hybrid_surface_is_the_reviewed_one_unchanged(self):
-        self.assertIs(mcp_transport.TOOLS, HYBRID.tools)
-        self.assertEqual(mcp_transport.tool_catalogue_sha256(), HYBRID.tool_catalogue_sha256())
-        self.assertEqual(orchestration.instructions(), HYBRID.instructions())
-        self.assertEqual(orchestration.training_judgment(), HYBRID.training_judgment())
-        self.assertIs(orchestration.PROMPTS, HYBRID.prompts)
-        self.assertEqual(INTERVALS_OAUTH_SCOPES, product_scope.oauth_scopes("hybrid", INTERVALS_OAUTH_SCOPES))
+        self.assertIs(mcp_transport.TOOLS, FULL.tools)
+        self.assertEqual(mcp_transport.tool_catalogue_sha256(), FULL.tool_catalogue_sha256())
+        self.assertEqual(orchestration.instructions(), FULL.instructions())
+        self.assertEqual(orchestration.training_judgment(), FULL.training_judgment())
+        self.assertIs(orchestration.PROMPTS, FULL.prompts)
 
     def test_training_catalogue_drops_the_excluded_tool_fields_and_codes(self):
-        tools = TRAINING.tools_by_name
+        tools = NO_HEALTH.tools_by_name
         self.assertNotIn("recordBodyMeasurement", tools)
-        self.assertEqual(len(mcp_transport.TOOLS) - 1, len(TRAINING.tools))
+        self.assertEqual(len(mcp_transport.TOOLS) - 1, len(NO_HEALTH.tools))
         session = tools["startCoachSession"]
         for field in ("red_flags", "all_clear", "recovery_signals"):
             self.assertNotIn(field, session.input_schema["properties"])
@@ -105,16 +107,16 @@ class TrainingSurfaceTests(unittest.TestCase):
     def test_the_hybrid_tools_themselves_are_not_mutated(self):
         self.assertIn("red_flags", mcp_transport.TOOLS_BY_NAME["startCoachSession"].input_schema["properties"])
         self.assertIn("recordBodyMeasurement", mcp_transport.TOOLS_BY_NAME)
-        product_scope.training_tools(mcp_transport.TOOLS)
-        self.assertEqual(mcp_transport.tool_catalogue_sha256(), HYBRID.tool_catalogue_sha256())
+        product_scope.tools_without_health(mcp_transport.TOOLS)
+        self.assertEqual(mcp_transport.tool_catalogue_sha256(), FULL.tool_catalogue_sha256())
 
     def test_no_excluded_name_reaches_the_training_model_surface(self):
         served = "\n".join(
-            (_served_text(TRAINING), TRAINING.instructions(), TRAINING.training_judgment())
+            (_served_text(NO_HEALTH), NO_HEALTH.instructions(), NO_HEALTH.training_judgment())
         )
         # The instructions name the categories once, to tell the model not to ask; the
         # catalogue and the guidance name none of them.
-        instructions = TRAINING.instructions()
+        instructions = NO_HEALTH.instructions()
         boundary = "This coach takes no sleep, HRV, resting heart rate, body measurement or\n  symptom; never ask for or record one."
         self.assertEqual(1, instructions.count(boundary))
         served = served.replace(boundary, "")
@@ -123,17 +125,17 @@ class TrainingSurfaceTests(unittest.TestCase):
                 # One sentence lists sleep among the many causes of a missed session.
                 served = served.replace("equipment, sleep,", "equipment,")
             self.assertNotIn(name, served, name)
-        self.assertNotIn("Body composition", TRAINING.training_judgment())
-        self.assertIn("Body composition", HYBRID.training_judgment())
+        self.assertNotIn("Body composition", NO_HEALTH.training_judgment())
+        self.assertIn("Body composition", FULL.training_judgment())
 
     def test_every_training_tool_routes_to_a_gateway_act(self):
-        self.assertLessEqual({tool.kind for tool in TRAINING.tools}, CoachGateway.route_kinds())
+        self.assertLessEqual({tool.kind for tool in NO_HEALTH.tools}, CoachGateway.route_kinds())
 
     def test_a_changed_hybrid_text_fails_the_derivation_instead_of_serving_it(self):
         with self.assertRaises(product_scope.ProductScopeError):
-            product_scope.training_instructions(orchestration.instructions().replace("red_flags", "symptom_flags"))
+            product_scope.instructions_without_health(orchestration.instructions().replace("red_flags", "symptom_flags"))
         with self.assertRaises(product_scope.ProductScopeError):
-            product_scope.training_judgment(orchestration.training_judgment() + "\n\n## A later section\n\nText.")
+            product_scope.judgment_without_health(orchestration.training_judgment() + "\n\n## A later section\n\nText.")
         session = mcp_transport.TOOLS_BY_NAME["startCoachSession"]
         reworded = dataclasses.replace(
             session,
@@ -148,36 +150,34 @@ class TrainingSurfaceTests(unittest.TestCase):
         )
         tools = tuple(reworded if tool is session else tool for tool in mcp_transport.TOOLS)
         with self.assertRaises(product_scope.ProductScopeError):
-            product_scope.training_tools(tools)
+            product_scope.tools_without_health(tools)
 
     def test_training_prompts_serve_the_training_text(self):
-        prompts = TRAINING.prompts
+        prompts = NO_HEALTH.prompts
         self.assertEqual(set(orchestration.PROMPTS), set(prompts))
         text = prompts[orchestration.TRAINING_PROMPT_NAME][1]()["messages"][0]["content"]["text"]
-        self.assertEqual(TRAINING.training_judgment(), text)
+        self.assertEqual(NO_HEALTH.training_judgment(), text)
         text = prompts[orchestration.PROMPT_NAME][1]()["messages"][0]["content"]["text"]
-        self.assertEqual(TRAINING.instructions(), text)
+        self.assertEqual(NO_HEALTH.instructions(), text)
 
     def test_sdk_server_lists_the_training_catalogue(self):
-        listed = [tool.name for tool in mcp_sdk_transport._tool_descriptors(TRAINING)]
-        self.assertEqual([tool.name for tool in TRAINING.tools], listed)
+        listed = [tool.name for tool in mcp_sdk_transport._tool_descriptors(NO_HEALTH)]
+        self.assertEqual([tool.name for tool in NO_HEALTH.tools], listed)
         self.assertNotIn("recordBodyMeasurement", listed)
 
-    def test_training_scopes_never_ask_for_wellness(self):
-        scopes = product_scope.oauth_scopes("training", INTERVALS_OAUTH_SCOPES)
-        self.assertEqual(("ACTIVITY:READ", "CALENDAR:WRITE", "SETTINGS:WRITE"), scopes)
-        # A client asking for wellness anyway is narrowed, never widened.
-        self.assertEqual("ACTIVITY:READ", _intervals_scope("ACTIVITY:READ WELLNESS:READ", scopes))
-        self.assertEqual(",".join(scopes), _intervals_scope("WELLNESS:READ", scopes))
+    def test_authorization_asks_for_the_same_scopes_whatever_the_switch_says(self):
+        # The switch decides what this server reads, never what the athlete consents to,
+        # so turning health data on later needs no second consent.
+        self.assertIn("WELLNESS:READ", INTERVALS_OAUTH_SCOPES)
+        self.assertEqual(",".join(INTERVALS_OAUTH_SCOPES), _intervals_scope(None))
         base = "https://openai-mcp.example"
-        self.assertEqual(list(scopes), protected_resource_metadata(base, scopes)["scopes_supported"])
-        self.assertEqual(list(scopes), authorization_server_metadata(base, scopes)["scopes_supported"])
-        self.assertIn("WELLNESS:READ", authorization_server_metadata(base)["scopes_supported"])
+        self.assertEqual(list(INTERVALS_OAUTH_SCOPES), protected_resource_metadata(base)["scopes_supported"])
+        self.assertEqual(list(INTERVALS_OAUTH_SCOPES), authorization_server_metadata(base)["scopes_supported"])
 
     def test_state_read_unknowns_stop_asking_for_red_flags(self):
-        training = product_scope.state_read_unknowns("training", STATE_READ_UNKNOWNS)
-        self.assertFalse(any("red flags" in entry for entry in training))
-        self.assertEqual(STATE_READ_UNKNOWNS, product_scope.state_read_unknowns("hybrid", STATE_READ_UNKNOWNS))
+        without = product_scope.state_read_unknowns(False, STATE_READ_UNKNOWNS)
+        self.assertFalse(any("red flags" in entry for entry in without))
+        self.assertEqual(STATE_READ_UNKNOWNS, product_scope.state_read_unknowns(True, STATE_READ_UNKNOWNS))
 
 
 class RefusalTests(unittest.TestCase):
@@ -186,7 +186,7 @@ class RefusalTests(unittest.TestCase):
             ("body_measurement_record", {"weight_kg": 72}),
             ("session", {"red_flags": {"pain": True}, "recovery_signals": {"days": []}}),
         ):
-            self.assertIsNone(product_scope.refusal("hybrid", kind, body))
+            self.assertIsNone(product_scope.refusal(True, kind, body))
 
     def test_training_refuses_each_excluded_category(self):
         cases = (
@@ -201,7 +201,7 @@ class RefusalTests(unittest.TestCase):
         )
         for kind, body in cases:
             with self.subTest(kind=kind, body=body):
-                self.assertIsNotNone(product_scope.refusal("training", kind, body))
+                self.assertIsNotNone(product_scope.refusal(False, kind, body))
 
     def test_training_accepts_ordinary_training_statements(self):
         cases = (
@@ -214,10 +214,10 @@ class RefusalTests(unittest.TestCase):
         )
         for kind, body in cases:
             with self.subTest(kind=kind):
-                self.assertIsNone(product_scope.refusal("training", kind, body))
+                self.assertIsNone(product_scope.refusal(False, kind, body))
 
     def test_a_symptom_refusal_states_the_human_decision(self):
-        refused = product_scope.refusal("training", "session", {"red_flags": {"chest_pain": True}})
+        refused = product_scope.refusal(False, "session", {"red_flags": {"chest_pain": True}})
         self.assertIn("human decision", refused)
 
 
@@ -342,8 +342,59 @@ class TrainingGatewayTests(unittest.TestCase):
         self.assertIn("measurements_added", hybrid)
 
     def test_readiness_compares_the_catalogue_this_product_serves(self):
-        self.assertEqual(TRAINING.tool_catalogue_sha256(), self.gateways["training"].surface.tool_catalogue_sha256())
-        self.assertNotEqual(HYBRID.tool_catalogue_sha256(), TRAINING.tool_catalogue_sha256())
+        self.assertEqual(NO_HEALTH.tool_catalogue_sha256(), self.gateways["training"].surface.tool_catalogue_sha256())
+        self.assertNotEqual(FULL.tool_catalogue_sha256(), NO_HEALTH.tool_catalogue_sha256())
+        self.assertEqual("off", self.gateways["training"].health()["health_data"])
+        self.assertEqual("on", self.gateways["hybrid"].health()["health_data"])
+
+    def test_turning_health_data_on_serves_the_same_plan_with_health_data(self):
+        gateway, owner = self._with_first_plan("training"), self.owners["training"]
+        before = gateway.route("session", owner, TOKEN_A, {"read": ["all"]})
+        self.assertEqual([], self._wellness_requests("training"))
+        switched = CoachGateway(
+            dataclasses.replace(gateway.config, health_data=True), fetch=gateway.fetch, now=lambda: NOW
+        )
+        after = switched.route("session", owner, TOKEN_A, {"read": ["all"]})
+        self.assertEqual(before["plan_state"], after["plan_state"])
+        self.assertTrue(self._wellness_requests("training"))
+        self.assertIn("recovery_trends", after["context"])
+        self.assertIs(FULL, switched.surface)
+        self.assertEqual("on", switched.health()["health_data"])
+
+
+class HealthDataSettingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+
+    def test_unset_follows_the_product_and_an_explicit_value_wins(self):
+        def config(**extra) -> GatewayConfig:
+            return GatewayConfig(
+                state_root=self.root, token_hmac_key=HMAC_KEY,
+                intervals_client_id=CLIENT_ID_VALUE, intervals_client_secret=CLIENT_SECRET_VALUE, **extra,
+            )
+
+        self.assertTrue(config().health_data)
+        self.assertFalse(config(product="training").health_data)
+        self.assertTrue(config(product="training", health_data=True).health_data)
+        self.assertFalse(config(health_data=False).health_data)
+
+    def test_the_environment_takes_on_or_off_and_nothing_else(self):
+        env = {
+            "GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT": str(self.root),
+            "GARMIN_COACH_LOOP_TOKEN_HMAC_KEY": HMAC_KEY.decode(),
+            "GARMIN_COACH_LOOP_INTERVALS_CLIENT_ID": CLIENT_ID_VALUE,
+            "GARMIN_COACH_LOOP_INTERVALS_CLIENT_SECRET": CLIENT_SECRET_VALUE,
+            "GARMIN_COACH_LOOP_PRODUCT": "training",
+        }
+        switch = product_scope.HEALTH_DATA_ENV_VAR
+        self.assertFalse(load_config(env).health_data)
+        self.assertTrue(load_config({**env, switch: "on"}).health_data)
+        self.assertFalse(load_config({**env, switch: " OFF "}).health_data)
+        for value in ("yes", "1", "true"):
+            with self.subTest(value=value), self.assertRaises(GatewayConfigError):
+                load_config({**env, switch: value})
 
 
 if __name__ == "__main__":

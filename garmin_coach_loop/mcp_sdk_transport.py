@@ -249,7 +249,7 @@ async def _on_call_tool(
 
 
 def build_server(
-    server_version: str, surface: product_scope.Surface = product_scope.HYBRID_SURFACE
+    server_version: str, surface: product_scope.Surface = product_scope.FULL_SURFACE
 ) -> Server[Any]:
     """The SDK server this deployment serves, built from this product's own surface.
 
@@ -325,7 +325,7 @@ class SdkTransport:
     def __init__(
         self,
         server_version: str,
-        surface: product_scope.Surface = product_scope.HYBRID_SURFACE,
+        surface: product_scope.Surface = product_scope.FULL_SURFACE,
     ) -> None:
         self._server_version = server_version
         self._surface = surface

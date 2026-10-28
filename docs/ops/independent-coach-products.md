@@ -6,33 +6,42 @@ code continues to own training contracts, validation, approval and provider
 delivery. A client name never determines the product; deployment configuration
 does. There is no automatic data or plan synchronization.
 
-## What the training product does not collect
+## The health data switch
 
-The training product is the coach a directory listing points at. It never reads, accepts
-or keeps the categories a directory review named as health information: sleep, HRV,
-resting heart rate, body measurements and reported symptoms. Exercise heart rate, pace,
-load and how the athlete says they feel stay, read the same way the hybrid product reads
-them. `garmin_coach_loop/product_scope.py` owns the boundary, at every layer that could
+Whether a deployment reads health data is a setting of its own,
+`GARMIN_COACH_LOOP_HEALTH_DATA=on|off`, separate from the product that decides whose
+records it holds. Unset, it follows the product: `on` for `hybrid`, `off` for `training`.
+Any other value refuses startup. `/readyz` reports it as `health_data`.
+
+Authorization does not follow the switch. Every deployment asks Intervals for the same
+four scopes, `WELLNESS:READ` included, so turning health data on later needs no athlete
+to consent again. The switch decides what the server reads, keeps and hands the model.
+
+With health data off a deployment never reads, accepts or keeps the categories a
+directory review named as health information: sleep, HRV, resting heart rate, body
+measurements and reported symptoms. Exercise heart rate, pace, load and how the athlete
+says they feel stay, read the same way as with health data on.
+`garmin_coach_loop/product_scope.py` owns the boundary, at every layer that could
 otherwise reach the data:
 
-| Layer | Training product |
+| Layer | Health data off |
 | --- | --- |
-| Intervals OAuth | Asks for `ACTIVITY:READ`, `CALENDAR:WRITE` and `SETTINGS:WRITE`; never `WELLNESS:READ`, so the consent screen has no wellness box. |
 | Provider read | Never requests `/wellness`. The context carries `recovery_not_collected` in `unknowns` instead of a permission or outage note. |
 | Catalogue | No `recordBodyMeasurement`; `startCoachSession` has no `red_flags`, `all_clear` or `recovery_signals`; `prepareCoachDecision` has no `red_flags` and no recovery or illness reason codes; retraction has no body or recovery kinds. |
-| Direct calls | The gateway refuses those fields, tools and codes with `outside_product_scope` before any handler or provider request, so a cached hybrid catalogue cannot reach them. |
+| Direct calls | The gateway refuses those fields, tools and codes with `outside_product_scope` before any handler or provider request, so a cached full catalogue cannot reach them. |
 | Uploads | An Apple Health export keeps its workouts; its body, recovery, HRV and sleep records are counted under one heading in `not_kept` before any value is parsed. |
 | What the model reads | The context is shown without the recovery and symptom fields the contract still requires internally; the instructions and coaching guidance drop the body-composition section and the wearable-recovery sentences. |
 
-Without a symptom field there is no deterministic same-day symptom limit in this product.
+Without a symptom field there is no deterministic same-day symptom limit while the switch
+is off.
 The instructions and tool descriptions still say that pain, illness, chest pain, dizziness
 or unusual symptoms need a human decision before training, and that nothing about them is
 recorded.
 
-The hybrid product's served bytes are unchanged; `scripts/mcp_contract_equivalence.py`
-holds them. The training surface is derived from them by named edits that must each match
-the hybrid text exactly once, so a hybrid wording change fails the training build at
-startup rather than shipping an unreviewed sentence. A separate URL or name is not
+The full surface's served bytes are unchanged; `scripts/mcp_contract_equivalence.py`
+holds them. The surface without health data is derived from them by named edits that must
+each match the full text exactly once, so a wording change fails the build at startup
+rather than shipping an unreviewed sentence. A separate URL or name is not
 evidence of directory acceptance; track the submission in
 [issue #519](https://github.com/atomchung/long-run-hybrid-coach/issues/519).
 
@@ -96,15 +105,36 @@ athlete-facing migration or synchronization route.
 
 1. A separate Railway service from this repository, one replica, with its own volume
    mounted at the state root and its own `GARMIN_COACH_LOOP_TOKEN_HMAC_KEY`.
-2. `GARMIN_COACH_LOOP_PRODUCT=training`, plus the same Intervals client id and secret the
-   hybrid service uses. A second coach does not need a second Intervals application.
+2. `GARMIN_COACH_LOOP_PRODUCT=training` and `GARMIN_COACH_LOOP_HEALTH_DATA=off`, plus the
+   same Intervals client id and secret the hybrid service uses. A second coach does not
+   need a second Intervals application. The switch is set explicitly even though `off` is
+   the training default, so the deployment's variables show where it stands.
 3. Register `https://<training domain>/oauth/callback` as a redirect URI on that Intervals
    application, beside the hybrid one.
 4. Build its release identity with
-   `python3 scripts/release_bundle.py build --product training --gateway-domain https://<training domain> ...`:
-   readiness compares the catalogue this product serves, which is not the hybrid digest.
-5. Read `/readyz` back: `deployment_product` is `training`, and `status` is `ok`.
+   `python3 scripts/release_bundle.py build --health-data off --gateway-domain https://<training domain> ...`:
+   readiness compares the catalogue the switch serves, which is not the full digest.
+5. Read `/readyz` back: `deployment_product` is `training`, `health_data` is `off`, and
+   `status` is `ok`.
 
-The training catalogue, instructions and scopes are a new reviewed surface. Before a
-submission it needs a real client acceptance, Scan Tools and its own plugin version, as
+The catalogue and instructions without health data are a new reviewed surface. Before a
+submission they need a real client acceptance, Scan Tools and their own plugin version, as
 `scripts/change_gates.py` reports for `product_scope.py`.
+
+## Flipping the switch
+
+No code change and no athlete action: every connection already holds the full scopes, and
+the plan, records and connections stay where the product put them.
+
+1. Set `GARMIN_COACH_LOOP_HEALTH_DATA` to the new value with `--skip-deploys`.
+2. Rebuild the release identity with the matching `--health-data` and stage its
+   `GARMIN_COACH_LOOP_RELEASE_*` variables. The catalogue digest moves with the switch, so
+   a flip without a new identity reports `blocked`, `/readyz` answers 503, and Railway's
+   health check keeps the previous deployment serving.
+3. Redeploy and read `/readyz` back: `health_data` is the new value and `status` is `ok`.
+
+Turning it off takes effect for every client of that URL once the deployment is live: a
+client still holding the full catalogue is refused with `outside_product_scope`. Turning
+it on serves the full catalogue to every client of that URL at once, so a directory
+listing reviewed without health data needs a new submission before its reviewed surface
+matches what the URL serves; until then, do not turn it on for a listed URL.
