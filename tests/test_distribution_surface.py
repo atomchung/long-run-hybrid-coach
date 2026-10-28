@@ -757,8 +757,9 @@ class TrainingSubmissionPacketTests(SubmissionPacketTests):
     PACKET = TRAINING_SUBMISSION_PACKET
     TOOLS = product_scope.surface(False).tools
 
-    # The listing names excluded categories only to disclose the collection boundary.
-    # Its remaining copy and positive reviewer cases must not offer those categories.
+    # The listing describes what the Plugin entry does, never what it leaves out (owner
+    # decision, 2026-10-28): naming the categories it does not collect, or the care it
+    # does not provide, puts them back in front of the reviewer it was built to satisfy.
     HEALTH_TERMS = (
         "sleep",
         "hrv",
@@ -768,23 +769,13 @@ class TrainingSubmissionPacketTests(SubmissionPacketTests):
         "weight of",
         "symptom",
         "wellness",
+        "healthcare",
+        "diagnosis",
+        "apple health",
     )
 
-    def test_excluded_categories_are_disclosed_without_offering_them(self):
-        description = self.packet["app_info"]["description"]
-        boundary, remaining = description.split("\n\n", 1)
-        self.assertIn(
-            "does not fetch Intervals.icu wellness summaries or provide dedicated inputs",
-            boundary,
-        )
-        self.assertIn("The service receives only the arguments sent in MCP tool calls.", remaining)
-        self.assertIn(
-            "Messages and files a user shares with ChatGPT or another client "
-            "do not automatically reach this service.",
-            remaining,
-        )
-        self.assertNotIn("Apple Health", description)
-        texts = {"description": remaining}
+    def test_nothing_it_submits_names_a_category_it_does_not_collect(self):
+        texts = {"description": self.packet["app_info"]["description"]}
         for case in self.packet["test_cases"]:
             texts[case["description"]] = case["user_prompt"] + " " + case["expected_output"]
         for name, text in texts.items():
