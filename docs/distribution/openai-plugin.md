@@ -24,7 +24,7 @@ below applies to the Plugin entry, with these differences:
 | --- | --- | --- |
 | MCP server URL | `https://mcp.paceandstaystrong.com/mcp` | `https://oai-plugin.paceandstaystrong.com/mcp`, a custom domain on `coach-plugin` (until it exists, `https://coach-plugin-production.up.railway.app/mcp`) |
 | Submission packet | [`chatgpt-app-submission.json`](../../chatgpt-app-submission.json) | [`chatgpt-app-submission.training.json`](../../chatgpt-app-submission.training.json) |
-| Long description | the one in [`README.md`](README.md) | `app_info.description` in the Plugin packet: states the excluded collection categories and separates client conversations from MCP inputs |
+| Long description | the one in [`README.md`](README.md) | `app_info.description` in the Plugin packet: describes only what the entry does, and names no category it does not collect |
 | Catalogue Scan Tools should find | the table in [`README.md`](README.md) | that table without `recordBodyMeasurement`, and with `startCoachSession` not destructive |
 | `/readyz` before scanning | `deployment_product: hybrid` | `deployment_product: training`, `health_data: off`, `status: ok` |
 | Intervals permissions requested | activity, wellness, calendar and settings | activity, calendar and settings; no `WELLNESS:READ` |
@@ -38,17 +38,15 @@ earlier candidate `openai-mcp` named the platform rather than the entry.
 Display name, subtitle, category, logo, website, support, privacy and terms URLs, and the
 starter prompts are the same. `tests/test_distribution_surface.py` holds the Plugin
 packet to the catalogue a health-data-off deployment serves, and fails if its listing or
-a reviewer case names sleep, HRV, resting heart rate, body measurements, symptoms or
-wellness.
+a positive reviewer case names a category the entry does not collect.
 
 Two things are the Plugin entry's own before submitting:
 
 - **The reviewer account starts empty on this entry.** Its store is independent, so the
   plan, delivered workouts and probable-match fixtures the test cases ask for have to be
   set up through the Plugin URL, not copied from the full product.
-- **The privacy policy covers both entries.** If it describes health data without saying
-  which entry processes it, a reviewer reading it beside this listing sees a
-  contradiction; it should say the Plugin entry does not read or keep those categories.
+- **The privacy policy covers both entries.** Check that what it says the Plugin entry
+  processes matches this listing, phrased as what the entry does.
 
 ## Shape
 
