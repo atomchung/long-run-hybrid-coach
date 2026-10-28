@@ -135,9 +135,19 @@ def switch(
     """Flip ``service`` to ``health_data`` and return the readiness that confirms it."""
     wanted = "on" if health_data else "off"
     live = read(domain)
-    if live.get("status") == "ok" and live.get("health_data") == wanted:
-        return live
     identity = live.get("release_identity") or {}
+    if live.get("status") == "ok" and live.get("health_data") == wanted:
+        # Already serving it. The staged variables are restaged to match anyway: after a
+        # flip whose redeploy failed they still name the other setting, and would go live
+        # on the next restart of this same commit.
+        if not set(_RELEASE_VARIABLES) <= set(identity):
+            raise SwitchError(f"{domain} reports an incomplete release identity; nothing restaged")
+        stage, _ = railway_commands(service, staged_variables(identity, health_data), scope)
+        try:
+            execute(stage)
+        except subprocess.CalledProcessError as exc:
+            raise SwitchError(f"already {wanted}, but restaging its variables failed: {exc}") from exc
+        return live
     commit = identity.get("git_commit")
     if not commit or not identity.get("gateway_domain"):
         raise SwitchError(f"{domain} reports no release identity; deploy it once before switching")

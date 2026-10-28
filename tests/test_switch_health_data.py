@@ -85,10 +85,19 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual(8, len(staged))
         self.assertEqual(["railway", "redeploy", "--service", "coach-plugin", "--yes"], redeploy)
 
-    def test_a_deployment_already_on_the_setting_is_left_alone(self):
-        self._switch([_reading("on", "gclr-old")])
-        self.assertEqual([], self.commands)
+    def test_a_deployment_already_on_the_setting_only_has_its_variables_restaged(self):
+        # After a flip whose redeploy failed, the old deployment still answers ok with the
+        # old setting while the staged variables name the new one; running the old value
+        # must put them back without a redeploy.
+        live = _reading("on", "gclr-old")
+        live["release_identity"].update({key: BUNDLE[key] for key in BUNDLE if key != "release_id"})
+        self._switch([live])
         self.assertEqual([], self.built)
+        (stage,) = self.commands
+        self.assertEqual("variables", stage[1])
+        staged = dict(arg.split("=", 1) for arg in stage[5:] if arg != "--set")
+        self.assertEqual("on", staged[HEALTH_DATA_ENV_VAR])
+        self.assertEqual("gclr-old", staged[RELEASE_ID_ENV_VAR])
 
     def test_a_flip_that_never_reads_back_is_reported_not_assumed(self):
         with self.assertRaises(switch_script.SwitchError) as caught:
