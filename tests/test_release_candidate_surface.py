@@ -22,7 +22,7 @@ import unittest
 from pathlib import Path
 
 from garmin_coach_loop import product_scope
-from garmin_coach_loop.gateway import PRODUCT_VERSION
+from garmin_coach_loop.gateway import PLUGIN_VERSION, PRODUCT_VERSION
 from garmin_coach_loop.mcp_transport import (
     RETIRED_TOOLS,
     TOOLS,
@@ -37,6 +37,8 @@ SKILL = ROOT / ".agents" / "skills" / "garmin-coach-loop"
 
 # The release candidate this repository currently carries.
 RELEASE_CANDIDATE_VERSION = "1.4.11"
+# The Plugin entry's candidate, numbered on its own (AGENTS.md "Version numbers").
+PLUGIN_RELEASE_CANDIDATE_VERSION = "1.4.11"
 
 # What the catalogue is, at that version.
 RELEASE_CANDIDATE_TOOL_COUNT = 23
@@ -163,6 +165,10 @@ class ReleaseCandidateSurfaceTests(unittest.TestCase):
         self.assertEqual(RELEASE_CANDIDATE_VERSION, PRODUCT_VERSION)
         self.assertEqual(RELEASE_CANDIDATE_VERSION, server["version"])
         self.assertEqual(RELEASE_CANDIDATE_VERSION, plugin["version"])
+
+    def test_the_plugin_entry_version_agrees_with_its_stated_candidate(self):
+        """The Plugin entry's number moves only when its own candidate does."""
+        self.assertEqual(PLUGIN_RELEASE_CANDIDATE_VERSION, PLUGIN_VERSION)
 
 
 if __name__ == "__main__":

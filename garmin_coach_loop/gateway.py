@@ -200,6 +200,10 @@ API_VERSION = "1.0"
 # product release; PATCH may move model-facing surfaces. Changed digests still require
 # a new reviewed surface and affected clients to refresh, regardless of the number.
 PRODUCT_VERSION = "1.4.11"
+# The Plugin entry's own number, served by a `training` deployment in place of
+# PRODUCT_VERSION and filed with its directory submission. It moves only with a Plugin
+# release, so a full-product release never relabels the Plugin's reviewed snapshot.
+PLUGIN_VERSION = "1.4.11"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 INTERVALS_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
@@ -455,6 +459,11 @@ class GatewayConfig:
         if self.product == "training" and not self.health_data:
             return tuple(scope for scope in INTERVALS_OAUTH_SCOPES if scope != "WELLNESS:READ")
         return INTERVALS_OAUTH_SCOPES
+
+    @property
+    def served_version(self) -> str:
+        """The version MCP initialize and /readyz state for this deployment's product."""
+        return PLUGIN_VERSION if self.product == "training" else PRODUCT_VERSION
 
 
 def identity_db_path(state_root: Path | str) -> Path:
@@ -2349,7 +2358,7 @@ class CoachGateway:
         return {
             "status": "ok" if ready else "blocked",
             "api_version": API_VERSION,
-            "product_version": PRODUCT_VERSION,
+            "product_version": self.config.served_version,
             "deployment_product": self.config.product,
             "health_data": "on" if self.config.health_data else "off",
             "release_identity": self.config.release_identity,
@@ -8370,7 +8379,7 @@ class CoachGatewayServer(ThreadingHTTPServer):
         # before the socket is bound: an MCP layer that cannot come up is a broken
         # deployment, and it should be a refused boot beside the state-root and identity
         # checks rather than a 500 on whichever athlete's request arrives first.
-        self.mcp_runtime = mcp_sdk_transport.SdkTransport(PRODUCT_VERSION, gateway.surface)
+        self.mcp_runtime = mcp_sdk_transport.SdkTransport(gateway.config.served_version, gateway.surface)
         self.mcp_runtime.start()
         try:
             super().__init__(address, handler_class)

@@ -231,7 +231,8 @@ review.
 6. **Confirm the project is global data residency**, not EU. A public MCP submission from an
    EU-residency project is refused.
 7. **Update the existing draft.** Open `platform.openai.com/plugins`, select this
-   plugin's Draft, and prepare the current `PRODUCT_VERSION` with the matching submission packet. Reuse the
+   plugin's Draft, and prepare the current `PLUGIN_VERSION` (the Plugin entry's own number, not
+   `PRODUCT_VERSION`) with the matching submission packet. Reuse the
    existing plugin identity rather than creating a duplicate. A saved draft is not a
    submitted review.
 8. **Upload the logo.** Download it with the `curl` in [`README.md`](README.md) and upload

@@ -200,10 +200,19 @@ defensible in isolation and neither was the owner's call to skip.
 
 ## Version numbers
 
-`PRODUCT_VERSION` (`garmin_coach_loop/gateway.py`), `server.json` and the Codex
-plugin manifest carry one number, and a test holds the three equal. What the parts
-mean was settled by the owner on 2026-09-09, against this repository's own prior
-habit of bumping the minor for every release that changed anything:
+The full product and the Plugin entry carry separate numbers.
+
+- **The full product:** `PRODUCT_VERSION` (`garmin_coach_loop/gateway.py`),
+  `server.json` and the Codex plugin manifest (which points at the full product's URL)
+  carry one number, and a test holds the three equal.
+- **The Plugin entry:** `PLUGIN_VERSION` beside it is what a `training` deployment
+  states as MCP `serverInfo.version` and `/readyz` `product_version`, and the number its
+  directory submission is filed under. It moves only with a Plugin release: a full-product
+  release leaves it alone, and a Plugin resubmission does not bump `PRODUCT_VERSION`.
+  `tests/test_plugin_version.py` holds the two apart.
+
+What the parts of each number mean was settled by the owner on 2026-09-09, against this
+repository's own prior habit of bumping the minor for every release that changed anything:
 
 - **Minor is a product-level release the owner declares**, not something a change
   earns. 1.3 to 1.4 was one. Reserving it is the point: a minor spent on an
