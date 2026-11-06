@@ -14,7 +14,8 @@ differ; it cannot say a `readOnlyHint` flipped, and it says nothing at all about
 served instructions or about whether the 2026-07-28 era answers with the same tools the
 2025 era does. Every field is compared, and the difference is printed.
 
-    python3 scripts/mcp_contract_equivalence.py --base origin/main
+    python3 scripts/mcp_contract_equivalence.py --base origin/main --product hybrid
+    python3 scripts/mcp_contract_equivalence.py --base origin/main --product training
 
 Exit status is 0 when the contract is unchanged and 1 when it is not. A difference is not
 automatically wrong -- a deliberate catalogue change moves it, and that change goes
@@ -47,8 +48,24 @@ EXPORT_PATHS = ("garmin_coach_loop", "contracts")
 # from after has no hand-written framing left to drive, so its catalogue and prompts are
 # read directly -- they are the same objects the SDK is handed there.
 BASE_PROGRAM = r"""
+import importlib.util
 import json
+import sys
 from garmin_coach_loop import mcp_transport, orchestration
+
+product = sys.argv[1] if len(sys.argv) > 1 else "hybrid"
+health_setting = sys.argv[2] if len(sys.argv) > 2 else "default"
+selected = None
+if importlib.util.find_spec("garmin_coach_loop.product_scope") is not None:
+    from garmin_coach_loop import product_scope
+    default_health = product_scope.health_data_default(product)
+    health_data = default_health if health_setting == "default" else health_setting == "on"
+    selected = product_scope.surface(health_data)
+elif product != "hybrid" or health_setting == "off":
+    raise SystemExit(
+        f"base ref has no product_scope surface for {product} / health_data={health_setting}; "
+        "cannot substitute the full-product catalogue"
+    )
 
 handle = getattr(mcp_transport, "handle", None)
 
@@ -65,7 +82,19 @@ def rpc(method, params=None):
     return body["result"]
 
 
-if handle is not None:
+if selected is not None:
+    surface = {
+        "framing": "handwritten" if handle is not None else "sdk",
+        "tools": [tool.descriptor() for tool in selected.tools],
+        "instructions": selected.instructions(),
+        "server_name": mcp_transport.SERVER_NAME,
+        "server_title": mcp_transport.SERVER_TITLE,
+        "prompts": [descriptor() for descriptor, _ in selected.prompts.values()],
+        "prompt_bodies": {
+            name: selected.prompts[name][1]() for name in sorted(selected.prompts)
+        },
+    }
+elif handle is not None:
     initialize = rpc(
         "initialize",
         {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "gate", "version": "0"}},
@@ -94,12 +123,17 @@ else:
         },
     }
 
-surface["catalogue_sha256"] = mcp_transport.tool_catalogue_sha256()
+surface["catalogue_sha256"] = (
+    selected.tool_catalogue_sha256() if selected is not None
+    else mcp_transport.tool_catalogue_sha256()
+)
 print(json.dumps(surface, ensure_ascii=False, sort_keys=True))
 """
 
 
-def base_surface(ref: str) -> dict[str, Any]:
+def base_surface(
+    ref: str, product: str = "hybrid", health_data: bool | None = None
+) -> dict[str, Any]:
     """The served surface at ``ref``, built from that ref's own bytes.
 
     Out of Git rather than out of this working tree: the whole point is to compare
@@ -119,7 +153,8 @@ def base_surface(ref: str) -> dict[str, Any]:
         if extracted.returncode != 0:
             raise SystemExit(f"cannot unpack {ref}: {extracted.stderr.decode('utf-8', 'replace')}")
         built = subprocess.run(
-            [sys.executable, "-c", BASE_PROGRAM],
+            [sys.executable, "-c", BASE_PROGRAM, product,
+             "default" if health_data is None else "on" if health_data else "off"],
             cwd=directory,
             capture_output=True,
             env={"PYTHONPATH": directory, "PATH": "/usr/bin:/bin"},
@@ -132,7 +167,9 @@ def base_surface(ref: str) -> dict[str, Any]:
         return json.loads(built.stdout.decode("utf-8"))
 
 
-def served_surface() -> dict[str, dict[str, Any]]:
+def served_surface(
+    product: str = "hybrid", health_data: bool | None = None
+) -> dict[str, dict[str, Any]]:
     """What this checkout actually puts on the wire, one reading per protocol era.
 
     Through the real transport rather than through the catalogue constants: a migration
@@ -141,23 +178,27 @@ def served_surface() -> dict[str, dict[str, Any]]:
     now serves both, and "the same tools on both" is part of the contract.
     """
     sys.path.insert(0, str(ROOT))
-    from garmin_coach_loop import mcp_sdk_transport, mcp_transport, orchestration
+    from garmin_coach_loop import mcp_sdk_transport, product_scope
+
+    default_health = product_scope.health_data_default(product)
+    selected = product_scope.surface(default_health if health_data is None else health_data)
+    prompt_names = tuple(sorted(selected.prompts))
 
     def refuse(kind: str, arguments: dict[str, Any]) -> dict[str, Any]:  # pragma: no cover
         raise AssertionError("the contract gate never calls a tool")
 
-    runtime = mcp_sdk_transport.SdkTransport("gate")
+    runtime = mcp_sdk_transport.SdkTransport("gate", selected)
     runtime.start()
     try:
         readings = {
-            "legacy": _read_era(runtime, refuse, modern=False),
-            "modern": _read_era(runtime, refuse, modern=True),
+            "legacy": _read_era(runtime, refuse, modern=False, prompt_names=prompt_names),
+            "modern": _read_era(runtime, refuse, modern=True, prompt_names=prompt_names),
         }
     finally:
         runtime.stop()
     for reading in readings.values():
-        reading["catalogue_sha256"] = mcp_transport.tool_catalogue_sha256()
-        reading["prompt_names"] = sorted(orchestration.PROMPTS)
+        reading["catalogue_sha256"] = selected.tool_catalogue_sha256()
+        reading["prompt_names"] = list(prompt_names)
     return readings
 
 
@@ -167,8 +208,13 @@ _ENVELOPE_VERSION = "io.modelcontextprotocol/protocolVersion"
 _ENVELOPE_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
 
 
-def _read_era(runtime: Any, call_tool: Any, *, modern: bool) -> dict[str, Any]:
-    from garmin_coach_loop import orchestration
+def _read_era(
+    runtime: Any, call_tool: Any, *, modern: bool,
+    prompt_names: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    if prompt_names is None:
+        from garmin_coach_loop import orchestration
+        prompt_names = tuple(sorted(orchestration.PROMPTS))
 
     def rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         body: dict[str, Any] = {"jsonrpc": "2.0", "id": 1, "method": method}
@@ -222,7 +268,7 @@ def _read_era(runtime: Any, call_tool: Any, *, modern: bool) -> dict[str, Any]:
         "server_title": server_info.get("title"),
         "prompts": rpc("prompts/list")["prompts"],
         "prompt_bodies": {
-            name: rpc("prompts/get", {"name": name}) for name in sorted(orchestration.PROMPTS)
+            name: rpc("prompts/get", {"name": name}) for name in prompt_names
         },
     }
 
@@ -305,11 +351,20 @@ def main() -> int:
         default="origin/main",
         help="the ref whose reviewed surface this checkout must still answer with",
     )
+    parser.add_argument(
+        "--product", choices=("hybrid", "training"), default="hybrid",
+        help="the deployment product whose contract is compared",
+    )
+    parser.add_argument(
+        "--health-data", choices=("on", "off"),
+        help="explicit capability override; otherwise each ref uses its product default",
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable result")
     arguments = parser.parse_args()
 
-    base = base_surface(arguments.base)
-    readings = served_surface()
+    health_data = None if arguments.health_data is None else arguments.health_data == "on"
+    base = base_surface(arguments.base, arguments.product, health_data)
+    readings = served_surface(arguments.product, health_data)
 
     differences: list[str] = []
     for era in ("legacy", "modern"):
@@ -328,6 +383,8 @@ def main() -> int:
             json.dumps(
                 {
                     "base": arguments.base,
+                    "product": arguments.product,
+                    "health_data": arguments.health_data or "product_default",
                     "base_framing": base["framing"],
                     "tools": len(base["tools"]),
                     "catalogue_sha256": base["catalogue_sha256"],
@@ -339,12 +396,12 @@ def main() -> int:
             )
         )
     elif differences:
-        print(f"MCP contract differs from {arguments.base}:\n")
+        print(f"MCP contract for {arguments.product} differs from {arguments.base}:\n")
         for difference in differences:
             print(f"  - {difference}")
     else:
         print(
-            f"MCP contract unchanged from {arguments.base}: "
+            f"MCP contract for {arguments.product} unchanged from {arguments.base}: "
             f"{len(base['tools'])} tools, identical on the 2025 and 2026-07-28 eras.\n"
             f"  catalogue_sha256 {base['catalogue_sha256']}\n"
             f"  instructions     {len(base['instructions'])} characters\n"

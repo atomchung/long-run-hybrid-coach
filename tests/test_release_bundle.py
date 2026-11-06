@@ -315,6 +315,51 @@ class ReleaseIdentityTests(unittest.TestCase):
             instructions.write_text("stale", encoding="utf-8")
             self.assertNotEqual(data["instructions_sha256"], sha256_text(instructions.read_text(encoding="utf-8")))
 
+    def test_training_bundle_round_trip_verifies_the_observed_product(self):
+        # Two products can serve identical tool bytes when both have health data off.
+        # The operator must verify the selected store/product as well as those bytes.
+        with tempfile.TemporaryDirectory() as directory:
+            outside = Path(directory)
+            repo = outside / "repo"
+            repo.mkdir()
+            for name in ("garmin_coach_loop", SKILL):
+                shutil.copytree(ROOT / name, repo / name, ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copyfile(ROOT / "chatgpt-app-submission.training.json",
+                            repo / "chatgpt-app-submission.training.json")
+            for arguments in (["init", "-q"], ["add", "."],
+                              ["-c", "user.name=Fixture", "-c", "user.email=fixture@localhost",
+                               "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                               "commit", "-qm", "Synthetic release fixture"]):
+                subprocess.run(["git", *arguments], cwd=repo, check=True, capture_output=True)
+            commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+            path = outside / "bundle.json"
+            with mock.patch.object(release_bundle_module, "ROOT", repo):
+                command = ["build", "--git-commit", commit, "--gateway-domain",
+                           "https://gateway.example", "--output", str(path), "--product", "training"]
+                self.assertEqual(0, release_bundle_module.main(command))
+                bundle = json.loads(path.read_text())
+                legacy = release_bundle_module.bundle(commit, "https://gateway.example", False)
+            self.assertEqual(legacy["release_id"], bundle["release_id"])
+            from garmin_coach_loop import profile_training
+            self.assertEqual(profile_training.TOOL_CATALOGUE_SHA256, bundle["tool_catalogue_sha256"])
+            self.assertEqual(sha256_text((repo / profile_training.SUBMISSION_PACKET).read_text()),
+                             bundle["product_profile"]["submission_packet_sha256"])
+            identity = self._deployment(outside / "state")
+            expected = outside / "expected.json"
+            expected.write_text(json.dumps(identity))
+            observed = {"status": "ok", "release_identity": bundle, "deployment_identity": identity,
+                        "deployment_product": "training", "health_data": "off",
+                        "product_version": profile_training.VERSION}
+            def verify(health):
+                return verify_release(bundle_path=path, receipt_path=outside / "receipt.json",
+                                      expected_deployment_identity_path=expected,
+                                      opener=lambda *args, **kwargs: self._Response(health))
+            self.assertEqual("training", verify(observed)["observed_product"]["deployment_product"])
+            for field, wrong in (("deployment_product", "hybrid"), ("health_data", "on"),
+                                 ("product_version", "9.9.9")):
+                with self.subTest(field=field), self.assertRaisesRegex(ReleaseIdentityError, field):
+                    verify({**observed, field: wrong})
+
     def test_verify_fetches_runtime_and_refuses_blocked_or_mismatched_health(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -57,6 +57,7 @@ class ChangeGateTests(unittest.TestCase):
     def test_oauth_gateway_and_delivery_changes_need_live_smoke_only(self):
         plan = classify_changed_paths(
             ["garmin_coach_loop/gateway.py", "garmin_coach_loop/delivery.py"],
+            training_metadata_moved=False,
             diffs_by_path={
                 "garmin_coach_loop/gateway.py": "+        callback = oauth_callback()",
                 "garmin_coach_loop/delivery.py": "+        return verify_readback(event)",
@@ -436,6 +437,7 @@ class DemoAcceptanceGateTests(unittest.TestCase):
         # the demo does not silence or widen the package's own rows, or vice versa.
         plan = classify_changed_paths(
             ["garmin_coach_loop/gateway.py", "entrypoints/demo/model.py"],
+            training_metadata_moved=False,
             diffs_by_path={
                 "garmin_coach_loop/gateway.py": "+        callback = oauth_callback()"
             },
