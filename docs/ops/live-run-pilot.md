@@ -6,6 +6,8 @@
 
 使用有 HTTPS 的私人測試 gateway，配置單一程序與單一副本。它必須已執行此版本，且試跑者已經在**該 gateway** 連結過自己的帳號。分別部署的兩個 Coach 有不同身份資料庫與記憶體。請只在對應的 gateway 讀取，並使用其原有連線，連線需有活動讀取權限。正式服務、training 產品和 Garmin Connect 商店都不是建置步驟。
 
+私人單人服務先設定 `GARMIN_COACH_LOOP_PILOT_ATHLETE_SHA256` 為該 Intervals athlete ID 原字串（UTF-8，無換行）的 SHA-256 小寫十六進位值，再開放本人授權。Gateway 以 Intervals 在 OAuth 交換時回傳的帳號識別比對，拒絕其他帳號。將測試服務的精確 HTTPS `/oauth/callback` 加到 Intervals OAuth 應用的 redirect 清單；試跑只讀運動資料時可在授權請求指定 `scope=ACTIVITY:READ`。
+
 在該 gateway 的管理環境中執行以下指令。state root 是 gateway 的資料根，athlete ID 是本人已連結的 Intervals 帳號。指定一個尚不存在、位於 Git 以外的私有目錄。
 
 ```sh

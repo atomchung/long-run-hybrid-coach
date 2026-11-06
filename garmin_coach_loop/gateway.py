@@ -3738,10 +3738,8 @@ class CoachGateway:
         rest of its life. Leaving the claim off instead falls back to the `iat` check that
         already covers every token minted before this claim existed.
 
-        Never refuses issuance itself. The credential inside this token was just proven
-        live by the OAuth exchange that produced it, so an owner that briefly fails to
-        resolve here is not a reason to withhold the token -- only a reason not to also
-        claim an epoch this call cannot vouch for.
+        A restricted pilot also requires this lookup to succeed at issuance: the
+        registered owner must still be admitted under the current configuration.
         """
         try:
             owner_id = self.resolve_owner(provider_token)
@@ -3899,10 +3897,15 @@ class CoachGateway:
         # refuse every call this token ever makes, where omitting it just falls back to
         # the `iat` check below, exactly as every token minted before this claim existed
         # already does.
-        epoch = self._revocation_epoch(provider_token) if isinstance(provider_token, str) and provider_token else None
+        epoch = (
+            self._revocation_epoch(provider_token)
+            if isinstance(provider_token, str) and provider_token else None
+        )
         if self.config.pilot_athlete_sha256 is not None and epoch is None:
             # A code may have been issued just before this pilot was restricted.
-            raise self._token_refusal(security_log.UNKNOWN_OWNER, "invalid_grant", client_id=client_id)
+            raise self._token_refusal(
+                security_log.UNKNOWN_OWNER, "invalid_grant", client_id=client_id
+            )
         if epoch is not None:
             payload["revocation_epoch"] = epoch
         access_token = token_envelope.seal(
