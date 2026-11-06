@@ -50,7 +50,8 @@ class ProductScopeError(RuntimeError):
 
 def health_data_default(product: str) -> bool:
     """What a deployment of ``product`` does when the switch is not set."""
-    return validate_product(product) == DEFAULT_PRODUCT
+    from .product_profiles import get_profile
+    return get_profile(product).health_data
 
 
 def health_data_setting(value: str | None) -> bool | None:

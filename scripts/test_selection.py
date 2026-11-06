@@ -84,6 +84,12 @@ def select_test_paths(changed_paths: list[str] | tuple[str, ...]) -> dict[str, o
                 mapped = True
                 _add(selected, reasons, "tests/test_gateway.py", "gateway boundary control")
                 _add(selected, reasons, "tests/test_mcp_gateway.py", "MCP gateway boundary control")
+            elif module in {"profile_hybrid", "profile_training", "product_profiles"}:
+                mapped = True
+                for test_path in ("tests/test_product_profiles.py", "tests/test_plugin_version.py",
+                                  "tests/test_product_scope.py", "tests/test_release_candidate_surface.py",
+                                  "tests/test_mcp_contract_equivalence.py"):
+                    _add(selected, reasons, test_path, "product profile boundary control")
             elif module == "mcp_transport":
                 mapped = True
                 for test_path in (
@@ -120,14 +126,16 @@ def select_test_paths(changed_paths: list[str] | tuple[str, ...]) -> dict[str, o
 
         script_tests = {
             "scripts/check_repo_safety.py": ("tests/test_repo_safety.py",),
-            "scripts/release_bundle.py": ("tests/test_release_bundle.py",),
+            "scripts/release_bundle.py": ("tests/test_release_bundle.py", "tests/test_product_profiles.py"),
+            "scripts/check_product_profiles.py": ("tests/test_product_profiles.py",),
+            "scripts/mcp_contract_equivalence.py": ("tests/test_mcp_contract_equivalence.py",),
             "scripts/verify_registry_release.py": ("tests/test_registry_release.py",),
             "scripts/render_plan_preview.py": ("tests/test_render_preview.py",),
             "scripts/probe_provider_conformance.py": (
                 "tests/test_probe_provider_conformance.py",
             ),
             "scripts/test_selection.py": ("tests/test_process_gates.py",),
-            "scripts/change_gates.py": ("tests/test_process_gates.py",),
+            "scripts/change_gates.py": ("tests/test_process_gates.py", "tests/test_product_profiles.py"),
             "scripts/verify_production_promotion.py": ("tests/test_process_gates.py",),
             "scripts/mcp_protocol_envelope.py": ("tests/test_protocol_envelope.py",),
         }

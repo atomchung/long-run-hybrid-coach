@@ -59,6 +59,9 @@ rather than shipping an unreviewed sentence. A separate URL or name is not
 evidence of directory acceptance; track the submission in
 [issue #519](https://github.com/atomchung/long-run-hybrid-coach/issues/519).
 
+Release settings and submission packet selection live in the two
+[product profiles](product-profiles.md). CI checks each product's served contract.
+
 ## Deployment configuration
 
 `GARMIN_COACH_LOOP_PRODUCT` accepts exactly `hybrid` or `training`:
