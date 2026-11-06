@@ -986,6 +986,49 @@ class GatewayIdentityBoundaryTests(GatewayTestCase):
 # --------------------------------------------------------------------------------------
 
 
+class ProviderBindingTests(GatewayTestCase):
+    """A shared gateway binds its provider operations to each authenticated request."""
+
+    def test_plan_and_preplan_reads_use_their_own_connection_and_product_scope(self):
+        from garmin_coach_loop.source_intervals import IntervalsEvidenceReader
+
+        reads = []
+        class RecordingReader(IntervalsEvidenceReader):
+            def recent_activity(bound, window):
+                reads.append((bound.credentials.api_key, "recent", None))
+                return super().recent_activity(window)
+
+            def read_domain(bound, window, **options):
+                reads.append((bound.credentials.api_key, "domain", options["read_recovery"]))
+                return super().read_domain(window, **options)
+
+        self.gateway = CoachGateway(dataclasses.replace(self.config, health_data=False),
+                                    fetch=self.fake, now=lambda: self.now,
+                                    evidence_reader_factory=RecordingReader)
+        self.seed_owner(TOKEN_A, athlete_id="i1", plan=publishable_plan())
+        self.seed_owner(TOKEN_B, athlete_id="i2")
+        self.assertEqual(200, self.route("session", body={"read": "all"}, token=TOKEN_A)[0])
+        self.assertEqual(200, self.route("session", body={}, token=TOKEN_B)[0])
+        self.assertIn((TOKEN_A, "domain", False), reads)
+        self.assertIn((TOKEN_B, "recent", None), reads)
+        self.assertFalse(any(token == TOKEN_A and kind == "recent" or
+                             token == TOKEN_B and kind == "domain" for token, kind, _ in reads))
+        self.assertFalse(any("/wellness" in url for _, url in self.fake.calls))
+
+    def test_outbound_settings_reads_bind_the_request_bearer_each_time(self):
+        from garmin_coach_loop.delivery import IntervalsTransport
+
+        bound = []
+        def transport(credentials, fetch):
+            bound.append((credentials.athlete_id, credentials.api_key))
+            return IntervalsTransport(credentials, fetch)
+        self.gateway = CoachGateway(self.config, fetch=self.fake, workout_transport_factory=transport)
+        for token in (TOKEN_A, TOKEN_B):
+            self.gateway._run_threshold_hr(token)
+        self.assertEqual([("0", TOKEN_A), ("0", TOKEN_B)], bound)
+        self.assertEqual(["Bearer " + TOKEN_A, "Bearer " + TOKEN_B], self.fake.authorizations)
+
+
 class GatewaySessionTests(GatewayTestCase):
     def setUp(self):
         super().setUp()

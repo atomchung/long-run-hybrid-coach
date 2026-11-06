@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterator, Protocol, Sequence
 
 from .prescription import duration_text as _duration_text
 from .prescription import pace_text as _pace_text
@@ -1035,6 +1035,21 @@ def _validate_set_approval(proposal_set: dict[str, Any], approval: dict[str, Any
             raise DeliveryError(f"delivery set approval {field} mismatch")
 
 
+class WorkoutTransport(Protocol):
+    """Provider operations used by the approved delivery and read-back path."""
+
+    def list_events(self, day: str) -> list[dict[str, Any]]: ...
+    def list_events_range(self, oldest: str, newest: str) -> list[dict[str, Any]]: ...
+    def bulk_upsert(self, event: dict[str, Any]) -> list[dict[str, Any]]: ...
+    def get_event(self, event_id: str) -> dict[str, Any]: ...
+    def find_event(self, event_id: str) -> dict[str, Any] | None: ...
+    def delete_event(self, event_id: str) -> None: ...
+    def require_run_sport_settings(self) -> dict[str, Any] | None: ...
+    def update_run_sport_settings(self, patch: dict[str, Any]) -> dict[str, Any] | None: ...
+    def run_threshold_pace(self) -> tuple[bool, Any]: ...
+    def run_threshold_hr(self) -> tuple[bool, Any]: ...
+
+
 @dataclass
 class IntervalsTransport:
     credentials: IntervalsCredentials
@@ -1401,7 +1416,7 @@ class _AttemptJournal:
 
 
 def _refuse_pace_the_provider_would_strip(
-    proposal: dict[str, Any], transport: IntervalsTransport
+    proposal: dict[str, Any], transport: WorkoutTransport
 ) -> None:
     """Refuse a pace write Intervals would accept and then export without its target.
 
@@ -1454,7 +1469,7 @@ def _same_threshold_pace(left: Any, right: Any) -> bool:
 
 
 def _apply_confirmed_settings_changes(
-    proposal_set: dict[str, Any], transport: IntervalsTransport
+    proposal_set: dict[str, Any], transport: WorkoutTransport
 ) -> list[dict[str, Any]]:
     """Converge the set's confirmed provider prerequisite before any calendar write.
 
@@ -1499,7 +1514,7 @@ def _apply_confirmed_settings_changes(
 
 
 def _confirmed_run_threshold_hr(
-    proposal: dict[str, Any], transport: IntervalsTransport
+    proposal: dict[str, Any], transport: WorkoutTransport
 ) -> int | None:
     """Re-read the threshold HR the confirmed preview resolved against, and require it.
 
@@ -1533,7 +1548,7 @@ def _confirmed_run_threshold_hr(
 def _write_and_verify(
     proposal: dict[str, Any],
     *,
-    transport: IntervalsTransport,
+    transport: WorkoutTransport,
     journal: Any,
     event_id: str | None,
 ) -> tuple[str, dict[str, Any]]:
@@ -1594,7 +1609,7 @@ def publish_delivery(
     approval: dict[str, Any],
     *,
     load_current_plan: Callable[[], dict[str, Any]],
-    transport: IntervalsTransport,
+    transport: WorkoutTransport,
     now: dt.datetime | None = None,
     journal: Any | None = None,
     known_event_id: str | None = None,
@@ -1761,7 +1776,7 @@ def publish_delivery_set(
     approval: dict[str, Any],
     *,
     load_current_plan: Callable[[], dict[str, Any]],
-    transport: IntervalsTransport,
+    transport: WorkoutTransport,
     now: dt.datetime | None = None,
     journal: Any | None = None,
     resolved: set[str] | None = None,
@@ -2156,7 +2171,7 @@ def deliver_approved_set(
     proposal_set: dict[str, Any],
     approval: dict[str, Any],
     *,
-    transport: IntervalsTransport,
+    transport: WorkoutTransport,
     now: dt.datetime | None = None,
 ) -> dict[str, Any]:
     """Reserve, publish, record: the one delivery boundary the CLI and the gateway share.
@@ -2516,7 +2531,7 @@ def _validate_withdrawal_approval(proposal_set: dict[str, Any], approval: dict[s
 
 
 def _owned_matches(
-    transport: IntervalsTransport,
+    transport: WorkoutTransport,
     plan: dict[str, Any],
     owned_external_id: str,
 ) -> list[dict[str, Any]]:
@@ -2530,7 +2545,7 @@ def withdraw_approved_set(
     proposal_set: dict[str, Any],
     approval: dict[str, Any],
     *,
-    transport: IntervalsTransport,
+    transport: WorkoutTransport,
     now: dt.datetime | None = None,
     today: str | None = None,
 ) -> dict[str, Any]:
@@ -2689,7 +2704,7 @@ def _withdraw_one(
     item: dict[str, Any],
     *,
     proposal_set: dict[str, Any],
-    transport: IntervalsTransport,
+    transport: WorkoutTransport,
     journal: Any,
     accepted_versions: set[int],
     as_of: str,

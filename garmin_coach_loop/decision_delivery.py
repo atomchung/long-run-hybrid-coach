@@ -13,7 +13,7 @@ import datetime as dt
 from typing import Any
 
 from .delivery import (
-    DELIVER_DIRECTION, WITHDRAW_DIRECTION, DeliveryError, IntervalsTransport,
+    DELIVER_DIRECTION, WITHDRAW_DIRECTION, DeliveryError, WorkoutTransport,
     _AttemptJournal, _confirmation_still_describes_the_event, _observe_superseded_event,
     _open_attempt, _owned_matches, _proposal_hash, _release_if_untouched, _set_hash,
     approve_delivery_set, approve_withdrawal_set, deliver_approved_set,
@@ -46,7 +46,7 @@ def _prescription(plan: dict[str, Any], approved: dict[str, Any]) -> dict[str, A
 
 
 def prepare_decision_delivery(
-    before: dict[str, Any] | None, after: dict[str, Any], *, transport: IntervalsTransport,
+    before: dict[str, Any] | None, after: dict[str, Any], *, transport: WorkoutTransport,
     today: str, now: dt.datetime, publish_new_workouts: bool = False,
     read_run_threshold_hr: Any = None, target_account: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -166,7 +166,7 @@ def _rebind_version(original: dict[str, Any], version: int) -> dict[str, Any]:
 
 class _FutureTransport:
     """The existing writer may only mutate this exact still-future owned target."""
-    def __init__(self, transport: IntervalsTransport, previous_id: str | None, owned: str, today: str,
+    def __init__(self, transport: WorkoutTransport, previous_id: str | None, owned: str, today: str,
                  *, read_only: bool = False):
         self.transport, self.previous_id, self.owned, self.today = transport, previous_id, owned, today
         self.read_only = read_only
@@ -199,7 +199,7 @@ class _FutureTransport:
         return self.transport.delete_event(event_id)
 
 
-def _withdraw_retired(state_dir: Any, proposal_set: dict[str, Any], *, transport: IntervalsTransport,
+def _withdraw_retired(state_dir: Any, proposal_set: dict[str, Any], *, transport: WorkoutTransport,
                       today: str, now: dt.datetime) -> dict[str, Any]:
     """Remove a future delivery whose session this confirmed week roll retired.
 
@@ -245,7 +245,7 @@ def _withdraw_retired(state_dir: Any, proposal_set: dict[str, Any], *, transport
 
 def apply_decision_delivery(
     state_dir: Any, approved_plan: dict[str, Any], prepared: dict[str, Any], *,
-    transport: IntervalsTransport, approved_by: str, today: str, now: dt.datetime,
+    transport: WorkoutTransport, approved_by: str, today: str, now: dt.datetime,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     delivered, withdrawn, skipped, unresolved, settings = [], [], [], list(prepared["unresolved"]), []

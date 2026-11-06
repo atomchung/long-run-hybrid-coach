@@ -30,6 +30,7 @@ from typing import Any, Callable, Iterator
 from .context_core import (
     BuildWindow,
     ContextBuildError,
+    RecentActivity,
     SourceDomain,
     _classify_running,
     coverage_entry,
@@ -75,23 +76,6 @@ class IntervalsCredentials:
     api_key: str
     athlete_id: str
     auth_scheme: str = "basic"
-
-
-@dataclass(frozen=True)
-class RecentActivity:
-    """What the provider holds about recent training, for a caller that reads only that.
-
-    Deliberately not a ``SourceDomain`` with the recovery half left empty. Those fields
-    are coverage entries and trends, and an entry that was never populated is
-    indistinguishable, at every reader downstream, from one whose provider answered and
-    had nothing to report -- exactly the "unread reads as measured-nothing" confusion
-    AGENTS.md 3 exists to prevent. A value that can only describe recent activity cannot
-    be mistaken for a statement about recovery.
-    """
-
-    actuals_window_start: dt.date
-    activity_days: frozenset[dt.date]
-    recent_actuals: list[dict[str, Any]]
 
 
 @dataclass
@@ -2135,3 +2119,22 @@ def fetch_domain(
         extra_unknowns=list(notes),
         recovery_days=_recovery_days(wellness, window),
     )
+
+
+@dataclass(frozen=True, repr=False)
+class IntervalsEvidenceReader:
+    """Read activity-only or full context using the credentials bound to this request."""
+
+    credentials: IntervalsCredentials
+    fetch: Fetcher | None = None
+
+    def recent_activity(self, window: BuildWindow) -> RecentActivity:
+        return fetch_recent_activity(self.credentials, window, fetch=self.fetch)
+
+    def read_domain(self, window: BuildWindow, *, threshold_sec_per_km: int | float | None,
+                    structured_dates: frozenset[dt.date], baseline_max_hr: Any,
+                    read_recovery: bool) -> SourceDomain:
+        return fetch_domain(self.credentials, window, fetch=self.fetch,
+                            threshold_sec_per_km=threshold_sec_per_km,
+                            structured_dates=structured_dates, baseline_max_hr=baseline_max_hr,
+                            read_wellness=read_recovery)
