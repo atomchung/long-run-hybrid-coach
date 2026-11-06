@@ -187,12 +187,46 @@ def tool_catalogue_digest(package: list[tuple[str, bytes]]) -> str:
     return digest
 
 
-def bundle(commit: str, domain: str, health_data: bool = True) -> dict:
+_PROFILE_PROGRAM = r"""
+import json, sys
+from garmin_coach_loop.product_profiles import get_profile
+p = get_profile(sys.argv[1])
+health = p.effective_health_data(None if sys.argv[2] == "default" else sys.argv[2] == "on")
+print(json.dumps({"product": p.product, "version": p.version,
+                  "health_data": "on" if health else "off",
+                  "oauth_scopes": p.oauth_scopes(health),
+                  "submission_packet": p.submission_packet}))
+"""
+
+
+def profile_at_package(package: list[tuple[str, bytes]], product: str,
+                       health_data: bool | None) -> dict:
+    """Read the target commit's profile, never this checkout's release configuration."""
+    setting = "default" if health_data is None else ("on" if health_data else "off")
+    result = _run_package(package, _PROFILE_PROGRAM, product, setting)
+    if result.returncode != 0:
+        raise ReleaseIdentityError(
+            "could not read product profile at this commit; commits before profiles "
+            "must use the legacy build without --product and with explicit --health-data"
+        )
+    return json.loads(result.stdout)
+
+
+def bundle(commit: str, domain: str, health_data: bool | None = None, *,
+           product: str | None = None) -> dict:
     # Terminal newlines are stripped to match `orchestration.instructions()`, which is the
     # value `prompts/get` actually serves; hashing Git's conventional final newline would
     # bind a string no client ever receives.
     instructions = git_text(commit, INSTRUCTIONS).rstrip("\r\n")
     package = git_tree(commit, PACKAGE, (".py", ".md"))
+    profile = profile_at_package(package, product, health_data) if product is not None else None
+    if profile is not None:
+        health_data = profile["health_data"] == "on"
+        profile["submission_packet_sha256"] = sha256_text(
+            git_text(commit, profile["submission_packet"])
+        )
+    elif health_data is None:
+        health_data = True
     if health_data:
         catalogue = tool_catalogue_digest(package)
     else:
@@ -210,6 +244,7 @@ def bundle(commit: str, domain: str, health_data: bool = True) -> dict:
     }
     return {
         "schema_version": "2",
+        **({"product_profile": profile} if profile is not None else {}),
         "release_id": make_release_id(**identity),
         **identity,
         # The prompt itself, not only its digest: it is the one bound artifact a person
@@ -412,6 +447,13 @@ def verify_release(
     runtime = release_identity(health.get("release_identity", {}))
     if runtime != identity:
         raise ReleaseIdentityError("gateway runtime identity does not match the release built here")
+    if "product_profile" in bundled:
+        profile = bundled["product_profile"]
+        for field, reported in (("product", "deployment_product"), ("version", "product_version"),
+                                ("health_data", "health_data")):
+            if (not isinstance(profile, dict) or not isinstance(profile.get(field), str)
+                    or profile[field] != health.get(reported)):
+                raise ReleaseIdentityError(f"gateway {reported} does not match the bundled product profile")
     expected_path = expected_deployment_identity_path
     if expected_path is None:
         configured_path = os.environ.get(EXPECTED_DEPLOYMENT_IDENTITY_FILE_ENV_VAR)
@@ -433,6 +475,9 @@ def verify_release(
             "gateway artifact and deployment configuration parity only"
         ),
     }
+    if "product_profile" in bundled:
+        receipt["observed_product"] = {field: health[field] for field in
+                                      ("deployment_product", "product_version", "health_data")}
     output = outside_repo(receipt_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
@@ -442,7 +487,7 @@ def verify_release(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
-    build = sub.add_parser("build"); build.add_argument("--gateway-domain", required=True); build.add_argument("--output", required=True); build.add_argument("--git-commit"); build.add_argument("--health-data", default="on", choices=("on", "off"))
+    build = sub.add_parser("build"); build.add_argument("--gateway-domain", required=True); build.add_argument("--output", required=True); build.add_argument("--git-commit"); build.add_argument("--health-data", choices=("on", "off")); build.add_argument("--product", choices=("hybrid", "training"))
     verify = sub.add_parser("verify"); verify.add_argument("--bundle", required=True); verify.add_argument("--receipt", required=True); verify.add_argument("--expected-deployment-identity", required=True)
     expected = sub.add_parser("deployment-identity"); expected.add_argument("--env-file", required=True); expected.add_argument("--output", required=True)
     observe = sub.add_parser("observe")
@@ -455,7 +500,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "build":
             domain = normalise_gateway_domain(args.gateway_domain); commit = args.git_commit or commit_at_head()
-            result = bundle(commit, domain, args.health_data == "on"); output = outside_repo(Path(args.output)); output.parent.mkdir(parents=True, exist_ok=True); output.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            result = bundle(commit, domain, None if args.health_data is None else args.health_data == "on", product=args.product); output = outside_repo(Path(args.output)); output.parent.mkdir(parents=True, exist_ok=True); output.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             print(result["release_id"]); return 0
         if args.command == "deployment-identity":
             identity = expected_deployment_identity_from_env(

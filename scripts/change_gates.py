@@ -39,6 +39,9 @@ LIVE_SMOKE_PATHS = frozenset(
         # still works is a question only a real run answers.
         "garmin_coach_loop/hosted.py",
         "garmin_coach_loop/product_identity.py",
+        "garmin_coach_loop/product_profiles.py",
+        "garmin_coach_loop/profile_hybrid.py",
+        "garmin_coach_loop/profile_training.py",
         # The wire every connected client reaches `/mcp` on. It serves no catalogue of
         # its own -- the reviewed surface is still `mcp_transport.py`, and the digest row
         # below is what notices a moved one whichever file moved it -- but it decides
@@ -59,6 +62,59 @@ MODEL_FACING_PATHS = frozenset(
         "garmin_coach_loop/product_scope.py",
     }
 )
+
+# The profile/default layer can select a different reviewed surface. Compare every
+# product's actual tools and prompts before treating a pure extraction as unchanged.
+PROFILE_SURFACE_PATHS = frozenset({
+    "garmin_coach_loop/product_scope.py",
+    "garmin_coach_loop/product_profiles.py",
+    "garmin_coach_loop/profile_hybrid.py",
+    "garmin_coach_loop/profile_training.py",
+})
+PROFILE_SURFACE_MOVED_REASON = "product profiles (served tools, prompts or health-data boundary moved)"
+TRAINING_METADATA_REASON = "training profile (OAuth permissions, version or submission packet changed or unavailable)"
+PROFILE_SURFACE_PROGRAM = r"""
+import ast, hashlib, json
+from pathlib import Path
+from garmin_coach_loop import product_scope
+# Runtime filtering and direct-call refusals can change without moving a descriptor.
+# Keep the conservative source gate for everything outside the default selector;
+# its observable value is included below for each product.
+policy = ast.parse(Path(product_scope.__file__).read_text())
+policy.body = [node for node in policy.body
+               if not (isinstance(node, ast.FunctionDef) and node.name == "health_data_default")]
+surfaces = {"health_data_boundary": ast.dump(policy)}
+for product in ("hybrid", "training"):
+    readings = {}
+    for label, enabled in (("default", product_scope.health_data_default(product)),
+                           ("on", True), ("off", False)):
+        s = product_scope.surface(enabled)
+        readings[label] = {
+            "tools": [t.descriptor() for t in s.tools], "instructions": s.instructions(),
+            "prompts": {name: [descriptor(), body()]
+                        for name, (descriptor, body) in s.prompts.items()},
+        }
+    surfaces[product] = readings
+print(hashlib.sha256(json.dumps(surfaces, sort_keys=True, ensure_ascii=False).encode()).hexdigest())
+"""
+
+TRAINING_METADATA_PROGRAM = r"""
+import hashlib, json
+from importlib.util import find_spec
+from pathlib import Path
+from garmin_coach_loop.gateway import GatewayConfig
+values = {}
+for setting in (None, False, True):
+    cfg = GatewayConfig(Path.cwd(), b"0" * 32, "test", "test", product="training", health_data=setting)
+    values[str(setting)] = [cfg.served_version, cfg.intervals_oauth_scopes]
+if find_spec("garmin_coach_loop.product_profiles"):
+    from garmin_coach_loop.product_profiles import get_profile
+    values["submission_packet"] = get_profile("training").submission_packet
+else:
+    values["submission_packet"] = "chatgpt-app-submission.training.json"
+print(hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest())
+"""
+
 
 # Diff-gated: the file carries both the served MCP surface and ordinary transport code.
 DIFF_GATED_SURFACE_PATH = "garmin_coach_loop/mcp_transport.py"
@@ -255,7 +311,7 @@ def _changed_lines(diff: str) -> str:
     )
 
 
-def _catalogue_digest_in(directory: str | Path) -> str | None:
+def _catalogue_digest_in(directory: str | Path, program: str = CATALOGUE_DIGEST_PROGRAM) -> str | None:
     """Run ``tool_catalogue_sha256()`` against the package in ``directory``.
 
     A child interpreter, never an in-process import: this module is also imported by the
@@ -265,7 +321,7 @@ def _catalogue_digest_in(directory: str | Path) -> str | None:
     """
     environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
     result = subprocess.run(
-        [sys.executable, "-c", CATALOGUE_DIGEST_PROGRAM],
+        [sys.executable, "-c", program],
         cwd=directory,
         capture_output=True,
         text=True,
@@ -277,7 +333,7 @@ def _catalogue_digest_in(directory: str | Path) -> str | None:
     return digest
 
 
-def tool_catalogue_sha256_at(ref: str) -> str | None:
+def tool_catalogue_sha256_at(ref: str, *, program: str = CATALOGUE_DIGEST_PROGRAM) -> str | None:
     """The catalogue digest ``ref`` serves, or ``None`` when it cannot be built.
 
     There is no file to read: ``tools/list`` exists only once ``mcp_transport`` has been
@@ -305,7 +361,7 @@ def tool_catalogue_sha256_at(ref: str) -> str | None:
         )
         if extracted.returncode != 0:
             return None
-        return _catalogue_digest_in(directory)
+        return _catalogue_digest_in(directory, program)
 
 
 def working_tree_tool_catalogue_sha256() -> str | None:
@@ -465,6 +521,8 @@ def classify_changed_paths(
     diffs_by_path: dict[str, str] | None = None,
     catalogue_moved: bool | None = None,
     dependency_pin_moved: bool | None = None,
+    profile_surface_moved: bool | None = None,
+    training_metadata_moved: bool | None = None,
 ) -> dict[str, object]:
     """Name the gates these paths need.
 
@@ -493,13 +551,17 @@ def classify_changed_paths(
     demo_reasons: list[str] = []
 
     for path in paths:
-        if live_boundary_changed(path, diffs_by_path.get(path)):
+        if path == "garmin_coach_loop/product_scope.py" or live_boundary_changed(path, diffs_by_path.get(path)):
             smoke_reasons.append(path)
 
         if demo_acceptance_changed(path):
             demo_reasons.append(demo_acceptance_reason(path))
 
-        if path in MODEL_FACING_PATHS:
+        if path in PROFILE_SURFACE_PATHS:
+            # Unknown remains a manual gate; only actual equivalence clears it.
+            if profile_surface_moved is None:
+                surface_reasons.append(path)
+        elif path in MODEL_FACING_PATHS:
             surface_reasons.append(path)
         elif path.startswith(".agents/skills/garmin-coach-loop/"):
             # The Skill is a client-facing surface, but the current OpenAI submission
@@ -549,6 +611,9 @@ def classify_changed_paths(
         elif dependency_pin_moved:
             protocol_reasons.append(DEPENDENCY_PIN_MOVED_REASON)
 
+    if profile_surface_moved:
+        surface_reasons.append(PROFILE_SURFACE_MOVED_REASON)
+
     if catalogue_moved:
         # The reviewed bytes are what the digest binds, so a moved digest is a changed
         # surface whichever file moved it -- the catalogue is assembled from constants
@@ -556,6 +621,11 @@ def classify_changed_paths(
         surface_reasons.append(CATALOGUE_MOVED_REASON)
 
     submission_reasons = [path for path in paths if path in SUBMISSION_ARTIFACT_PATHS]
+    metadata_reasons = []
+    if (set(paths) & (PROFILE_SURFACE_PATHS | {"garmin_coach_loop/gateway.py"})
+            and training_metadata_moved is not False):
+        metadata_reasons.append(TRAINING_METADATA_REASON)
+    submission_reasons.extend(metadata_reasons)
 
     # Scan Tools stays out of this: it is about the reviewed tool catalogue, and a new
     # module cannot move that without `mcp_transport.py` changing too, which is caught
@@ -582,7 +652,7 @@ def classify_changed_paths(
         for path in surface_reasons
     )
     live_smoke = bool(smoke_reasons)
-    client_acceptance = bool(surface_reasons or protocol_reasons)
+    client_acceptance = bool(surface_reasons or protocol_reasons or metadata_reasons)
     resubmission_reasons = sorted(
         set(submission_reasons) | (set(surface_reasons) if scan_tools else set())
     )
@@ -592,7 +662,7 @@ def classify_changed_paths(
         "live_smoke": live_smoke,
         "live_smoke_reasons": sorted(set(smoke_reasons)),
         "client_acceptance": client_acceptance,
-        "client_acceptance_reasons": sorted(set(surface_reasons) | set(protocol_reasons)),
+        "client_acceptance_reasons": sorted(set(surface_reasons) | set(protocol_reasons) | set(metadata_reasons)),
         "protocol_acceptance": bool(protocol_reasons),
         "protocol_acceptance_reasons": sorted(set(protocol_reasons)),
         "scan_tools": scan_tools,
@@ -668,6 +738,20 @@ def main() -> int:
     catalogue_moved = (
         None if base_digest is None or head_digest is None else base_digest != head_digest
     )
+    profile_base = profile_head = None
+    if any(path in PROFILE_SURFACE_PATHS for path in paths):
+        profile_head = _catalogue_digest_in(ROOT, PROFILE_SURFACE_PROGRAM)
+        if args.base:
+            profile_base = tool_catalogue_sha256_at(args.base, program=PROFILE_SURFACE_PROGRAM)
+    profile_moved = (None if profile_base is None or profile_head is None
+                     else profile_base != profile_head)
+    metadata_base = metadata_head = None
+    if set(paths) & (PROFILE_SURFACE_PATHS | {"garmin_coach_loop/gateway.py"}):
+        metadata_head = _catalogue_digest_in(ROOT, TRAINING_METADATA_PROGRAM)
+        if args.base:
+            metadata_base = tool_catalogue_sha256_at(args.base, program=TRAINING_METADATA_PROGRAM)
+    metadata_moved = (None if metadata_base is None or metadata_head is None
+                      else metadata_base != metadata_head)
     head_pin = working_tree_dependency_pin()
     base_pin = dependency_pin_at(args.base) if args.base else None
     dependency_pin_moved = None if base_pin is None else base_pin != head_pin
@@ -679,9 +763,15 @@ def main() -> int:
                     diffs_by_path=diffs,
                     catalogue_moved=catalogue_moved,
                     dependency_pin_moved=dependency_pin_moved,
+                    profile_surface_moved=profile_moved,
+                    training_metadata_moved=metadata_moved,
                 ),
                 "tool_catalogue_sha256_base": base_digest,
                 "tool_catalogue_sha256_head": head_digest,
+                "training_metadata_sha256_base": metadata_base,
+                "training_metadata_sha256_head": metadata_head,
+                "profile_surface_sha256_base": profile_base,
+                "profile_surface_sha256_head": profile_head,
                 "dependency_pin_base": base_pin,
                 "dependency_pin_head": head_pin,
             },

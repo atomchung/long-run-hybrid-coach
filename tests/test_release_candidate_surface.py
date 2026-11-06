@@ -7,9 +7,9 @@ notice that a tool description changed -- and a changed description is precisely
 what creates a new reviewed surface that cannot roll under a pending review's
 snapshot (issue #182, AGENTS.md "Version numbers").
 
-So the numbers below are written out. Changing a tool, its description, its input
+The product profiles pin the numbers explicitly. Changing a tool, its description, its input
 schema or an annotation fails this file, and the failure says what to do: decide
-whether the move is intended, and if it is, update these constants in the same
+whether the move is intended, and if it is, update the corresponding profile in the same
 commit and treat the release as a new reviewed surface.
 
 This is the assertion that makes "we do not expect to change tools for submission"
@@ -21,7 +21,7 @@ import json
 import unittest
 from pathlib import Path
 
-from garmin_coach_loop import product_scope
+from garmin_coach_loop import product_scope, product_profiles
 from garmin_coach_loop.gateway import PLUGIN_VERSION, PRODUCT_VERSION
 from garmin_coach_loop.mcp_transport import (
     RETIRED_TOOLS,
@@ -36,15 +36,15 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / ".agents" / "skills" / "garmin-coach-loop"
 
 # The release candidate this repository currently carries.
+FULL_PROFILE = product_profiles.get_profile("hybrid")
+TRAINING_PROFILE = product_profiles.get_profile("training")
 RELEASE_CANDIDATE_VERSION = "1.4.11"
 # The Plugin entry's candidate, numbered on its own (AGENTS.md "Version numbers").
 PLUGIN_RELEASE_CANDIDATE_VERSION = "1.4.11"
 
 # What the catalogue is, at that version.
-RELEASE_CANDIDATE_TOOL_COUNT = 23
-RELEASE_CANDIDATE_TOOL_CATALOGUE_SHA256 = (
-    "a92d1f4da5461a6ea47038d26614c7d2de7b11a6188b4744126bc6985bf99d2b"
-)
+RELEASE_CANDIDATE_TOOL_COUNT = FULL_PROFILE.tool_count
+RELEASE_CANDIDATE_TOOL_CATALOGUE_SHA256 = FULL_PROFILE.tool_catalogue_sha256
 
 # The other two reviewed surfaces. AGENTS.md "Version numbers": a patch that moves
 # `tool_catalogue_sha256`, `instructions_sha256` **or** `skill_sha256` still creates a new
@@ -52,9 +52,7 @@ RELEASE_CANDIDATE_TOOL_CATALOGUE_SHA256 = (
 # prompt and the packaged Skill could move with nothing but a path rule in
 # `change_gates.py` to notice -- and a path rule says a file changed, never that the bytes
 # a reviewer approved are no longer the bytes being served.
-RELEASE_CANDIDATE_INSTRUCTIONS_SHA256 = (
-    "897b240fc1aeca9d979fda2ed088cfc4ef59a6c36f43cc48757d796ad9ea0dc4"
-)
+RELEASE_CANDIDATE_INSTRUCTIONS_SHA256 = FULL_PROFILE.instructions_sha256
 RELEASE_CANDIDATE_SKILL_SHA256 = (
     "8932154ff3321e62be79cc7468389059139c5328281b0807daa6b6dc18d406fb"
 )
@@ -63,13 +61,9 @@ RELEASE_CANDIDATE_SKILL_SHA256 = (
 # the one the OpenAI directory reviews (issue #519). It is derived from the full surface
 # above, so it moves whenever that does -- and also when only the derivation in
 # `product_scope.py` moves, which the full digests cannot see.
-RELEASE_CANDIDATE_WITHOUT_HEALTH_TOOL_COUNT = 22
-RELEASE_CANDIDATE_WITHOUT_HEALTH_TOOL_CATALOGUE_SHA256 = (
-    "da469a84bfa7d3bddaacf7cb52f5911cadc03406cb192019b1a2655a793b0c93"
-)
-RELEASE_CANDIDATE_WITHOUT_HEALTH_INSTRUCTIONS_SHA256 = (
-    "d083c59b82214ac0c97d9ac6431118b8151d29fdb6d0a61e9c0dff5dc5dd3275"
-)
+RELEASE_CANDIDATE_WITHOUT_HEALTH_TOOL_COUNT = TRAINING_PROFILE.tool_count
+RELEASE_CANDIDATE_WITHOUT_HEALTH_TOOL_CATALOGUE_SHA256 = TRAINING_PROFILE.tool_catalogue_sha256
+RELEASE_CANDIDATE_WITHOUT_HEALTH_INSTRUCTIONS_SHA256 = TRAINING_PROFILE.instructions_sha256
 
 # Names a client may still hold in a cached catalogue. They are answered as a refusal
 # rather than a protocol error, and they must not come back as tools.
@@ -88,7 +82,7 @@ class ReleaseCandidateSurfaceTests(unittest.TestCase):
             RELEASE_CANDIDATE_TOOL_CATALOGUE_SHA256,
             tool_catalogue_sha256(),
             "the served tool catalogue moved. If that is intended, this release is a new "
-            "reviewed surface: update RELEASE_CANDIDATE_TOOL_CATALOGUE_SHA256 in the same "
+            "reviewed surface: update profile_hybrid.TOOL_CATALOGUE_SHA256 in the same "
             "commit, bump the version, and run Scan Tools before resubmitting.",
         )
 
@@ -106,7 +100,7 @@ class ReleaseCandidateSurfaceTests(unittest.TestCase):
             RELEASE_CANDIDATE_INSTRUCTIONS_SHA256,
             sha256_text(instructions()),
             "the served orchestration prompt moved. If that is intended, this release is "
-            "a new reviewed surface: update RELEASE_CANDIDATE_INSTRUCTIONS_SHA256 in the "
+            "a new reviewed surface: update profile_hybrid.INSTRUCTIONS_SHA256 in the "
             "same commit, bump the version, and re-run client acceptance before "
             "resubmitting.",
         )
@@ -119,7 +113,7 @@ class ReleaseCandidateSurfaceTests(unittest.TestCase):
             RELEASE_CANDIDATE_WITHOUT_HEALTH_TOOL_CATALOGUE_SHA256,
             served.tool_catalogue_sha256(),
             "the catalogue without health data moved. If that is intended, the Plugin "
-            "entry is a new reviewed surface: update this constant in the same commit, "
+            "entry is a new reviewed surface: update the training profile in the same commit, "
             "bump the version, and run Scan Tools against the Plugin deployment.",
         )
         self.assertEqual(

@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from garmin_coach_loop import gateway as gateway_module
+from garmin_coach_loop import profile_hybrid, profile_training
 from garmin_coach_loop.gateway import (
     PLUGIN_VERSION,
     PRODUCT_VERSION,
@@ -44,7 +45,7 @@ class PluginVersionTests(unittest.TestCase):
         self.assertEqual(PLUGIN_VERSION, self.config(product="training").served_version)
 
     def test_a_plugin_release_does_not_move_the_full_product(self):
-        with mock.patch.object(gateway_module, "PLUGIN_VERSION", UNRELEASED):
+        with mock.patch.object(profile_training, "VERSION", UNRELEASED):
             self.assertEqual(UNRELEASED, self.config(product="training").served_version)
             self.assertEqual(PRODUCT_VERSION, self.config().served_version)
             # Health data is a separate switch from the product; it does not pick a number.
@@ -53,12 +54,12 @@ class PluginVersionTests(unittest.TestCase):
             )
 
     def test_a_full_product_release_does_not_move_the_plugin(self):
-        with mock.patch.object(gateway_module, "PRODUCT_VERSION", UNRELEASED):
+        with mock.patch.object(profile_hybrid, "VERSION", UNRELEASED):
             self.assertEqual(UNRELEASED, self.config().served_version)
             self.assertEqual(PLUGIN_VERSION, self.config(product="training").served_version)
 
     def test_readyz_states_the_plugin_number_on_a_training_deployment(self):
-        with mock.patch.object(gateway_module, "PLUGIN_VERSION", UNRELEASED):
+        with mock.patch.object(profile_training, "VERSION", UNRELEASED):
             training = CoachGateway(self.config(product="training")).health()
             self.assertEqual(UNRELEASED, training["product_version"])
             self.assertEqual("training", training["deployment_product"])
@@ -66,7 +67,7 @@ class PluginVersionTests(unittest.TestCase):
         self.assertEqual(PRODUCT_VERSION, hybrid["product_version"])
 
     def test_mcp_initialize_is_built_with_the_same_number_readyz_states(self):
-        with mock.patch.object(gateway_module, "PLUGIN_VERSION", UNRELEASED), \
+        with mock.patch.object(profile_training, "VERSION", UNRELEASED), \
                 mock.patch.object(gateway_module.mcp_sdk_transport, "SdkTransport") as transport:
             gateway = CoachGateway(self.config(product="training"))
             server = CoachGatewayServer(("127.0.0.1", 0), CoachGatewayHandler, gateway=gateway)

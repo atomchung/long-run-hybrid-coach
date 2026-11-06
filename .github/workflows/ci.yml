@@ -59,8 +59,12 @@ jobs:
       # The reviewed model-facing surface, compared byte for byte between the base ref
       # and this checkout, through both protocol eras. A transport change that moved a
       # tool name, a schema, an annotation or the served instructions fails here.
-      - name: Check MCP contract equivalence
-        run: python3 scripts/mcp_contract_equivalence.py --base origin/${{ github.base_ref || 'main' }}
+      - name: Check both product profiles and MCP contracts
+        run: |
+          python3 scripts/check_product_profiles.py --product hybrid
+          python3 scripts/mcp_contract_equivalence.py --base origin/${{ github.base_ref || 'main' }} --product hybrid
+          python3 scripts/check_product_profiles.py --product training
+          python3 scripts/mcp_contract_equivalence.py --base origin/${{ github.base_ref || 'main' }} --product training
 
       - name: Run the repository safety check
         run: python3 scripts/check_repo_safety.py

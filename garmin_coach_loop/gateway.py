@@ -69,6 +69,7 @@ from . import (
     mcp_transport,
     orchestration,
     product_identity,
+    product_profiles,
     product_scope,
     security_log,
     token_envelope,
@@ -199,11 +200,11 @@ API_VERSION = "1.0"
 # the release identity's hashes. AGENTS.md owns version policy: MINOR is an owner-declared
 # product release; PATCH may move model-facing surfaces. Changed digests still require
 # a new reviewed surface and affected clients to refresh, regardless of the number.
-PRODUCT_VERSION = "1.4.11"
+PRODUCT_VERSION = product_profiles.get_profile("hybrid").version
 # The Plugin entry's own number, served by a `training` deployment in place of
 # PRODUCT_VERSION and filed with its directory submission. It moves only with a Plugin
 # release, so a full-product release never relabels the Plugin's reviewed snapshot.
-PLUGIN_VERSION = "1.4.11"
+PLUGIN_VERSION = product_profiles.get_profile("training").version
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 INTERVALS_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
@@ -456,14 +457,12 @@ class GatewayConfig:
     @property
     def intervals_oauth_scopes(self) -> tuple[str, ...]:
         """Permissions this deployment requests; the full product keeps its scopes."""
-        if self.product == "training" and not self.health_data:
-            return tuple(scope for scope in INTERVALS_OAUTH_SCOPES if scope != "WELLNESS:READ")
-        return INTERVALS_OAUTH_SCOPES
+        return product_profiles.get_profile(self.product).oauth_scopes(self.health_data)
 
     @property
     def served_version(self) -> str:
         """The version MCP initialize and /readyz state for this deployment's product."""
-        return PLUGIN_VERSION if self.product == "training" else PRODUCT_VERSION
+        return product_profiles.get_profile(self.product).version
 
 
 def identity_db_path(state_root: Path | str) -> Path:
@@ -7688,15 +7687,9 @@ def _origin(raw: Any) -> str | None:
     return security_log.normalized_authority(parts.scheme.lower(), parts.netloc)
 
 
-# The Intervals scopes this product asks for, declared in one place and read from here by
-# everything that needs them. Advertising them lets an MCP client put a concrete `scope` on
-# the authorize request instead of leaving Intervals to grant whatever its default is.
-INTERVALS_OAUTH_SCOPES: tuple[str, ...] = (
-    "ACTIVITY:READ",
-    "WELLNESS:READ",
-    "CALENDAR:WRITE",
-    "SETTINGS:WRITE",
-)
+# Default helpers retain the full-product scope contract; deployed routes pass their
+# selected profile's scopes explicitly.
+INTERVALS_OAUTH_SCOPES = product_profiles.get_profile("hybrid").oauth_scopes()
 
 
 def protected_resource_metadata(

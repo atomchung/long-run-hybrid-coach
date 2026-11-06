@@ -202,10 +202,12 @@ defensible in isolation and neither was the owner's call to skip.
 
 The full product and the Plugin entry carry separate numbers.
 
-- **The full product:** `PRODUCT_VERSION` (`garmin_coach_loop/gateway.py`),
+- **The full product:** `profile_hybrid.py` owns the version; `PRODUCT_VERSION`
+  in `garmin_coach_loop/gateway.py`,
   `server.json` and the Codex plugin manifest (which points at the full product's URL)
   carry one number, and a test holds the three equal.
-- **The Plugin entry:** `PLUGIN_VERSION` beside it is what a `training` deployment
+- **The Plugin entry:** `profile_training.py` owns its version, re-exported as
+  `PLUGIN_VERSION` in the gateway. It is what a `training` deployment
   states as MCP `serverInfo.version` and `/readyz` `product_version`, and the number its
   directory submission is filed under. It moves only with a Plugin release: a full-product
   release leaves it alone, and a Plugin resubmission does not bump `PRODUCT_VERSION`.
