@@ -67,7 +67,7 @@ class ProductProfileTests(unittest.TestCase):
     def test_release_profile_uses_target_package_not_current_imports(self):
         package = [(p.name, p.read_bytes()) for p in (ROOT / "garmin_coach_loop").iterdir()
                    if p.is_file() and p.suffix in {".py", ".md"}]
-        package = [(name, body.replace(b'VERSION = "1.4.11"', b'VERSION = "8.7.6"')
+        package = [(name, body + b'\nVERSION = "8.7.6"\n'
                     if name == "profile_training.py" else body) for name, body in package]
         target = release_bundle.profile_at_package(package, "training", None)
         self.assertEqual("8.7.6", target["version"])
@@ -90,7 +90,9 @@ class ProductProfileTests(unittest.TestCase):
         self.assertFalse(equal["plugin_resubmission"])
         self.assertFalse(equal["client_acceptance"])
         for state in (True, None):
-            plan = change_gates.classify_changed_paths(paths, profile_surface_moved=state)
+            plan = change_gates.classify_changed_paths(
+                paths, profile_surface_moved=state, training_metadata_moved=False)
+            self.assertTrue(plan["scan_tools"])
             self.assertTrue(plan["plugin_resubmission"])
             self.assertTrue(plan["client_acceptance"])
 
