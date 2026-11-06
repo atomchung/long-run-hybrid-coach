@@ -34,6 +34,7 @@ from .context_core import (
     BuildWindow,
     ContextBuildError,
     ContextRequest,
+    EvidenceReader,
     SourceDomain,
     assemble_context,
     build_window,
@@ -379,6 +380,7 @@ def build_context_with_domain(
     provided_recovery_signals: dict[str, Any] | None = None,
     domain: SourceDomain | None = None,
     read_recovery: bool = True,
+    evidence_reader: EvidenceReader | None = None,
 ) -> tuple[dict[str, Any], SourceDomain]:
     """``build_context``, plus the provider domain it built, so a caller can build again
     without reading the provider a second time.
@@ -411,6 +413,10 @@ def build_context_with_domain(
         # Silently ignoring them would let a caller believe it had pinned the provider it
         # is reading from while a completely different source answered.
         raise ContextBuildError("credentials and fetch apply only to --source intervals")
+    if evidence_reader is not None and (
+        source != "intervals" or credentials is not None or fetch is not None or domain is not None
+    ):
+        raise ContextBuildError("a bound reader replaces the source credentials, fetch and cached domain")
     if health_db is not None and not use_local_health_db:
         raise ContextBuildError(
             "health_db and use_local_health_db=False contradict each other"
@@ -494,19 +500,19 @@ def build_context_with_domain(
     # reconciliation between the two builds actually moves.
     if domain is None:
         if source == "intervals":
-            resolved_credentials = (
-                credentials if credentials is not None else source_intervals.resolve_credentials()
-            )
-            if resolved_credentials is None:
-                raise ContextBuildError(
-                    "intervals credentials not configured; set INTERVALS_ICU_API_KEY and "
-                    "INTERVALS_ICU_ATHLETE_ID (process env, ~/.config/garmin-coach-loop/.env, "
-                    "or repo-root .env)"
+            if evidence_reader is None:
+                resolved_credentials = (
+                    credentials if credentials is not None else source_intervals.resolve_credentials()
                 )
-            domain = source_intervals.fetch_domain(
-                resolved_credentials,
+                if resolved_credentials is None:
+                    raise ContextBuildError(
+                        "intervals credentials not configured; set INTERVALS_ICU_API_KEY and "
+                        "INTERVALS_ICU_ATHLETE_ID (process env, ~/.config/garmin-coach-loop/.env, "
+                        "or repo-root .env)"
+                    )
+                evidence_reader = source_intervals.IntervalsEvidenceReader(resolved_credentials, fetch)
+            domain = evidence_reader.read_domain(
                 window,
-                fetch=fetch,
                 threshold_sec_per_km=threshold_sec_per_km,
                 structured_dates=structured_dates,
                 # The plan's own max HR decides whether the provider's Run sport settings
@@ -515,7 +521,7 @@ def build_context_with_domain(
                 # one predicate -- the divergence note's own -- answers both "is it worth
                 # reading" and "is it worth reporting".
                 baseline_max_hr=baseline.get("max_hr"),
-                read_wellness=read_recovery,
+                read_recovery=read_recovery,
             )
         else:  # "personal-os" -- the only other member of VALID_SOURCES, checked above
             # Lazy on purpose -- see module docstring. A machine with no personal-os

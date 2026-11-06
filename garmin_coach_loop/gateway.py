@@ -77,6 +77,7 @@ from .athlete_evidence import AthleteEvidenceError
 from .evidence_import import EvidenceImportError, MAX_IMPORT_ROWS, read_payload
 from .context_builder import build_context_with_domain
 from .context_core import (
+    EvidenceReader,
     DEFAULT_SESSION_MINUTES,
     DEFAULT_TIMEZONE,
     RED_FLAG_FIELDS,
@@ -93,6 +94,7 @@ from .delivery import (
     WITHDRAW_DIRECTION,
     DeliveryError,
     IntervalsTransport,
+    WorkoutTransport,
     approve_delivery_set,
     approve_withdrawal_set,
     deliver_approved_set,
@@ -150,13 +152,13 @@ from .source_intervals import (
     USER_AGENT,
     Fetcher,
     IntervalsCredentials,
+    IntervalsEvidenceReader,
     ProviderAuthError,
     ProviderBudgetExhaustedError,
     ProviderPermissionError,
     authorization_header,
     count_provider_call,
     current_provider_quota,
-    fetch_recent_activity,
     note_provider_quota,
     note_provider_quota_values,
     note_tool_outcome,
@@ -2301,11 +2303,12 @@ def _client_capability_summary(scope_names: tuple[str, ...] | None) -> str:
 class CoachGateway:
     """Route handling with no coaching logic of its own.
 
-    ``fetch`` is the single injection seam, following the convention in
+    ``fetch`` is the shared HTTP transport, following the convention in
     ``source_intervals``: one callable taking a prepared ``urllib.request.Request`` and
     returning the raw body. It covers the OAuth token exchange, the provider reads behind
     ``build_context``, and the delivery transport alike, so a test can assert that a
-    refused request never reached the provider at all.
+    refused request never reached the provider at all. Read and delivery factories bind
+    to the current bearer after authentication and keep their separate capabilities.
     """
 
     def __init__(
@@ -2313,6 +2316,8 @@ class CoachGateway:
         config: GatewayConfig,
         *,
         fetch: Fetcher | None = None,
+        evidence_reader_factory: Callable[[IntervalsCredentials, Fetcher | None], EvidenceReader] = IntervalsEvidenceReader,
+        workout_transport_factory: Callable[[IntervalsCredentials, Fetcher | None], WorkoutTransport] = IntervalsTransport,
         now: Callable[[], dt.datetime] | None = None,
     ):
         self.config = config
@@ -2320,6 +2325,8 @@ class CoachGateway:
         # data that no longer derives from the full text refuses the boot.
         self.surface = product_scope.surface(config.health_data)
         self.fetch = fetch
+        self._reader_factory = evidence_reader_factory
+        self._transport_factory = workout_transport_factory
         self._now = now or (lambda: dt.datetime.now(dt.timezone.utc))
         # Everything this process handed out or accepted that a later call may name
         # instead of resend, per owner, most recent last. Process memory and nothing
@@ -2764,6 +2771,12 @@ class CoachGateway:
 
     def _credentials(self, token: str) -> IntervalsCredentials:
         return IntervalsCredentials(token, OAUTH_ATHLETE_ID, "bearer")
+
+    def _evidence_reader(self, token: str) -> EvidenceReader:
+        return self._reader_factory(self._credentials(token), self.fetch)
+
+    def _workout_transport(self, token: str) -> WorkoutTransport:
+        return self._transport_factory(self._credentials(token), self.fetch)
 
     def _envelope(self) -> dict[str, Any]:
         return {"api_version": API_VERSION, "generated_at": _utc_iso(self._now())}
@@ -4317,7 +4330,7 @@ class CoachGateway:
         succeeds, and two hand-built requests drift. The events come back and are dropped
         -- what is reported is whether the provider allowed the read, never its content.
         """
-        transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
+        transport = self._workout_transport(token)
         day = self._now().astimezone(dt.timezone.utc).date().isoformat()
         try:
             transport.list_events(day)
@@ -4907,9 +4920,7 @@ class CoachGateway:
 
         recent_training: dict[str, Any] | None = None
         try:
-            activity = fetch_recent_activity(
-                self._credentials(token), window, fetch=self.fetch
-            )
+            activity = self._evidence_reader(token).recent_activity(window)
         except ContextBuildError as exc:
             # 401 and 403 alike: the credential was refused, and the athlete is the only
             # one who can fix it. Re-raised untouched so the ``ContextBuildError`` handler
@@ -6121,7 +6132,7 @@ class CoachGateway:
                           after: dict[str, Any], body: dict[str, Any], now: dt.datetime):
         publish = self._publish_new_workouts(body)
         prepared = prepare_decision_delivery(
-            before, after, transport=IntervalsTransport(self._credentials(token), fetch=self.fetch),
+            before, after, transport=self._workout_transport(token),
             today=self._local_date(owner_id, now).isoformat(), now=now,
             publish_new_workouts=publish, read_run_threshold_hr=lambda: self._run_threshold_hr(token),
             # The same calendar `prepareWorkoutDelivery` writes to, so the same binding:
@@ -6278,7 +6289,7 @@ class CoachGateway:
         now = self._instant()
         result = apply_decision_delivery(
             self._state_dir(owner_id), plan, confirmed["prepared"],
-            transport=IntervalsTransport(self._credentials(token), fetch=self.fetch),
+            transport=self._workout_transport(token),
             approved_by=f"owner:{owner_id}", today=self._local_date(owner_id, now).isoformat(),
             now=now, context=context,
         )
@@ -6641,8 +6652,7 @@ class CoachGateway:
             request,
             state_dir=state_dir,
             source="intervals",
-            credentials=self._credentials(token),
-            fetch=self.fetch,
+            evidence_reader=self._evidence_reader(token) if domain is None else None,
             # The optional local evidence groups belong to one machine's owner, not to
             # whoever this request is serving.
             use_local_health_db=False,
@@ -6963,7 +6973,7 @@ class CoachGateway:
         heart-rate ceiling, and blocks it at preview with one actionable message rather
         than after a provider write -- coaching capability stays entry-agnostic.
         """
-        transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
+        transport = self._workout_transport(token)
         observed, value = transport.run_threshold_hr()
         if not observed or isinstance(value, bool) or not isinstance(value, int) or value < 1:
             return None
@@ -7132,7 +7142,7 @@ class CoachGateway:
             self._connected_account(owner_id, token)
         )
         if withdraw:
-            transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
+            transport = self._workout_transport(token)
             proposal_set = prepare_withdrawal_set(
                 current["current_plan"],
                 session_ids,
@@ -7154,7 +7164,7 @@ class CoachGateway:
                 for item in proposal_set["items"]
             ]
         else:
-            transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
+            transport = self._workout_transport(token)
             proposal_set = prepare_delivery_set(
                 current["current_plan"],
                 session_ids,
@@ -7360,7 +7370,7 @@ class CoachGateway:
         target_account = self._require_named_account(
             self._connected_account(owner_id, token)
         )
-        transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
+        transport = self._workout_transport(token)
         # One boundary, shared with the CLI: it reserves the store before the first
         # Intervals write and records whatever Intervals accepted, so a set that fails
         # halfway still reports the events that exist (archived issue #110).
@@ -7420,7 +7430,7 @@ class CoachGateway:
         target_account = self._require_named_account(
             self._connected_account(owner_id, token)
         )
-        transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
+        transport = self._workout_transport(token)
         receipt = withdraw_approved_set(
             state_dir,
             proposal_set,

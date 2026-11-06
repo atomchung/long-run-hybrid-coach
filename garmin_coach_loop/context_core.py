@@ -17,7 +17,7 @@ import datetime as dt
 import math
 import statistics
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .validation import (
@@ -133,6 +133,33 @@ class BuildWindow:
     window28_end: dt.date  # == as_of.date()
     window42_start: dt.date  # 42-day cycle-planning activity window start
     window42_end: dt.date  # == as_of.date()
+
+
+@dataclass(frozen=True)
+class RecentActivity:
+    """What the provider holds about recent training, for a caller that reads only that.
+
+    Deliberately not a ``SourceDomain`` with the recovery half left empty. Those fields
+    are coverage entries and trends, and an entry that was never populated is
+    indistinguishable, at every reader downstream, from one whose provider answered and
+    had nothing to report -- exactly the "unread reads as measured-nothing" confusion
+    AGENTS.md 3 exists to prevent. A value that can only describe recent activity cannot
+    be mistaken for a statement about recovery.
+    """
+
+    actuals_window_start: dt.date
+    activity_days: frozenset[dt.date]
+    recent_actuals: list[dict[str, Any]]
+
+
+class EvidenceReader(Protocol):
+    """Training evidence for the current connection; reads do not deliver workouts."""
+
+    def recent_activity(self, window: BuildWindow) -> RecentActivity: ...
+
+    def read_domain(self, window: BuildWindow, *, threshold_sec_per_km: int | float | None,
+                    structured_dates: frozenset[dt.date], baseline_max_hr: Any,
+                    read_recovery: bool) -> SourceDomain: ...
 
 
 @dataclass(frozen=True)
