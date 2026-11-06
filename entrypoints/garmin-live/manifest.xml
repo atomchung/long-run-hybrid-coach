@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<iq:manifest xmlns:iq="http://www.garmin.com/xml/connectiq" version="3">
+    <iq:application id="4f2dc5eed59a43dabc9de3724411f507" type="datafield"
+        name="@Strings.AppName" entry="LiveCoachApp" launcherIcon="@Drawables.LauncherIcon"
+        minApiLevel="5.0.0">
+        <iq:products>
+            <iq:product id="fr57042mm"/>
+            <iq:product id="fr57047mm"/>
+        </iq:products>
+        <iq:permissions>
+            <iq:uses-permission id="Communications"/>
+        </iq:permissions>
+        <iq:languages><iq:language>eng</iq:language></iq:languages>
+    </iq:application>
+</iq:manifest>

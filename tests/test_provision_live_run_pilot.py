@@ -76,7 +76,7 @@ class ProvisionLiveRunPilotTests(unittest.TestCase):
     def test_only_https_origins_get_the_ingest_path(self):
         for bad in ("http://pilot.example", "https://pilot.example/prefix",
                     "https://pilot.example?", "https://pilot.example#",
-                    "https://user:pass@pilot.example", "https://pilot.example:65536",
+                    "https://user:pass@localhost", "https://pilot.example:65536",
                     "https://pilot.exam\nple", "https://pilot..example",
                     "https://pilot.example\\@other.example"):
             with self.subTest(origin=bad), self.assertRaises(pilot.ProvisionError):
