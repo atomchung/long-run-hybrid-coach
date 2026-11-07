@@ -123,6 +123,10 @@ class LiveRunGatewayTests(GatewayTestCase):
             self.assertNotIn("companion", self.read(TOKEN_A)["live_run"])
         self.assertLess(time.monotonic() - started, 5)
 
+    def test_the_pilot_offers_new_clients_read_access_only(self):
+        self.assertEqual(("ACTIVITY:READ",), self.enabled.intervals_oauth_scopes)
+        self.assertNotEqual(("ACTIVITY:READ",), self.config.intervals_oauth_scopes)
+
     def test_old_data_and_missing_permission_are_not_current(self):
         old = {**self.sample, "observed_at": int(time.time()) - 22}
         self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=old)[0])

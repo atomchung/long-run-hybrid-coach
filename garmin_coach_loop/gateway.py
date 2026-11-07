@@ -501,6 +501,10 @@ class GatewayConfig:
     @property
     def intervals_oauth_scopes(self) -> tuple[str, ...]:
         """Permissions this deployment requests; the full product keeps its scopes."""
+        # The private run pilot only reads the watch and the run, so a client connecting to
+        # it is never offered a way to write to the athlete's real calendar.
+        if self.live_run_owner:
+            return ("ACTIVITY:READ",)
         return product_profiles.get_profile(self.product).oauth_scopes(self.health_data)
 
     @property
