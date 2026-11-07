@@ -341,16 +341,6 @@ TRUSTED_CLIENT_ORIGINS: tuple[str, ...] = (
 LIVE_RUN_PATH = "/v1/live-run/samples"
 LIVE_RUN_OWNER_ENV = "GARMIN_COACH_LOOP_LIVE_RUN_OWNER_ID"
 LIVE_RUN_DIGEST_ENV = "GARMIN_COACH_LOOP_LIVE_RUN_TOKEN_SHA256"
-LIVE_RUN_HOLD_ENV = "GARMIN_COACH_LOOP_LIVE_RUN_HOLD_SECONDS"
-LIVE_RUN_BRIEF_ENV = "GARMIN_COACH_LOOP_LIVE_RUN_BRIEF"
-# Delivered in the tool result because that is the channel every client is guaranteed to
-# read, and only to the private pilot with a hold configured.
-LIVE_RUN_COMPANION = (
-    "陪跑中：跑者不看螢幕也不會一直開口。看完 trend，只有他現在該改變什麼時才用一句口語說出來，"
-    "最多 24 字；沒事就完全不要出聲。結果裡有 milestone_minutes 時一定要說一句：跑了多久、"
-    "現在狀況、接下來注意什麼，讓他知道你還在。不管有沒有說話，都立刻再呼叫一次 getCoachState，"
-    "它會等到下一段資料才回來。state 變成 ended 才停止。"
-)
 PILOT_ATHLETE_DIGEST_ENV = "GARMIN_COACH_LOOP_PILOT_ATHLETE_SHA256"
 
 
@@ -456,8 +446,6 @@ class GatewayConfig:
     health_data: bool | None = None
     live_run_owner: str | None = None
     live_run_token_sha256: str | None = None
-    live_run_hold_seconds: float = 0.0
-    live_run_brief: str | None = None
     pilot_athlete_sha256: str | None = None
 
     def __post_init__(self) -> None:
@@ -478,7 +466,7 @@ class GatewayConfig:
 
         if self.live_run_owner is not None or self.live_run_token_sha256 is not None:
             if self.product != "hybrid" or not self.health_data:
-                raise GatewayConfigError("the live-run pilot requires the hybrid health-data product")
+                raise GatewayConfigError("a watch owner requires the hybrid health-data product")
             if not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", self.live_run_owner or ""):
                 raise GatewayConfigError(f"{LIVE_RUN_OWNER_ENV} must be an existing owner's UUID")
             if not re.fullmatch(r"[0-9a-f]{64}", self.live_run_token_sha256 or ""):
@@ -501,10 +489,6 @@ class GatewayConfig:
     @property
     def intervals_oauth_scopes(self) -> tuple[str, ...]:
         """Permissions this deployment requests; the full product keeps its scopes."""
-        # The private run pilot only reads the watch and the run, so a client connecting to
-        # it is never offered a way to write to the athlete's real calendar.
-        if self.live_run_owner:
-            return ("ACTIVITY:READ",)
         return product_profiles.get_profile(self.product).oauth_scopes(self.health_data)
 
     @property
@@ -717,18 +701,12 @@ def load_config(
         raise GatewayConfigError(
             f"{RAILWAY_GIT_COMMIT_ENV_VAR} must be a lowercase 40-character Git commit"
         )
-    try:
-        live_run_hold_seconds = float(source.get(LIVE_RUN_HOLD_ENV) or 0)
-    except ValueError:
-        raise GatewayConfigError(f"{LIVE_RUN_HOLD_ENV} must be a number of seconds") from None
     return GatewayConfig(
         state_root=state_root,
         product=product,
         health_data=health_data,
         live_run_owner=source.get(LIVE_RUN_OWNER_ENV) or None,
         live_run_token_sha256=source.get(LIVE_RUN_DIGEST_ENV) or None,
-        live_run_hold_seconds=live_run_hold_seconds,
-        live_run_brief=source.get(LIVE_RUN_BRIEF_ENV) or None,
         pilot_athlete_sha256=source.get(PILOT_ATHLETE_DIGEST_ENV),
         token_hmac_key=key.encode("utf-8"),
         intervals_client_id=str(source[CLIENT_ID_ENV_VAR]).strip(),
@@ -2565,23 +2543,14 @@ class CoachGateway:
                 disclosure = self._client_disclosure(owner_id, token, client_origin)
                 if disclosure is not None:
                     answer = {**answer, "client_disclosure": disclosure}
-            if kind in {"session", "state"} and owner_id == self.config.live_run_owner:
-                scopes = self._recorded_scope_names(token) or ()
-                if "ACTIVITY:READ" in scopes:
-                    hold = self.config.live_run_hold_seconds if kind == "state" else 0.0
-                    reads = self.live_runs.hold_repeat_read(owner_id, hold)
-                    sample = self.live_runs.snapshot(owner_id)
-                    answer["live_run"] = (
-                        {"source": "garmin_connect_iq", **sample}
-                        if sample is not None else {"status": "no_recent_sample"}
-                    )
-                    if hold and sample is not None and sample["state"] != "ended":
-                        answer["live_run"]["companion"] = LIVE_RUN_COMPANION
-                        milestone = self.live_runs.milestone_due(owner_id)
-                        if milestone is not None:
-                            answer["live_run"]["milestone_minutes"] = milestone
-                        if self.config.live_run_brief and reads % 10 == 1:
-                            answer["live_run"]["today"] = self.config.live_run_brief
+            if (
+                kind in {"session", "state"}
+                and owner_id == self.config.live_run_owner
+                and "ACTIVITY:READ" in (self._recorded_scope_names(token) or ())
+            ):
+                # Beside the answer, never inside the context: no count, plan match or
+                # delivery reads it, and nothing writes it to the store.
+                answer = {**answer, "watch_run": self.live_runs.recap(owner_id)}
             _refuse_oversized_read(kind, answer)
             return answer
         except GatewayError:
@@ -3769,8 +3738,12 @@ class CoachGateway:
         rest of its life. Leaving the claim off instead falls back to the `iat` check that
         already covers every token minted before this claim existed.
 
-        A restricted pilot also requires this lookup to succeed at issuance: the
-        registered owner must still be admitted under the current configuration.
+        Never refuses issuance itself. The credential inside this token was just proven
+        live by the OAuth exchange that produced it, so an owner that briefly fails to
+        resolve here is not a reason to withhold the token -- only a reason not to also
+        claim an epoch this call cannot vouch for. The one caller that refuses on ``None``
+        is a restricted pilot, where the registered owner must still be admitted under the
+        current configuration.
         """
         try:
             owner_id = self.resolve_owner(provider_token)

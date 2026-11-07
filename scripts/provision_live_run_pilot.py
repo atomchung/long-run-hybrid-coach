@@ -1,4 +1,9 @@
-"""Prepare a private FR570 pilot bundle; does not connect to or reconfigure the gateway."""
+"""Prepare a private FR570 watch bundle; does not connect to or reconfigure the gateway.
+
+The owner is resolved from a hybrid state root and an athlete ID, or named directly with
+``--owner-id`` when the registry lives on a host this machine should not copy from. The
+device token is generated here either way; the gateway only ever receives its digest.
+"""
 
 from __future__ import annotations
 
@@ -27,6 +32,10 @@ from garmin_coach_loop.gateway import (
 
 class ProvisionError(ValueError):
     """An actionable message safe to display without including any input values."""
+
+
+# The form the gateway itself accepts for its live-run owner.
+OWNER_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 
 
 def _endpoint(origin: str) -> str:
@@ -81,14 +90,28 @@ def _write_env(path: Path, variables: dict[str, str]) -> None:
             stream.write(f"{name}={shlex.quote(value)}\n")
 
 
-def provision(*, state_root: Path, athlete_id: str, gateway_url: str, output_dir: Path) -> None:
-    endpoint = _endpoint(gateway_url)
-    destination = _private_destination(output_dir)
+def _owner(state_root: Path | None, athlete_id: str | None, owner_id: str | None) -> str:
+    if owner_id is not None:
+        if state_root is not None or athlete_id is not None:
+            raise ProvisionError("Name either --owner-id, or --state-root with --athlete-id.")
+        if not OWNER_ID.fullmatch(owner_id):
+            raise ProvisionError("--owner-id must be a registered owner's lowercase UUID.")
+        return owner_id
+    if state_root is None or athlete_id is None:
+        raise ProvisionError("Name either --owner-id, or --state-root with --athlete-id.")
     root = product_identity.product_state_root(state_root.expanduser().resolve(), "hybrid")
     product_identity.verify_product_state(root, "hybrid")
     owner = identity.owner_for_provider_athlete(identity_db_path(root), PROVIDER, athlete_id)
     if not owner:
         raise ProvisionError("No registered athlete was found in the supplied hybrid state root.")
+    return owner
+
+
+def provision(*, gateway_url: str, output_dir: Path, state_root: Path | None = None,
+              athlete_id: str | None = None, owner_id: str | None = None) -> None:
+    endpoint = _endpoint(gateway_url)
+    destination = _private_destination(output_dir)
+    owner = _owner(state_root, athlete_id, owner_id)
     token = secrets.token_urlsafe(32)
     digest = hashlib.sha256(token.encode("ascii")).hexdigest()
     # Exclusive mkdir is also the no-rotation guard when two operators race.
@@ -110,8 +133,9 @@ def provision(*, state_root: Path, athlete_id: str, gateway_url: str, output_dir
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--state-root", type=Path, required=True, help="Gateway base state root")
-    parser.add_argument("--athlete-id", required=True, help="Already connected Intervals athlete ID")
+    parser.add_argument("--state-root", type=Path, help="Gateway base state root")
+    parser.add_argument("--athlete-id", help="Already connected Intervals athlete ID")
+    parser.add_argument("--owner-id", help="Registered owner UUID, instead of a state root and athlete ID")
     parser.add_argument("--gateway-url", required=True, help="Bare HTTPS gateway origin")
     parser.add_argument("--output-dir", type=Path, required=True, help="New private directory outside Git")
     args = parser.parse_args()

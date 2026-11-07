@@ -1,19 +1,37 @@
 """Exercise the watch POST and the existing authenticated Coach MCP read over HTTP."""
 
-import concurrent.futures
 import hashlib
+import json
+import tempfile
+import threading
 import time
+import urllib.error
+import urllib.request
+import unittest
 from dataclasses import replace
+from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 from garmin_coach_loop.gateway import (
-    GatewayConfigError, GatewayError, LIVE_RUN_PATH, MCP_PATH, PILOT_ATHLETE_DIGEST_ENV, load_config,
+    CoachGateway, CoachGatewayHandler, CoachGatewayServer, GatewayConfig, GatewayConfigError, GatewayError,
+    LIVE_RUN_PATH, MCP_PATH, PILOT_ATHLETE_DIGEST_ENV, load_config, run_preflight,
 )
 from garmin_coach_loop.hosted import HostedClient, code_verifier
 from garmin_coach_loop.identity import (
-    owner_count, owner_for_fingerprint, record_token_fingerprint, token_fingerprint,
+    lookup_or_create_owner, owner_count, owner_for_fingerprint, record_token_fingerprint, token_fingerprint,
 )
-from tests.test_gateway import GatewayTestCase, HMAC_KEY, TOKEN_A, TOKEN_B
+from garmin_coach_loop.live_run import RETENTION_SECONDS, LiveRunStore
+from tests.test_gateway import (
+    CLIENT_ID_VALUE, CLIENT_SECRET_VALUE, HMAC_KEY, NOW, TOKEN_A, TOKEN_B, FakeIntervals, GatewayTestCase,
+    publishable_plan,
+)
+
+
+def running(seq, timer_ms, observed_at, **updates):
+    return {"session_id": "fixture-1", "seq": seq, "observed_at": observed_at, "state": "running",
+            "heart_rate_bpm": 140, "cadence_rpm": 84, "speed_mps": 2.8, "timer_ms": timer_ms,
+            "distance_m": timer_ms * 0.0028, "altitude_m": 30.0, "ascent_m": 4, "descent_m": 3,
+            "power_w": None, "steps_done": 0, **updates}
 
 
 class LiveRunGatewayTests(GatewayTestCase):
@@ -21,15 +39,14 @@ class LiveRunGatewayTests(GatewayTestCase):
 
     def setUp(self):
         super().setUp()
-        self.owner = self.seed_owner(TOKEN_A)
+        self.owner = self.seed_owner(TOKEN_A, plan=publishable_plan())
         other = self.seed_owner(TOKEN_B, athlete_id="i2")
         self.grant_activity(TOKEN_B, other)
         self.grant_activity(TOKEN_A, self.owner)
         self.enabled = replace(self.config, live_run_owner=self.owner,
                                live_run_token_sha256=hashlib.sha256(self.watch.encode()).hexdigest())
         self.gateway.config = self.enabled
-        self.sample = dict(session_id="fixture-1", seq=1, observed_at=int(time.time()),
-                           state="running", heart_rate_bpm=130, cadence_rpm=81, speed_mps=2.5)
+        self.sample = running(1, 5000, int(time.time()))
 
     def grant_activity(self, token, owner):
         record_token_fingerprint(self.identity_db, token_fingerprint(token, hmac_key=HMAC_KEY),
@@ -41,104 +58,77 @@ class LiveRunGatewayTests(GatewayTestCase):
         self.assertEqual(200, status)
         return reply["result"]["structuredContent"]
 
-    def test_watch_sample_reaches_only_its_authenticated_coach(self):
-        self.assertEqual({"status": "no_recent_sample"}, self.read(TOKEN_A)["live_run"])
-        status, ack = self.call("POST", LIVE_RUN_PATH, token=self.watch, body=self.sample)
-        self.assertEqual(200, status)
-        self.assertEqual("accepted", ack["status"])
-        self.assertNotIn("heart_rate_bpm", ack)
-        live = self.read(TOKEN_A)["live_run"]
-        self.assertEqual(("fresh", 81), (live["freshness"], live["cadence_rpm"]))
-        self.assertNotIn("live_run", self.read(TOKEN_B))
-        self.assertEqual([], self.fake.calls)
+    def post(self, sample):
+        status, ack = self.call("POST", LIVE_RUN_PATH, token=self.watch, body=sample)
+        self.assertEqual(200, status, ack)
+        return ack
 
-    def test_agent_can_follow_changes_without_a_prescribed_plan(self):
-        for seq, state, cadence in [(1, "running", 81), (2, "running", 91), (3, "paused", None),
-                                    (4, "running", 79), (5, "ended", None)]:
-            with self.subTest(seq=seq):
-                sample = {**self.sample, "state": state, "seq": seq, "cadence_rpm": cadence}
-                self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=sample)[0])
-                live = self.read(TOKEN_A)["live_run"]
-                self.assertEqual((seq, state, cadence), (live["seq"], live["state"], live["cadence_rpm"]))
-        self.assertEqual("ended", self.read(TOKEN_A, "startCoachSession")["live_run"]["state"])
+    def finish_a_run(self, minutes=20, start=None):
+        start = int(time.time()) - minutes * 60 - 30 if start is None else start
+        for seq in range(1, minutes * 12 + 1):
+            self.assertEqual("accepted", self.post(running(seq, seq * 5000, start + seq * 5))["status"])
+        self.post({"session_id": "fixture-1", "seq": minutes * 12 + 1, "observed_at": start + minutes * 60 + 3,
+                   "state": "ended", "heart_rate_bpm": None, "cadence_rpm": None, "speed_mps": None})
 
-    def held_config(self, seconds):
-        self.gateway.config = replace(self.enabled, live_run_hold_seconds=seconds, live_run_brief="今天輕鬆跑")
+    def test_a_finished_run_reaches_both_reads_for_its_owner_only(self):
+        self.assertIsNone(self.read(TOKEN_A)["watch_run"])
+        provider_calls = len(self.fake.calls)
+        self.finish_a_run()
+        self.assertEqual(provider_calls, len(self.fake.calls))
+        for tool in ("getCoachState", "startCoachSession"):
+            with self.subTest(tool=tool):
+                recap = self.read(TOKEN_A, tool)["watch_run"]
+                self.assertEqual(("garmin_watch", "ended", 20.0, 3.36, 140),
+                                 (recap["source"], recap["state"], recap["timer_minutes"], recap["distance_km"],
+                                  recap["average_hr"]))
+        self.assertNotIn("watch_run", self.read(TOKEN_B))
+        self.assertNotIn("watch_run", self.read(TOKEN_B, "startCoachSession"))
 
-    def test_a_repeat_read_waits_for_the_next_stretch_and_keeps_the_model_watching(self):
-        self.held_config(0.4)
-        running = {**self.sample, "timer_ms": 5000, "distance_m": 12.0, "altitude_m": 30.0}
-        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=running)[0])
-        first = self.read(TOKEN_A)["live_run"]
-        self.assertIn("再呼叫一次 getCoachState", first["companion"])
-        self.assertEqual("今天輕鬆跑", first["today"])
-        self.assertEqual(0.1, first["trend"]["elapsed_minutes"])
-        started = time.monotonic()
-        second = self.read(TOKEN_A)["live_run"]
-        self.assertGreaterEqual(time.monotonic() - started, 0.3)
-        self.assertIn("companion", second)
-        self.assertNotIn("today", second)
+    def test_the_watch_run_changes_nothing_the_coach_counts_or_stores(self):
+        before = self.read(TOKEN_A, "startCoachSession")
+        state_before = self.read(TOKEN_A)
+        self.finish_a_run()
+        after = self.read(TOKEN_A, "startCoachSession")
+        state_after = self.read(TOKEN_A)
+        self.assertIsNone(before.pop("watch_run"))
+        self.assertIsNotNone(after.pop("watch_run"))
+        for answer in (before, after):
+            answer["context"].pop("context_id")
+        self.assertEqual(before, after)
+        self.assertIsNone(state_before.pop("watch_run"))
+        self.assertIsNotNone(state_after.pop("watch_run"))
+        self.assertEqual(state_before, state_after)
+        # A sample carries the session id and only a recap carries this key.
+        for path in self.state_root.rglob("*"):
+            if path.is_file():
+                for trace in (b"fixture-1", b"stopped_or_walking"):
+                    self.assertNotIn(trace, path.read_bytes(), path)
 
-    def test_passing_a_ten_minute_mark_asks_the_model_to_speak(self):
-        self.held_config(0.01)
-        early = {**self.sample, "timer_ms": 590_000, "distance_m": 1200.0, "altitude_m": 30.0}
-        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=early)[0])
-        self.assertNotIn("milestone_minutes", self.read(TOKEN_A)["live_run"])
-        later = {**early, "seq": 2, "timer_ms": 601_000}
-        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=later)[0])
-        live = self.read(TOKEN_A)["live_run"]
-        self.assertEqual(10, live["milestone_minutes"])
-        self.assertIn("milestone_minutes", live["companion"])
-        self.assertNotIn("milestone_minutes", self.read(TOKEN_A)["live_run"])
+    def test_a_finished_run_is_held_a_day_then_dropped(self):
+        wall, elapsed = [time.time()], [1000.0]
+        self.gateway.live_runs = LiveRunStore(clock=lambda: wall[0], monotonic=lambda: elapsed[0])
+        self.finish_a_run(start=int(wall[0]) - 20 * 60 - 30)
+        wall[0] += RETENTION_SECONDS - 60
+        elapsed[0] += RETENTION_SECONDS - 60
+        self.assertEqual("ended", self.read(TOKEN_A)["watch_run"]["state"])
+        wall[0] += 60
+        elapsed[0] += 60
+        self.assertIsNone(self.read(TOKEN_A)["watch_run"])
+        self.assertIsNone(self.read(TOKEN_A, "startCoachSession")["watch_run"])
 
-    def test_the_session_read_is_never_held_and_a_finished_run_ends_the_loop(self):
-        self.held_config(30)
-        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=self.sample)[0])
-        started = time.monotonic()
-        self.read(TOKEN_A, "startCoachSession")
-        self.read(TOKEN_A, "startCoachSession")
-        ended = {**self.sample, "seq": 2, "state": "ended", "heart_rate_bpm": None, "cadence_rpm": None,
-                 "speed_mps": None}
-        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=ended)[0])
-        self.assertNotIn("companion", self.read(TOKEN_A)["live_run"])
-        self.assertLess(time.monotonic() - started, 5)
+    def test_the_full_product_keeps_every_scope_with_a_watch_configured(self):
+        self.assertEqual(self.config.intervals_oauth_scopes, self.enabled.intervals_oauth_scopes)
+        self.assertIn("CALENDAR:WRITE", self.enabled.intervals_oauth_scopes)
 
-    def test_the_watch_can_upload_while_a_read_is_held(self):
-        self.held_config(0.8)
-        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=self.sample)[0])
-        self.read(TOKEN_A)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            held = pool.submit(self.read, TOKEN_A)
-            time.sleep(0.1)
-            started = time.monotonic()
-            later = {**self.sample, "seq": 2, "heart_rate_bpm": 151}
-            self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=later)[0])
-            self.assertLess(time.monotonic() - started, 0.4)
-            self.assertEqual(151, held.result(timeout=10)["live_run"]["heart_rate_bpm"])
-
-    def test_a_deployment_without_a_hold_answers_every_read_at_once(self):
-        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=self.sample)[0])
-        started = time.monotonic()
-        for _ in range(3):
-            self.assertNotIn("companion", self.read(TOKEN_A)["live_run"])
-        self.assertLess(time.monotonic() - started, 5)
-
-    def test_the_pilot_offers_new_clients_read_access_only(self):
-        self.assertEqual(("ACTIVITY:READ",), self.enabled.intervals_oauth_scopes)
-        self.assertNotEqual(("ACTIVITY:READ",), self.config.intervals_oauth_scopes)
-
-    def test_old_data_and_missing_permission_are_not_current(self):
-        old = {**self.sample, "observed_at": int(time.time()) - 22}
-        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=old)[0])
-        live = self.read(TOKEN_A)["live_run"]
-        self.assertEqual("stale", live["freshness"])
-        self.assertIsNone(live["heart_rate_bpm"])
+    def test_a_connection_without_activity_read_does_not_see_the_run(self):
+        self.finish_a_run()
         limited = "synthetic-calendar-only"
         record_token_fingerprint(self.identity_db, token_fingerprint(limited, hmac_key=HMAC_KEY),
                                  self.owner, "intervals", scope_names=("CALENDAR:READ",))
-        self.assertNotIn("live_run", self.read(limited))
+        self.assertNotIn("watch_run", self.read(limited))
+        self.assertNotIn("watch_run", self.read(limited, "startCoachSession"))
 
-    def test_separate_credentials_and_closed_pilot(self):
+    def test_the_watch_credential_is_separate_and_the_path_closes_without_an_owner(self):
         for bad in (None, TOKEN_A, self.mcp_bearer(TOKEN_A)):
             self.assertEqual(401, self.call("POST", LIVE_RUN_PATH, token=bad, body=self.sample)[0])
         self.assertEqual(401, self.call("POST", MCP_PATH, token=self.watch,
@@ -147,11 +137,60 @@ class LiveRunGatewayTests(GatewayTestCase):
                                         body={**self.sample, "owner_id": self.owner})[0])
         self.gateway.config = self.config
         self.assertEqual(404, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=self.sample)[0])
-        self.assertNotIn("live_run", self.read(TOKEN_A))
+        self.assertNotIn("watch_run", self.read(TOKEN_A))
         with self.assertRaises(GatewayConfigError):
             replace(self.enabled, health_data=False)
         with self.assertRaises(GatewayConfigError):
             replace(self.enabled, live_run_token_sha256=None)
+
+
+class TrainingProductBoundaryTests(unittest.TestCase):
+    """The Plugin entry holds no watch samples: none in, none out, whatever its store holds."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.config = GatewayConfig(
+            state_root=Path(tmp.name).resolve(), token_hmac_key=HMAC_KEY, product="training",
+            intervals_client_id=CLIENT_ID_VALUE, intervals_client_secret=CLIENT_SECRET_VALUE,
+        )
+        run_preflight(self.config)
+        self.gateway = CoachGateway(self.config, fetch=FakeIntervals(), now=lambda: NOW)
+        self.owner = lookup_or_create_owner(self.config.identity_db_path, "intervals", "synthetic-athlete")
+        record_token_fingerprint(self.config.identity_db_path, token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY),
+                                 self.owner, "intervals", scope_names=("ACTIVITY:READ",))
+
+    def test_a_training_deployment_cannot_be_given_a_watch(self):
+        digest = hashlib.sha256(b"synthetic-watch").hexdigest()
+        for health_data in (False, True):
+            with self.subTest(health_data=health_data), self.assertRaises(GatewayConfigError):
+                replace(self.config, health_data=health_data, live_run_owner=self.owner,
+                        live_run_token_sha256=digest)
+
+    def test_a_training_deployment_refuses_samples_over_http(self):
+        server = CoachGatewayServer(("127.0.0.1", 0), CoachGatewayHandler, gateway=self.gateway)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        request = urllib.request.Request(
+            "http://127.0.0.1:%d%s" % (server.server_address[1], LIVE_RUN_PATH),
+            data=json.dumps(running(1, 5000, int(time.time()))).encode(), method="POST",
+            headers={"Content-Type": "application/json", "Authorization": "Bearer synthetic-watch"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(request, timeout=10)
+        refused.exception.close()
+        self.assertEqual(404, refused.exception.code)
+
+    def test_a_training_read_never_returns_samples_its_store_holds(self):
+        self.gateway.live_runs.ingest(self.owner, running(1, 5000, int(time.time())))
+        for kind in ("state", "session"):
+            with self.subTest(kind=kind):
+                answer = self.gateway.route(kind, self.owner, TOKEN_A, {})
+                self.assertNotIn("watch_run", answer)
+                self.assertNotIn("fixture-1", json.dumps(answer))
 
 
 class PrivateAthletePilotTests(GatewayTestCase):
@@ -228,3 +267,7 @@ class PrivateAthletePilotTests(GatewayTestCase):
         for options in ({"product": "training"}, {"health_data": False}):
             with self.subTest(options=options), self.assertRaises(GatewayConfigError):
                 replace(self.private, **options)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -60,6 +60,27 @@ class ProvisionLiveRunPilotTests(unittest.TestCase):
             self.assertNotIn(value, first.stdout + first.stderr + second.stdout + second.stderr)
         self.assertEqual(hashlib.sha256(self.db.read_bytes()).digest(), registry_digest)
 
+    def test_an_owner_named_directly_needs_no_registry_and_takes_one_form(self):
+        owner = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        result = subprocess.run(
+            [sys.executable, pilot.__file__, "--owner-id", owner, "--gateway-url", self.origin,
+             "--output-dir", str(self.output)],
+            cwd=self.scratch, capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0)
+        gateway = dict(item.split("=", 1) for item in shlex.split((self.output / "gateway.env").read_text()))
+        self.assertEqual(gateway[LIVE_RUN_OWNER_ENV], owner)
+        self.assertNotIn(owner, result.stdout + result.stderr)
+        self.assertFalse(self.state.exists())
+        elsewhere = self.scratch / "other-config"
+        for bad in ({"owner_id": owner.upper()}, {"owner_id": "not-a-uuid"},
+                    {"owner_id": owner, "athlete_id": self.athlete},
+                    {"owner_id": owner, "state_root": self.state},
+                    {"athlete_id": self.athlete}, {}):
+            with self.subTest(bad=bad), self.assertRaises(pilot.ProvisionError):
+                pilot.provision(gateway_url=self.origin, output_dir=elsewhere, **bad)
+        self.assertFalse(os.path.lexists(elsewhere))
+
     def test_unknown_owner_and_wrong_product_leave_no_files(self):
         self.assertNotEqual(self.run_cli().returncode, 0)
         self.assertFalse(self.state.exists())
