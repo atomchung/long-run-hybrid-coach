@@ -347,7 +347,8 @@ LIVE_RUN_BRIEF_ENV = "GARMIN_COACH_LOOP_LIVE_RUN_BRIEF"
 # read, and only to the private pilot with a hold configured.
 LIVE_RUN_COMPANION = (
     "陪跑中：跑者不看螢幕也不會一直開口。看完 trend，只有他現在該改變什麼時才用一句口語說出來，"
-    "最多 24 字；沒事就完全不要出聲。不管有沒有說話，都立刻再呼叫一次 getCoachState，"
+    "最多 24 字；沒事就完全不要出聲。結果裡有 milestone_minutes 時一定要說一句：跑了多久、"
+    "現在狀況、接下來注意什麼，讓他知道你還在。不管有沒有說話，都立刻再呼叫一次 getCoachState，"
     "它會等到下一段資料才回來。state 變成 ended 才停止。"
 )
 PILOT_ATHLETE_DIGEST_ENV = "GARMIN_COACH_LOOP_PILOT_ATHLETE_SHA256"
@@ -2572,6 +2573,9 @@ class CoachGateway:
                     )
                     if hold and sample is not None and sample["state"] != "ended":
                         answer["live_run"]["companion"] = LIVE_RUN_COMPANION
+                        milestone = self.live_runs.milestone_due(owner_id)
+                        if milestone is not None:
+                            answer["live_run"]["milestone_minutes"] = milestone
                         if self.config.live_run_brief and reads % 10 == 1:
                             answer["live_run"]["today"] = self.config.live_run_brief
             _refuse_oversized_read(kind, answer)

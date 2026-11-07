@@ -31,4 +31,4 @@ python3 scripts/provision_live_run_pilot.py \
 
 ## 不開口也能陪跑
 
-設定 `GARMIN_COACH_LOOP_LIVE_RUN_HOLD_SECONDS` 後，跑步期間連續呼叫 `getCoachState` 會等到距離上次回覆滿這個秒數才回來，並在結果裡要模型看完就再呼叫一次、沒事不要出聲。這樣用戶端不需要計時，也不用跑者開口。`GARMIN_COACH_LOOP_LIVE_RUN_BRIEF` 是今天的課與目的，隨結果交給模型，內容屬於試跑者，只放在服務的環境變數。這是語音用戶端能否主動開口的實驗，只在這個私人服務開啟。
+設定 `GARMIN_COACH_LOOP_LIVE_RUN_HOLD_SECONDS` 後，跑步期間連續呼叫 `getCoachState` 會等到距離上次回覆滿這個秒數才回來，並在結果裡要模型看完就再呼叫一次、沒事不要出聲。這樣用戶端不需要計時，也不用跑者開口。每跑滿 10 分鐘，結果會帶 `milestone_minutes`，要模型一定說一句，因為模型沒話說和連線已斷，對跑者聽起來都是安靜。`GARMIN_COACH_LOOP_LIVE_RUN_BRIEF` 是今天的課與目的，隨結果交給模型，內容屬於試跑者，只放在服務的環境變數。這是語音用戶端能否主動開口的實驗，只在這個私人服務開啟。

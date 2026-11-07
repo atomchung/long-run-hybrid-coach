@@ -292,3 +292,30 @@ class LiveRunTrendTest(unittest.TestCase):
         self.store.hold_repeat_read("a", 0)
         self.store.hold_repeat_read("a", 0)
         self.assertEqual([], self.slept)
+
+    def test_a_milestone_is_reported_once_when_a_ten_minute_mark_passes(self):
+        self.run_for(1)
+        self.assertIsNone(self.store.milestone_due("a"))
+        self.run_for(8)
+        self.assertIsNone(self.store.milestone_due("a"))
+        self.run_for(2)
+        self.assertEqual(10, self.store.milestone_due("a"))
+        self.assertIsNone(self.store.milestone_due("a"))
+        self.run_for(10)
+        self.assertEqual(20, self.store.milestone_due("a"))
+
+    def test_joining_mid_run_does_not_announce_marks_already_passed(self):
+        self.run_for(25)
+        self.assertIsNone(self.store.milestone_due("a"))
+        self.run_for(6)
+        self.assertEqual(30, self.store.milestone_due("a"))
+
+    def test_no_milestone_without_a_running_session(self):
+        self.assertIsNone(self.store.milestone_due("nobody"))
+        self.run_for(11)
+        self.store.milestone_due("a")
+        self.advance(5)
+        self.seq += 1
+        self.store.ingest("a", {"session_id": "run-a", "seq": self.seq, "observed_at": int(self.wall),
+                                "state": "ended", "heart_rate_bpm": None, "cadence_rpm": None, "speed_mps": None})
+        self.assertIsNone(self.store.milestone_due("a"))

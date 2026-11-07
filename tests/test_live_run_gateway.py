@@ -79,6 +79,18 @@ class LiveRunGatewayTests(GatewayTestCase):
         self.assertIn("companion", second)
         self.assertNotIn("today", second)
 
+    def test_passing_a_ten_minute_mark_asks_the_model_to_speak(self):
+        self.held_config(0.01)
+        early = {**self.sample, "timer_ms": 590_000, "distance_m": 1200.0, "altitude_m": 30.0}
+        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=early)[0])
+        self.assertNotIn("milestone_minutes", self.read(TOKEN_A)["live_run"])
+        later = {**early, "seq": 2, "timer_ms": 601_000}
+        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=later)[0])
+        live = self.read(TOKEN_A)["live_run"]
+        self.assertEqual(10, live["milestone_minutes"])
+        self.assertIn("milestone_minutes", live["companion"])
+        self.assertNotIn("milestone_minutes", self.read(TOKEN_A)["live_run"])
+
     def test_the_session_read_is_never_held_and_a_finished_run_ends_the_loop(self):
         self.held_config(30)
         self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=self.sample)[0])

@@ -30,6 +30,7 @@ FIELDS = {"session_id", "seq", "observed_at", "state", *METRICS}
 OPTIONAL_METRICS = ("timer_ms", "distance_m", "altitude_m", "ascent_m", "descent_m", "power_w", "steps_done")
 HISTORY_SAMPLES = 3 * 3600 // SAMPLE_INTERVAL_SECONDS
 STOPPED_BELOW_MPS = 0.3
+MILESTONE_SECONDS = 600
 SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,80}")
 
 
@@ -162,6 +163,7 @@ class LiveRunStore:
         self._max_owners = max_owners
         self._sleep = sleep
         self._reads: dict[str, tuple[str | None, float, int]] = {}
+        self._milestones: dict[str, tuple[str, int]] = {}
         self._owners: OrderedDict[str, _Latest] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -235,6 +237,26 @@ class LiveRunStore:
             if trend is not None:
                 result["trend"] = trend
             return result
+
+    def milestone_due(self, owner_id: str) -> int | None:
+        """The whole minutes of a mark this run has passed since one was last reported.
+
+        A companion that says nothing and one that has gone away sound the same to a
+        runner, so a regular mark gives the runner something to notice missing. A client
+        joining mid-run starts counting from there rather than announcing the past.
+        """
+        self._check_owner(owner_id)
+        with self._lock:
+            current = self._owners.get(owner_id)
+            if current is None or current.sample["state"] != "running" or not current.history:
+                return None
+            session = current.sample["session_id"]
+            mark = int(current.history[-1]["timer_ms"] // (MILESTONE_SECONDS * 1000))
+            last_session, last_mark = self._milestones.get(owner_id, (None, 0))
+            self._milestones[owner_id] = (session, mark)
+            if session != last_session or mark <= last_mark:
+                return None
+            return mark * MILESTONE_SECONDS // 60
 
     def hold_repeat_read(self, owner_id: str, seconds: float) -> int:
         """Answer a read repeated during a run only `seconds` after the previous answer.
