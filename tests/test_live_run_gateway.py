@@ -1,5 +1,6 @@
 """Exercise the watch POST and the existing authenticated Coach MCP read over HTTP."""
 
+import concurrent.futures
 import hashlib
 import time
 from dataclasses import replace
@@ -60,6 +61,55 @@ class LiveRunGatewayTests(GatewayTestCase):
                 live = self.read(TOKEN_A)["live_run"]
                 self.assertEqual((seq, state, cadence), (live["seq"], live["state"], live["cadence_rpm"]))
         self.assertEqual("ended", self.read(TOKEN_A, "startCoachSession")["live_run"]["state"])
+
+    def held_config(self, seconds):
+        self.gateway.config = replace(self.enabled, live_run_hold_seconds=seconds, live_run_brief="今天輕鬆跑")
+
+    def test_a_repeat_read_waits_for_the_next_stretch_and_keeps_the_model_watching(self):
+        self.held_config(0.4)
+        running = {**self.sample, "timer_ms": 5000, "distance_m": 12.0, "altitude_m": 30.0}
+        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=running)[0])
+        first = self.read(TOKEN_A)["live_run"]
+        self.assertIn("再呼叫一次 getCoachState", first["companion"])
+        self.assertEqual("今天輕鬆跑", first["today"])
+        self.assertEqual(0.1, first["trend"]["elapsed_minutes"])
+        started = time.monotonic()
+        second = self.read(TOKEN_A)["live_run"]
+        self.assertGreaterEqual(time.monotonic() - started, 0.3)
+        self.assertIn("companion", second)
+        self.assertNotIn("today", second)
+
+    def test_the_session_read_is_never_held_and_a_finished_run_ends_the_loop(self):
+        self.held_config(30)
+        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=self.sample)[0])
+        started = time.monotonic()
+        self.read(TOKEN_A, "startCoachSession")
+        self.read(TOKEN_A, "startCoachSession")
+        ended = {**self.sample, "seq": 2, "state": "ended", "heart_rate_bpm": None, "cadence_rpm": None,
+                 "speed_mps": None}
+        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=ended)[0])
+        self.assertNotIn("companion", self.read(TOKEN_A)["live_run"])
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_the_watch_can_upload_while_a_read_is_held(self):
+        self.held_config(0.8)
+        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=self.sample)[0])
+        self.read(TOKEN_A)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            held = pool.submit(self.read, TOKEN_A)
+            time.sleep(0.1)
+            started = time.monotonic()
+            later = {**self.sample, "seq": 2, "heart_rate_bpm": 151}
+            self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=later)[0])
+            self.assertLess(time.monotonic() - started, 0.4)
+            self.assertEqual(151, held.result(timeout=10)["live_run"]["heart_rate_bpm"])
+
+    def test_a_deployment_without_a_hold_answers_every_read_at_once(self):
+        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=self.sample)[0])
+        started = time.monotonic()
+        for _ in range(3):
+            self.assertNotIn("companion", self.read(TOKEN_A)["live_run"])
+        self.assertLess(time.monotonic() - started, 5)
 
     def test_old_data_and_missing_permission_are_not_current(self):
         old = {**self.sample, "observed_at": int(time.time()) - 22}

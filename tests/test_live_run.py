@@ -161,3 +161,134 @@ class LiveRunTest(unittest.TestCase):
             list(executor.map(lambda seq: self.store.ingest("a", self.sample(seq=seq)),
                               list(range(32, -1, -1)) + list(range(33))))
         self.assertEqual(self.store.snapshot("a")["seq"], 32)
+
+
+class LiveRunTrendTest(unittest.TestCase):
+    def setUp(self):
+        self.wall = 1_800_000_000
+        self.elapsed = 100
+        self.slept = []
+        self.during_sleep = None
+        self.store = LiveRunStore(clock=lambda: self.wall, monotonic=lambda: self.elapsed, sleep=self.sleep)
+        self.timer_ms = 0
+        self.seq = 0
+        self.distance = 0.0
+        self.altitude = 30.0
+
+    def advance(self, seconds):
+        self.wall += seconds
+        self.elapsed += seconds
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.advance(seconds)
+        if self.during_sleep is not None:
+            self.during_sleep()
+
+    def sample(self, **updates):
+        return {"session_id": "run-a", "seq": self.seq, "observed_at": int(self.wall), "state": "running",
+                "heart_rate_bpm": 130, "cadence_rpm": 75, "speed_mps": 2.1, "timer_ms": self.timer_ms,
+                "distance_m": self.distance, "altitude_m": self.altitude, "ascent_m": 0, "descent_m": 0,
+                "power_w": None, "steps_done": 0, **updates}
+
+    def run_for(self, minutes, *, speed=2.1, climb_per_minute=0.0, heart_rate=130, **updates):
+        for _ in range(round(minutes * 12)):
+            self.advance(5)
+            self.timer_ms += 5000
+            self.seq += 1
+            self.distance += speed * 5
+            self.altitude += climb_per_minute / 12
+            rate = heart_rate() if callable(heart_rate) else heart_rate
+            self.store.ingest("a", self.sample(speed_mps=speed, heart_rate_bpm=rate, **updates))
+
+    def test_trend_tells_a_hill_from_a_faster_pace(self):
+        self.run_for(12)
+        self.run_for(3, speed=1.9, climb_per_minute=6, heart_rate=145)
+        trend = self.store.snapshot("a")["trend"]
+        hill = trend["last_3_minutes"]
+        self.assertEqual((145, 150), (hill["heart_rate_bpm"], hill["cadence_spm"]))
+        self.assertEqual("8:46", hill["pace_per_km"])
+        self.assertAlmostEqual(5.2, hill["grade_pct"], delta=0.3)
+        self.assertEqual(15.0, trend["elapsed_minutes"])
+        self.assertEqual([0, 10], [block["from_minute"] for block in trend["every_10_minutes"]])
+        self.assertEqual(130, trend["every_10_minutes"][0]["heart_rate_bpm"])
+        self.assertEqual(0, trend["every_10_minutes"][0]["climb_m"])
+
+    def test_trend_shows_heart_rate_rising_at_a_steady_pace(self):
+        rates = iter(range(120, 400))
+        self.run_for(5, heart_rate=lambda: next(rates))
+        self.assertGreater(self.store.snapshot("a")["trend"]["last_3_minutes"]["heart_rate_change_bpm"], 0)
+
+    def test_a_reading_the_watch_did_not_send_stays_null_in_the_trend(self):
+        self.run_for(2, heart_rate=None, altitude_m=None, distance_m=None, cadence_rpm=None)
+        window = self.store.snapshot("a")["trend"]["last_1_minute"]
+        for key in ("heart_rate_bpm", "heart_rate_change_bpm", "pace_per_km", "cadence_spm", "climb_m", "grade_pct"):
+            self.assertIsNone(window[key], key)
+
+    def test_a_watch_without_the_new_measurements_still_works_with_no_trend(self):
+        receipt = self.store.ingest("a", {"session_id": "old", "seq": 0, "observed_at": int(self.wall),
+                                          "state": "running", "heart_rate_bpm": 120, "cadence_rpm": 80,
+                                          "speed_mps": 2.0})
+        self.assertEqual("accepted", receipt["status"])
+        self.assertNotIn("trend", self.store.snapshot("a"))
+
+    def test_unknown_or_impossible_measurements_are_refused(self):
+        for bad in ({"gps": [1, 2]}, {"distance_m": -1}, {"timer_ms": float("nan")}, {"power_w": "high"}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.store.ingest("a", self.sample(**bad))
+        self.assertEqual("accepted", self.store.ingest("a", self.sample(altitude_m=-3.5))["status"])
+
+    def test_a_new_session_starts_a_new_trend(self):
+        self.run_for(5)
+        self.advance(5)
+        self.timer_ms = 5000
+        self.store.ingest("a", self.sample(session_id="run-b", seq=0, distance_m=10.0))
+        trend = self.store.snapshot("a")["trend"]
+        self.assertEqual(0.1, trend["elapsed_minutes"])
+        self.assertEqual(1, len(trend["every_10_minutes"]))
+
+    def test_a_pause_clears_the_current_numbers_and_keeps_the_trend(self):
+        self.run_for(2)
+        self.advance(5)
+        self.seq += 1
+        self.store.ingest("a", {"session_id": "run-a", "seq": self.seq, "observed_at": int(self.wall),
+                                "state": "paused", "heart_rate_bpm": None, "cadence_rpm": None, "speed_mps": None})
+        view = self.store.snapshot("a")
+        self.assertIsNone(view["heart_rate_bpm"])
+        self.assertIsNone(view.get("distance_m"))
+        self.assertEqual(2.0, view["trend"]["elapsed_minutes"])
+
+    def test_first_read_answers_at_once_and_a_repeat_waits_out_the_interval(self):
+        self.run_for(1)
+        self.assertEqual(1, self.store.hold_repeat_read("a", 60))
+        self.assertEqual([], self.slept)
+        self.assertEqual(2, self.store.hold_repeat_read("a", 60))
+        self.assertAlmostEqual(60, sum(self.slept))
+
+    def test_a_read_after_the_interval_does_not_wait(self):
+        self.run_for(1)
+        self.store.hold_repeat_read("a", 60)
+        self.advance(61)
+        self.store.hold_repeat_read("a", 60)
+        self.assertEqual([], self.slept)
+
+    def test_a_held_read_returns_as_soon_as_the_run_ends(self):
+        self.run_for(1)
+        self.store.hold_repeat_read("a", 60)
+
+        def finish():
+            self.seq += 1
+            self.store.ingest("a", {"session_id": "run-a", "seq": self.seq, "observed_at": int(self.wall),
+                                    "state": "ended", "heart_rate_bpm": None, "cadence_rpm": None, "speed_mps": None})
+
+        self.during_sleep = finish
+        self.store.hold_repeat_read("a", 60)
+        self.assertEqual(1, len(self.slept))
+
+    def test_no_hold_means_no_wait_and_no_sample_means_no_wait(self):
+        self.store.hold_repeat_read("nobody", 60)
+        self.store.hold_repeat_read("nobody", 60)
+        self.run_for(1)
+        self.store.hold_repeat_read("a", 0)
+        self.store.hold_repeat_read("a", 0)
+        self.assertEqual([], self.slept)

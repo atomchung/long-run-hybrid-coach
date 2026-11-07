@@ -101,3 +101,19 @@ function eachPauseNeedsItsOwnReceipt(logger) {
     Test.assert(upload.status(4200).equals("Pause sent"));
     return true;
 }
+
+(:test)
+function countWorkoutEventsAcrossPauseAndReset(logger) {
+    var field = new LiveCoachField();
+    field.onWorkoutStarted();
+    Test.assert(field.label.equals("Done 0"));
+    field.onWorkoutStepComplete();
+    field.onTimerPause();
+    field.onTimerResume();
+    Test.assert(field.label.equals("Done 1"));
+    field.onWorkoutStepComplete();
+    Test.assert(field.label.equals("Done 2"));
+    field.onTimerReset();
+    Test.assert(field.label.equals("Live Coach"));
+    return true;
+}

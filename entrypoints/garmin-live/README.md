@@ -26,7 +26,7 @@ Use Garmin's USB sideload procedure to copy the PRG for your watch size into `GA
 
 ## Upload behavior
 
-The source reads current heart rate (bpm), cadence (Garmin's raw rpm) and speed (m/s) from `Activity.Info`. Missing readings stay JSON null. The field requests the Communications permission and sends those three optional measurements with `session_id`, zero-based sequence number, UTC epoch observation time in whole seconds, and session state. Paused/ended events carry null measurements.
+The source reads current heart rate (bpm), cadence (Garmin's raw rpm) and speed (m/s) from `Activity.Info`. Missing readings stay JSON null. The field requests the Communications permission and sends those three optional measurements with `session_id`, zero-based sequence number, UTC epoch observation time in whole seconds, and session state. Running samples also carry the timer, distance, altitude, ascent, descent, power and completed step count, so the receiver can tell a hill from a pace change. Paused/ended events carry null measurements.
 
 Manual stop and Auto Pause keep the session ID. Restart or resume takes a fresh sample. Ending/resetting the activity sends an ended event; the next run receives a new ID. Pending running requests are cancelled when the timer stops. Transport cancellation is best effort, so the receiver must still enforce sequence ordering. The field limits uploads to one outstanding request, gives a request 20 seconds, and backs off for 5–30 seconds after failure. Only control events can retry, retaining their original timestamps, for at most 30 seconds while the field can run. Closing the activity or losing the phone link can prevent a final end receipt; the receiver should expire stale sessions.
 
@@ -40,6 +40,8 @@ connectiq
 monkeydo "$HOME/Library/Caches/LiveCoachBuilds/fr57042mm/LiveTest.prg" fr57042mm -t
 monkeydo "$HOME/Library/Caches/LiveCoachBuilds/fr57047mm/LiveTest.prg" fr57047mm -t
 ```
+
+For a structured workout, the field label changes to **Done 0** on Garmin's workout-start callback and counts workout-step-complete callbacks. The value under the label still reports upload status. This count is local to the watch and does not identify the current step or the workout. On a three-step workout, compare the count with the native workout screen after one automatic transition and one manual skip. Record what actually happened on the watch, including if a transition produced no callback.
 
 Tests replace the network sender with an in-memory capture. On the paired watch, verify samples before/after manual pause, Auto Pause, save and the next run. Check a missing sensor value, phone disconnection/reconnection, and return to a locked iPhone. Compare raw running cadence with the native display before showing steps per minute. Phone background delivery, network latency, and the lifecycle of a real activity require that device check.
 

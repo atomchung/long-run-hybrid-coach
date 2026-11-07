@@ -23,6 +23,7 @@ class LiveUpload {
     private var retryMs = 5000;
     private var ackAt = null;
     private var ackPhase = "";
+    private var extra as Lang.Dictionary or Null = null;
 
     function initialize(url, deviceToken) {
         endpoint = url;
@@ -34,12 +35,23 @@ class LiveUpload {
             && url.substring(url.length() - suffix.length(), url.length()).equals(suffix);
     }
 
+    // Measurements beyond the three the receiver has always taken, for running samples only.
+    function setExtra(values as Lang.Dictionary) as Void {
+        extra = values;
+    }
+
     private function body(when, hr, cadence, speed) {
         var result = {
             "session_id" => sessionId, "seq" => seq, "observed_at" => when,
             "state" => phase, "heart_rate_bpm" => hr, "cadence_rpm" => cadence,
             "speed_mps" => speed
         };
+        if (phase.equals("running") && extra != null) {
+            var keys = extra.keys();
+            for (var i = 0; i < keys.size(); i += 1) {
+                result[keys[i]] = extra[keys[i]];
+            }
+        }
         seq += 1;
         return result;
     }
