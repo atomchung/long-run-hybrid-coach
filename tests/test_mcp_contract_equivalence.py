@@ -140,5 +140,37 @@ class ProductContractEquivalenceTests(unittest.TestCase):
         self.assertIn("cannot substitute the full-product catalogue", result.stderr)
 
 
+
+class DeclaredContractChangeTests(unittest.TestCase):
+    """A deliberate change passes only as the profile's pins state it, byte for byte."""
+
+    SERVED = {"catalogue_sha256": "a" * 64, "instructions": "Coach orchestration."}
+    INSTRUCTIONS = __import__("hashlib").sha256(b"Coach orchestration.").hexdigest()
+
+    def pins(self, catalogue, instructions):
+        return {"TOOL_CATALOGUE_SHA256": catalogue, "INSTRUCTIONS_SHA256": instructions}
+
+    def test_pins_moved_to_exactly_what_is_served_declare_the_change(self):
+        base = self.pins("b" * 64, self.INSTRUCTIONS)
+        self.assertTrue(gate.declared_change(base, self.pins("a" * 64, self.INSTRUCTIONS), self.SERVED))
+
+    def test_a_difference_the_pins_do_not_state_is_still_refused(self):
+        same = self.pins("a" * 64, self.INSTRUCTIONS)
+        for base, head in (
+            (same, same),  # nothing moved: the difference is an accident
+            (self.pins("b" * 64, self.INSTRUCTIONS), self.pins("c" * 64, self.INSTRUCTIONS)),
+            (self.pins("b" * 64, self.INSTRUCTIONS), self.pins("a" * 64, "d" * 64)),
+            (self.pins("b" * 64, self.INSTRUCTIONS), {"TOOL_CATALOGUE_SHA256": "a" * 64}),
+        ):
+            with self.subTest(base=base, head=head):
+                self.assertFalse(gate.declared_change(base, head, self.SERVED))
+
+    def test_pins_are_read_from_the_profile_module_text(self):
+        text = Path(gate.ROOT / "garmin_coach_loop" / "profile_hybrid.py").read_text(encoding="utf-8")
+        pins = gate.profile_pins(text)
+        self.assertEqual({"TOOL_CATALOGUE_SHA256", "INSTRUCTIONS_SHA256"}, set(pins))
+        self.assertEqual({}, gate.base_profile_pins("HEAD", "no-such-product"))
+
+
 if __name__ == "__main__":
     unittest.main()

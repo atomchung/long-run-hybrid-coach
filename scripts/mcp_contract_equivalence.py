@@ -22,12 +22,20 @@ automatically wrong -- a deliberate catalogue change moves it, and that change g
 through Scan Tools and a new reviewed version (AGENTS.md, "Development and release
 gates"). What this refuses is moving it *by accident*, which is exactly what a transport
 migration is in a position to do.
+
+``--accept-declared`` is how a deliberate change says so: it passes a difference only
+when the product profile's reviewed pins (``TOOL_CATALOGUE_SHA256`` and
+``INSTRUCTIONS_SHA256``) moved from the base ref's to exactly what this checkout serves.
+The difference is still printed in full. A pin left behind, a pin moved to anything but
+the served bytes, or two protocol eras that disagree still fail.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -350,6 +358,35 @@ def compare(base: dict[str, Any], served: dict[str, Any], *, label: str) -> list
     return differences
 
 
+_PIN = re.compile(r'^(TOOL_CATALOGUE_SHA256|INSTRUCTIONS_SHA256) = "([0-9a-f]{64})"$', re.MULTILINE)
+
+
+def profile_pins(source: str) -> dict[str, str]:
+    """The two reviewed pins a profile module states, read from its text."""
+    return dict(_PIN.findall(source))
+
+
+def base_profile_pins(ref: str, product: str) -> dict[str, str]:
+    """The pins ``ref`` stated for ``product``; empty where that ref has no profile."""
+    shown = subprocess.run(
+        ["git", "show", f"{ref}:garmin_coach_loop/profile_{product}.py"],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    return profile_pins(shown.stdout) if shown.returncode == 0 else {}
+
+
+def declared_change(
+    base_pins: dict[str, str], head_pins: dict[str, str], served: dict[str, Any]
+) -> bool:
+    """Whether the profile states this difference: both pins are the served bytes, and at
+    least one of them is not what the base ref stated."""
+    expected = {
+        "TOOL_CATALOGUE_SHA256": served["catalogue_sha256"],
+        "INSTRUCTIONS_SHA256": hashlib.sha256(served["instructions"].encode("utf-8")).hexdigest(),
+    }
+    return head_pins == expected and base_pins != head_pins
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -365,6 +402,10 @@ def main() -> int:
         "--health-data", choices=("on", "off"),
         help="explicit capability override; otherwise each ref uses its product default",
     )
+    parser.add_argument(
+        "--accept-declared", action="store_true",
+        help="pass a difference the product profile's reviewed pins declare (see above)",
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable result")
     arguments = parser.parse_args()
 
@@ -379,10 +420,25 @@ def main() -> int:
     # The two eras are one endpoint, so the catalogue a client is handed must not depend
     # on which one it speaks. Compared directly rather than inferred from both matching
     # the base: a shared deviation would cancel out above and show up only here.
+    eras_agree = True
     if _canonical(readings["legacy"]["tools"]) != _canonical(readings["modern"]["tools"]):
         differences.append("the 2025 and 2026 eras serve different tool catalogues")
+        eras_agree = False
     if readings["legacy"]["instructions"] != readings["modern"]["instructions"]:
         differences.append("the 2025 and 2026 eras serve different instructions")
+        eras_agree = False
+
+    declared = bool(
+        differences
+        and arguments.accept_declared
+        and eras_agree
+        and health_data is None
+        and declared_change(
+            base_profile_pins(arguments.base, arguments.product),
+            profile_pins((ROOT / "garmin_coach_loop" / f"profile_{arguments.product}.py").read_text(encoding="utf-8")),
+            readings["legacy"],
+        )
+    )
 
     if arguments.json:
         print(
@@ -395,6 +451,7 @@ def main() -> int:
                     "tools": len(base["tools"]),
                     "catalogue_sha256": base["catalogue_sha256"],
                     "equivalent": not differences,
+                    "declared": declared,
                     "differences": differences,
                 },
                 ensure_ascii=False,
@@ -402,7 +459,8 @@ def main() -> int:
             )
         )
     elif differences:
-        print(f"MCP contract for {arguments.product} differs from {arguments.base}:\n")
+        stated = ", as its profile declares" if declared else ""
+        print(f"MCP contract for {arguments.product} differs from {arguments.base}{stated}:\n")
         for difference in differences:
             print(f"  - {difference}")
     else:
@@ -413,7 +471,7 @@ def main() -> int:
             f"  instructions     {len(base['instructions'])} characters\n"
             f"  prompts          {len(base['prompts'])}"
         )
-    return 1 if differences else 0
+    return 1 if differences and not declared else 0
 
 
 if __name__ == "__main__":
