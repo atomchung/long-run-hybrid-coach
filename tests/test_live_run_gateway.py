@@ -75,6 +75,7 @@ class WatchGatewayTestCase(GatewayTestCase):
         self.assertEqual("connected", said["status"], said)
         issued = self.poll(code, secret)
         self.assertEqual("issued", issued["status"])
+        self.last_code = code
         return issued["credential"]
 
     def raw_post(self, path, body, *, token=None, headers=None):
@@ -126,9 +127,10 @@ class WatchPairingTests(WatchGatewayTestCase):
         code = self.start()["code"]
         self.assertEqual("connected", self.tool(TOKEN_A, "connectWatch", {"code": code})["structuredContent"]["status"])
         other_code = self.start(OTHER_SECRET)["code"]
+        # Taken by another account while it is still live, then each other kind after.
+        refusals = [self.tool(TOKEN_B, "connectWatch", {"code": code})["structuredContent"]]
         self.now = NOW.replace(minute=11)
-        refusals = [
-            self.tool(TOKEN_B, "connectWatch", {"code": code})["structuredContent"],        # taken
+        refusals += [
             self.tool(TOKEN_B, "connectWatch", {"code": other_code})["structuredContent"],  # expired
             self.tool(TOKEN_B, "connectWatch", {"code": "ZZZZ2222"})["structuredContent"],  # unknown
             self.tool(TOKEN_B, "connectWatch", {"code": "not a code"})["structuredContent"],
@@ -164,9 +166,13 @@ class WatchPairingTests(WatchGatewayTestCase):
         self.gateway._watch_upload_limit = RateLimiter(10_000, 60)
         sample = running(1, 5000, int(time.time()))
         self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=first, body=sample)[0])
+        first_code = self.last_code
         second = self.pair(secret=OTHER_SECRET)
         status, refused = self.call("POST", LIVE_RUN_PATH, token=first, body=running(2, 10000, int(time.time())))
         self.assertEqual((401, "invalid_device_credential"), (status, refused["error"]))
+        # The first watch's code, said again, no longer reports a connection it lost.
+        again = self.tool(TOKEN_A, "connectWatch", {"code": first_code})["structuredContent"]
+        self.assertEqual("code_not_accepted", again["status"])
         self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=second,
                                         body=running(2, 10000, int(time.time())))[0])
 
@@ -275,6 +281,26 @@ class WatchRateLimitTests(WatchGatewayTestCase):
             self.start(headers={"X-Real-IP": "not-an-address"})
         self.assertEqual(429, self.raw_post(WATCH_PAIRING_PATH, {"secret": SECRET},
                                             headers={"X-Real-IP": "127.0.0.1"})[0])
+
+    def test_codes_have_a_ceiling_for_everyone_together(self):
+        """A caller with many addresses still cannot grow the registry without end."""
+        self.gateway._watch_start_ceiling = RateLimiter(3, 600)
+        for index in range(3):
+            self.start(headers={"X-Real-IP": f"198.51.100.{index + 1}"})
+        status, headers, refused = self.raw_post(WATCH_PAIRING_PATH, {"secret": SECRET},
+                                                 headers={"X-Real-IP": "203.0.113.200"})
+        self.assertEqual((429, "rate_limited"), (status, refused["error"]))
+        self.assertIn("Retry-After", headers)
+        # Polls write no row and are not held to it.
+        self.assertEqual({"status": "invalid"}, self.poll("ZZZZ2222"))
+
+    def test_one_ipv6_subscriber_block_is_one_count(self):
+        self.gateway._watch_address_limits["watch_pairing_start"] = RateLimiter(2, 600)
+        for suffix in ("::1", "::2"):
+            self.start(headers={"X-Real-IP": "2001:db8:1:2" + suffix})
+        self.assertEqual(429, self.raw_post(WATCH_PAIRING_PATH, {"secret": SECRET},
+                                            headers={"X-Real-IP": "2001:db8:1:2::3"})[0])
+        self.start(headers={"X-Real-IP": "2001:db8:1:3::1"})
 
     def test_polling_and_uploads_are_counted_too(self):
         code = self.start()["code"]

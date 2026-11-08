@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from garmin_coach_loop import gateway, profile_hybrid, profile_training, product_profiles
+from garmin_coach_loop import gateway, product_scope, profile_hybrid, profile_training, product_profiles
 from garmin_coach_loop.product_identity import ProductIdentityError
 from scripts import change_gates, check_product_profiles, release_bundle
 
@@ -38,6 +38,23 @@ class ProductProfileTests(unittest.TestCase):
             for product, expected in (("hybrid", True), ("training", False)):
                 config = gateway.GatewayConfig(root, b"k" * 32, "client", "secret", product=product)
                 self.assertIs(expected, config.health_data)
+
+    def test_a_health_on_bundle_binds_the_catalogue_its_product_serves(self):
+        """/readyz compares this digest with the served one: the Plugin entry with health
+        data on serves the full catalogue less the watch tool, and is bound to that."""
+        commit = release_bundle.commit_at_head()
+        for options, product in (
+            ({"product": "training"}, "training"),
+            ({"catalogue_product": "training"}, "training"),
+            ({"catalogue_product": "hybrid"}, "hybrid"),
+            ({}, "hybrid"),
+        ):
+            with self.subTest(options=options):
+                built = release_bundle.bundle(commit, "https://coach.example.invalid", True, **options)
+                self.assertEqual(
+                    product_scope.surface(True, product=product).tool_catalogue_sha256(),
+                    built["tool_catalogue_sha256"],
+                )
 
     def test_unknown_product_cannot_select_a_profile(self):
         for value in ("claude", "chatgpt", "../hybrid", ""):

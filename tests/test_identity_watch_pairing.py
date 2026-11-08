@@ -225,6 +225,16 @@ class WatchPairingTests(unittest.TestCase):
         self.assertEqual([], self.rows("watch_devices"))
         self.assertEqual([], self.rows("watch_pairings"))
 
+    def test_the_sweep_reads_the_expiry_index_not_the_table(self):
+        self.start()
+        with sqlite3.connect(self.db_path) as connection:
+            plan = " ".join(
+                str(row[-1]) for row in connection.execute(
+                    "EXPLAIN QUERY PLAN DELETE FROM watch_pairings WHERE expires_at < ?", ("x",)
+                )
+            )
+        self.assertIn("watch_pairings_expiry", plan)
+
     def test_the_same_account_repeating_a_code_is_the_same_pairing(self):
         code = self.start()
         self.assertTrue(self.claim(code))
@@ -237,6 +247,18 @@ class WatchPairingTests(unittest.TestCase):
         late = self.start(OTHER_SECRET)
         self.assertTrue(self.claim(late))
         self.assertFalse(self.claim(late, now=at(601)))
+
+    def test_a_used_code_is_connected_only_while_its_watch_is_the_current_one(self):
+        first = self.start()
+        self.claim(first)
+        self.redeem(first, now=at(20))
+        self.assertTrue(self.claim(first, now=at(30)))
+        second = self.start(OTHER_SECRET, now=at(40))
+        self.claim(second, now=at(50))
+        self.redeem(second, OTHER_SECRET, now=at(60))
+        # The first watch was replaced: saying its code again must not report it connected.
+        self.assertFalse(self.claim(first, now=at(70)))
+        self.assertTrue(self.claim(second, now=at(70)))
 
     def test_watch_device_says_whether_and_when_this_account_paired(self):
         self.assertIsNone(watch_device(self.db_path, self.owner))

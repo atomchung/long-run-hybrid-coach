@@ -349,8 +349,11 @@ def _identity_table_names() -> list[str]:
     from garmin_coach_loop import identity
 
     pattern = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+)")
+    index = re.compile(r"CREATE INDEX IF NOT EXISTS \w+ ON \w+")
     names = []
     for statement in identity._SCHEMA_STATEMENTS:  # noqa: SLF001 -- the schema is the fact
+        if index.search(statement):
+            continue  # an index belongs to a table already counted
         match = pattern.search(statement)
         assert match, f"unrecognised schema statement: {statement[:40]}"
         names.append(match.group(1))

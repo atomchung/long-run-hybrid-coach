@@ -77,6 +77,17 @@ _CATALOGUE_PROGRAM = (
     "from garmin_coach_loop.mcp_transport import tool_catalogue_sha256;"
     "print(tool_catalogue_sha256())"
 )
+# The same digest for one product with health data on. A commit whose surface is chosen
+# by product serves only the full product the whole catalogue; an older one serves it to
+# every product, which is what the fallback answers.
+_PRODUCT_CATALOGUE_PROGRAM = (
+    "import inspect, sys;"
+    "from garmin_coach_loop import product_scope;"
+    "from garmin_coach_loop.mcp_transport import tool_catalogue_sha256;"
+    "print(product_scope.surface(True, product=sys.argv[1]).tool_catalogue_sha256()"
+    " if 'product' in inspect.signature(product_scope.surface).parameters"
+    " else tool_catalogue_sha256())"
+)
 # A deployment with health data off serves a surface derived in code (`product_scope`), so
 # its catalogue and its instructions are both read by running the commit's package.
 _SURFACE_WITHOUT_HEALTH_PROGRAM = (
@@ -164,7 +175,7 @@ def surface_without_health(package: list[tuple[str, bytes]]) -> tuple[str, str]:
     return served["tool_catalogue_sha256"], served["instructions"]
 
 
-def tool_catalogue_digest(package: list[tuple[str, bytes]]) -> str:
+def tool_catalogue_digest(package: list[tuple[str, bytes]], product: str | None = None) -> str:
     """Hash the catalogue by running the code that builds it, at the released commit.
 
     There is no file to ``git show`` here: the catalogue exists only once
@@ -173,7 +184,10 @@ def tool_catalogue_digest(package: list[tuple[str, bytes]]) -> str:
     commit other than the checkout still describes *that* commit rather than whatever
     the working tree currently holds.
     """
-    result = _run_package(package, _CATALOGUE_PROGRAM)
+    if product is None:
+        result = _run_package(package, _CATALOGUE_PROGRAM)
+    else:
+        result = _run_package(package, _PRODUCT_CATALOGUE_PROGRAM, product)
     digest = result.stdout.strip()
     if result.returncode != 0 or not SHA256_RE.fullmatch(digest):
         if "tool_catalogue_sha256" in result.stderr:
@@ -214,7 +228,13 @@ def profile_at_package(package: list[tuple[str, bytes]], product: str,
 
 
 def bundle(commit: str, domain: str, health_data: bool | None = None, *,
-           product: str | None = None) -> dict:
+           product: str | None = None, catalogue_product: str | None = None) -> dict:
+    """The release identity for ``commit``.
+
+    ``catalogue_product`` names the product whose catalogue a health-on build binds when
+    ``product`` is not given, as for a switch of an already running service; without
+    either, it is the full product's.
+    """
     # Terminal newlines are stripped to match `orchestration.instructions()`, which is the
     # value `prompts/get` actually serves; hashing Git's conventional final newline would
     # bind a string no client ever receives.
@@ -229,7 +249,7 @@ def bundle(commit: str, domain: str, health_data: bool | None = None, *,
     elif health_data is None:
         health_data = True
     if health_data:
-        catalogue = tool_catalogue_digest(package)
+        catalogue = tool_catalogue_digest(package, product or catalogue_product)
     else:
         catalogue, instructions = surface_without_health(package)
     skill = git_tree(commit, SKILL)

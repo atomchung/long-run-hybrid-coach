@@ -165,6 +165,22 @@ class DeclaredContractChangeTests(unittest.TestCase):
             with self.subTest(base=base, head=head):
                 self.assertFalse(gate.declared_change(base, head, self.SERVED))
 
+    def test_only_differences_the_pins_cover_can_be_declared(self):
+        covered = [
+            "legacy: tool added: connectWatch",
+            "modern: connectWatch.description changed:\n    base: a\n    served: b",
+            "legacy: catalogue_sha256 changed:\n    base: a\n    served: b",
+            "modern: instructions changed:\n    base: a\n    served: b",
+        ]
+        self.assertTrue(gate.covered_by_pins(covered))
+        for unpinned in (
+            "legacy: prompt coach_training_judgment changed:\n    base: a\n    served: b",
+            "modern: prompts/list changed:\n    base: a\n    served: b",
+            "legacy: server_title changed:\n    base: a\n    served: b",
+        ):
+            with self.subTest(unpinned=unpinned.split(":")[1]):
+                self.assertFalse(gate.covered_by_pins([*covered, unpinned]))
+
     def test_pins_are_read_from_the_profile_module_text(self):
         text = Path(gate.ROOT / "garmin_coach_loop" / "profile_hybrid.py").read_text(encoding="utf-8")
         pins = gate.profile_pins(text)

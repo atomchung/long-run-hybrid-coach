@@ -373,6 +373,11 @@ _WATCH_ADDRESS_LIMITS: dict[str, tuple[int, int]] = {
     "live_run_samples": (240, 60),
 }
 _WATCH_UPLOADS_PER_ACCOUNT = (30, 60)
+# Codes handed out per ten minutes to everyone together. Asking for one writes a row in
+# the identity registry and needs no credential, so the per-address count alone would let
+# a caller with many addresses grow the table without end. Only a watch not yet paired
+# asks, at most three times each time Run opens; when this is spent, watches wait.
+_WATCH_STARTS_OVERALL = (120, 600)
 # How many codes one account may say per ten minutes. Guessing a code someone else's
 # watch shows is already hopeless at 30**8; this keeps it so for a client that loops.
 _WATCH_CLAIMS_PER_ACCOUNT = (10, 600)
@@ -392,11 +397,15 @@ WATCH_RUN_KEPT = (
 )
 WATCH_STOP = (
     "Remove the Coach field from the run's data screens, or uninstall it, and nothing "
-    "more is sent. Connecting another watch, or this one again, replaces it."
+    "more is sent. Pairing another watch to this account retires this one. To pair this "
+    "watch to a different account, uninstall the field and install it again first."
 )
 WATCH_CODE_NOT_ACCEPTED = (
-    "No pairing waits under this code: mistyped, older than 10 minutes, or already "
-    "used. The field shows a fresh code by itself; ask for the one on the watch now."
+    "No pairing waits under this code for this account: mistyped, more than 10 minutes "
+    "old, already used, or said first in another conversation. Ask the athlete to open Run "
+    "without starting it and read the code the field shows now; if it says Not connected, "
+    "close Run and open it again. If it already shows Connected with an address that is "
+    "not theirs, they uninstall the field, install it again and pair from here."
 )
 
 
@@ -2403,6 +2412,7 @@ class CoachGateway:
             kind: RateLimiter(limit, window) for kind, (limit, window) in _WATCH_ADDRESS_LIMITS.items()
         }
         self._watch_upload_limit = RateLimiter(*_WATCH_UPLOADS_PER_ACCOUNT)
+        self._watch_start_ceiling = RateLimiter(*_WATCH_STARTS_OVERALL)
         self._watch_claim_limit = RateLimiter(*_WATCH_CLAIMS_PER_ACCOUNT)
         # Everything this process handed out or accepted that a later call may name
         # instead of resend, per owner, most recent last. Process memory and nothing
@@ -2671,8 +2681,11 @@ class CoachGateway:
     # -- the watch data field ------------------------------------------------------------
 
     def limit_watch_route(self, kind: str, address: str) -> None:
-        """Refuse a watch route past its per-address count, with how long to wait."""
+        """Refuse a watch route past its per-address count, or a code request past the
+        count for everyone together, with how long to wait."""
         wait = self._watch_address_limits[kind].allow(address)
+        if wait is None and kind == "watch_pairing_start":
+            wait = self._watch_start_ceiling.allow("all")
         if wait is not None:
             raise GatewayError(
                 HTTPStatus.TOO_MANY_REQUESTS, "rate_limited", headers={"Retry-After": str(wait)}
@@ -2837,7 +2850,9 @@ class CoachGateway:
             "account_label": label,
             "watch": (
                 f"Within a few seconds the field stops showing the code and shows {shown}. "
-                "If it shows another address, this conversation is signed in to another account."
+                "If that is not the athlete's address, this conversation is signed in to "
+                "another account: they uninstall the field, install it again, and say the "
+                "new code in a conversation signed in to the right one."
             ),
             "sends": WATCH_FIELD_SENDS,
             "kept": WATCH_RUN_KEPT,
@@ -8316,15 +8331,23 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         """The caller's address, which the watch routes count requests by.
 
         Railway's edge sets ``X-Real-IP`` to the client's remote address on every request
-        (its networking Specs & Limits) and replaces a copy the caller sent. Without that
-        edge -- a local run -- the socket peer is the caller. A value that is not one IP
-        address is not used, so a header cannot become an arbitrary counting key.
+        (its networking Specs & Limits); that it replaces a copy the caller sent is a
+        forum answer, not documentation, which is why code requests also have a ceiling
+        for everyone together. Without that edge -- a local run -- the socket peer is the
+        caller. A value that is not one IP address is not used, and an IPv6 address counts
+        as its /64, the block one subscriber is usually given, so stepping through one's
+        own addresses is not a new count each time.
         """
         candidate = str(self.headers.get("X-Real-IP") or "").strip()
         try:
-            return str(ipaddress.ip_address(candidate))
+            address = ipaddress.ip_address(candidate)
         except ValueError:
-            return str(self.client_address[0])
+            address = ipaddress.ip_address(str(self.client_address[0]))
+        if isinstance(address, ipaddress.IPv6Address):
+            if address.ipv4_mapped is not None:
+                return str(address.ipv4_mapped)
+            return str(ipaddress.ip_network(f"{address}/64", strict=False))
+        return str(address)
 
     def _query(self) -> dict[str, str]:
         """This request's query parameters, one value each or a refusal.

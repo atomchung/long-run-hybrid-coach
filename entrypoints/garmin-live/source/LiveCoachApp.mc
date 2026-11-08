@@ -134,18 +134,20 @@ class LiveCoachField extends WatchUi.SimpleDataField {
     }
 
     // Pairing happens before a run starts. A field that is not paired during a run
-    // says so and sends nothing.
+    // says so and sends nothing; a code from before the start is not polled any more, so
+    // it is not shown either.
     function unpaired(beforeRun, ticks) {
-        if (beforeRun) {
-            pairing.pump(ticks);
+        label = text["Label"];
+        if (!beforeRun) {
+            return text["NotConnected"];
         }
+        pairing.pump(ticks);
         var shown = pairing.shownCode();
         if (shown != null) {
             label = text["Code"];
             return shown;
         }
-        label = text["Label"];
-        if (!beforeRun || pairing.resting()) {
+        if (pairing.resting()) {
             return text["NotConnected"];
         }
         return pairing.failing() ? text["Retry"] : text["Connecting"];

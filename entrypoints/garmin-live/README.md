@@ -23,8 +23,10 @@ upload that account's runs, keeps it in `Application.Storage`, and shows **Conne
   run it shows how the upload is going: **Sent 3s** (已送 3s) means the server acknowledged
   the latest sample three seconds ago; **Sending**, **Retry**, **Paused**, **Pause sent**,
   **End pending** and **End sent** follow the timer.
-- Pairing another watch, or this one again, retires the old credential. A refused upload
-  (401) makes the field forget its credential and show a new code before the next run.
+- Pairing another watch to the account retires the old one: its next upload is refused
+  (401), and the field forgets its credential and shows a new code before the next run. A
+  paired field shows no code, so moving this watch to another account means uninstalling
+  the field and installing it again.
 - Removing the field from the data screens, or uninstalling it, stops everything.
 
 ## Build

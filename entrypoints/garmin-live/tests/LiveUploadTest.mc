@@ -140,3 +140,11 @@ function theFieldTranslatesUploadCodesAndShowsPairing(logger) {
     return true;
 }
 
+(:test)
+function anUnpairedFieldShowsNoCodeOnceTheRunStarts(logger) {
+    var field = new LiveCoachField();
+    Test.assert(field.unpaired(false, 1000).equals("Not connected"));
+    Test.assert(field.label.equals("Coach"));
+    return true;
+}
+

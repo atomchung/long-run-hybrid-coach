@@ -25,9 +25,10 @@ migration is in a position to do.
 
 ``--accept-declared`` is how a deliberate change says so: it passes a difference only
 when the product profile's reviewed pins (``TOOL_CATALOGUE_SHA256`` and
-``INSTRUCTIONS_SHA256``) moved from the base ref's to exactly what this checkout serves.
-The difference is still printed in full. A pin left behind, a pin moved to anything but
-the served bytes, or two protocol eras that disagree still fail.
+``INSTRUCTIONS_SHA256``) moved from the base ref's to exactly what this checkout serves,
+and only a difference those pins cover -- the tools and the instructions. The difference
+is still printed in full. A pin left behind, a pin moved to anything but the served
+bytes, a moved prompt or server name, or two protocol eras that disagree still fail.
 """
 
 from __future__ import annotations
@@ -375,6 +376,19 @@ def base_profile_pins(ref: str, product: str) -> dict[str, str]:
     return profile_pins(shown.stdout) if shown.returncode == 0 else {}
 
 
+# The differences a profile pin covers: a tool added, removed or changed field by field,
+# the catalogue digest, and the instructions. Prompts and the server's name are not pinned.
+_PINNED_DIFFERENCE = re.compile(
+    r"^(?:legacy|modern): (?:tool (?:added|removed): |[A-Za-z0-9_]+\.[A-Za-z0-9_]+ changed:"
+    r"|catalogue_sha256 changed:|instructions changed:)"
+)
+
+
+def covered_by_pins(differences: list[str]) -> bool:
+    """Whether every difference is one the profile's two pins can declare."""
+    return all(_PINNED_DIFFERENCE.match(item) for item in differences)
+
+
 def declared_change(
     base_pins: dict[str, str], head_pins: dict[str, str], served: dict[str, Any]
 ) -> bool:
@@ -433,6 +447,7 @@ def main() -> int:
         and arguments.accept_declared
         and eras_agree
         and health_data is None
+        and covered_by_pins(differences)
         and declared_change(
             base_profile_pins(arguments.base, arguments.product),
             profile_pins((ROOT / "garmin_coach_loop" / f"profile_{arguments.product}.py").read_text(encoding="utf-8")),
