@@ -28,6 +28,7 @@ PACKAGE_SUFFIXES = (".py", ".md")
 LIVE_SMOKE_PATHS = frozenset(
     {
         "garmin_coach_loop/gateway.py",
+        "garmin_coach_loop/live_run.py",
         "garmin_coach_loop/identity.py",
         "garmin_coach_loop/token_envelope.py",
         "garmin_coach_loop/source_intervals.py",

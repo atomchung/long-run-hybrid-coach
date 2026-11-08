@@ -104,6 +104,7 @@ from .delivery import (
     withdraw_approved_set,
 )
 from . import owner_data
+from .live_run import LiveRunStore
 from .identity import (
     IdentityError,
     ensure_registry,
@@ -337,6 +338,12 @@ TRUSTED_CLIENT_ORIGINS: tuple[str, ...] = (
 )
 
 
+LIVE_RUN_PATH = "/v1/live-run/samples"
+LIVE_RUN_OWNER_ENV = "GARMIN_COACH_LOOP_LIVE_RUN_OWNER_ID"
+LIVE_RUN_DIGEST_ENV = "GARMIN_COACH_LOOP_LIVE_RUN_TOKEN_SHA256"
+PILOT_ATHLETE_DIGEST_ENV = "GARMIN_COACH_LOOP_PILOT_ATHLETE_SHA256"
+
+
 class GatewayConfigError(RuntimeError):
     """The gateway cannot start with the configuration it was given."""
 
@@ -437,6 +444,9 @@ class GatewayConfig:
     # decides whose records these are, so the switch can move without moving anybody's
     # plan. Unset, it follows the product's default (`product_scope.health_data_default`).
     health_data: bool | None = None
+    live_run_owner: str | None = None
+    live_run_token_sha256: str | None = None
+    pilot_athlete_sha256: str | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -448,9 +458,29 @@ class GatewayConfig:
                 self, "health_data", product_scope.health_data_default(self.product)
             )
 
+        if self.pilot_athlete_sha256 is not None:
+            if self.product != "hybrid" or not self.health_data:
+                raise GatewayConfigError("the private athlete pilot requires the hybrid health-data product")
+            if not re.fullmatch(r"[0-9a-f]{64}", self.pilot_athlete_sha256):
+                raise GatewayConfigError(f"{PILOT_ATHLETE_DIGEST_ENV} must be a lowercase SHA-256 digest")
+
+        if self.live_run_owner is not None or self.live_run_token_sha256 is not None:
+            if self.product != "hybrid" or not self.health_data:
+                raise GatewayConfigError("a watch owner requires the hybrid health-data product")
+            if not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", self.live_run_owner or ""):
+                raise GatewayConfigError(f"{LIVE_RUN_OWNER_ENV} must be an existing owner's UUID")
+            if not re.fullmatch(r"[0-9a-f]{64}", self.live_run_token_sha256 or ""):
+                raise GatewayConfigError(f"{LIVE_RUN_DIGEST_ENV} must be a lowercase SHA-256 digest")
+
     @property
     def product_state_root(self) -> Path:
         return product_identity.product_state_root(self.state_root, self.product)
+
+    def admits_athlete(self, athlete_id: str) -> bool:
+        if self.pilot_athlete_sha256 is None:
+            return True
+        digest = hashlib.sha256(athlete_id.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(digest, self.pilot_athlete_sha256)
 
     @property
     def identity_db_path(self) -> Path:
@@ -675,6 +705,9 @@ def load_config(
         state_root=state_root,
         product=product,
         health_data=health_data,
+        live_run_owner=source.get(LIVE_RUN_OWNER_ENV) or None,
+        live_run_token_sha256=source.get(LIVE_RUN_DIGEST_ENV) or None,
+        pilot_athlete_sha256=source.get(PILOT_ATHLETE_DIGEST_ENV),
         token_hmac_key=key.encode("utf-8"),
         intervals_client_id=str(source[CLIENT_ID_ENV_VAR]).strip(),
         intervals_client_secret=str(source[CLIENT_SECRET_ENV_VAR]).strip(),
@@ -2327,6 +2360,7 @@ class CoachGateway:
         self._reader_factory = evidence_reader_factory
         self._transport_factory = workout_transport_factory
         self._now = now or (lambda: dt.datetime.now(dt.timezone.utc))
+        self.live_runs = LiveRunStore()
         # Everything this process handed out or accepted that a later call may name
         # instead of resend, per owner, most recent last. Process memory and nothing
         # else; see `_hold`.
@@ -2392,6 +2426,10 @@ class CoachGateway:
         owner_id = owner_for_fingerprint(self.config.identity_db_path, fingerprint)
         if owner_id is None:
             raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized")
+        if self.config.pilot_athlete_sha256 is not None:
+            athlete_id = self._registered_athlete_id(owner_id)
+            if athlete_id is None or not self.config.admits_athlete(athlete_id):
+                raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized")
         return owner_id
 
     # What an owner maintenance fence stops from *beginning* (issue #128). The store
@@ -2505,6 +2543,14 @@ class CoachGateway:
                 disclosure = self._client_disclosure(owner_id, token, client_origin)
                 if disclosure is not None:
                     answer = {**answer, "client_disclosure": disclosure}
+            if (
+                kind in {"session", "state"}
+                and owner_id == self.config.live_run_owner
+                and "ACTIVITY:READ" in (self._recorded_scope_names(token) or ())
+            ):
+                # Beside the answer, never inside the context: no count, plan match or
+                # delivery reads it, and nothing writes it to the store.
+                answer = {**answer, "watch_run": self.live_runs.recap(owner_id)}
             _refuse_oversized_read(kind, answer)
             return answer
         except GatewayError:
@@ -2581,6 +2627,21 @@ class CoachGateway:
             ) from exc
         except IdentityError as exc:
             raise GatewayError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error") from exc
+
+    def live_run_writer(self, bearer: str | None) -> str:
+        """Authenticate a write-only watch, bound by the operator to one registered owner."""
+        owner = self.config.live_run_owner
+        digest = self.config.live_run_token_sha256
+        if not owner or not digest:
+            raise GatewayError(HTTPStatus.NOT_FOUND, "not_found")
+        candidate = hashlib.sha256((bearer or "").encode("utf-8")).hexdigest()
+        if not bearer or not hmac.compare_digest(candidate, digest):
+            raise GatewayError(HTTPStatus.UNAUTHORIZED, "invalid_device_credential")
+        athlete_id = self._registered_athlete_id(owner)
+        if athlete_id is None or not self.config.admits_athlete(athlete_id):
+            self.live_runs.discard(owner)
+            raise GatewayError(HTTPStatus.FORBIDDEN, "live_run_owner_unavailable")
+        return owner
 
     def _recorded_scope_names(self, token: str) -> tuple[str, ...] | None:
         """What Intervals said this connection was granted, off the row already written.
@@ -3296,6 +3357,11 @@ class CoachGateway:
             # token may open, and guessing would be the one mistake that mixes athletes.
             raise GatewayError(HTTPStatus.BAD_GATEWAY, "server_error", oauth=True)
 
+        # The identity comes from the server-to-server Intervals exchange. Make the
+        # admission decision before either an owner or a credential is registered.
+        if not self.config.admits_athlete(str(athlete_id)):
+            raise GatewayError(HTTPStatus.FORBIDDEN, "access_denied", oauth=True)
+
         try:
             owner_id = lookup_or_create_owner(
                 self.config.identity_db_path, PROVIDER, str(athlete_id).strip()
@@ -3675,7 +3741,9 @@ class CoachGateway:
         Never refuses issuance itself. The credential inside this token was just proven
         live by the OAuth exchange that produced it, so an owner that briefly fails to
         resolve here is not a reason to withhold the token -- only a reason not to also
-        claim an epoch this call cannot vouch for.
+        claim an epoch this call cannot vouch for. The one caller that refuses on ``None``
+        is a restricted pilot, where the registered owner must still be admitted under the
+        current configuration.
         """
         try:
             owner_id = self.resolve_owner(provider_token)
@@ -3833,10 +3901,17 @@ class CoachGateway:
         # refuse every call this token ever makes, where omitting it just falls back to
         # the `iat` check below, exactly as every token minted before this claim existed
         # already does.
-        if isinstance(provider_token, str) and provider_token:
-            epoch = self._revocation_epoch(provider_token)
-            if epoch is not None:
-                payload["revocation_epoch"] = epoch
+        epoch = (
+            self._revocation_epoch(provider_token)
+            if isinstance(provider_token, str) and provider_token else None
+        )
+        if self.config.pilot_athlete_sha256 is not None and epoch is None:
+            # A code may have been issued just before this pilot was restricted.
+            raise self._token_refusal(
+                security_log.UNKNOWN_OWNER, "invalid_grant", client_id=client_id
+            )
+        if epoch is not None:
+            payload["revocation_epoch"] = epoch
         access_token = token_envelope.seal(
             product_identity.product_claims(payload, self.config.product),
             kind=token_envelope.ACCESS_TOKEN,
@@ -7811,14 +7886,24 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         mcp_body: bytes | None = None
         path = urllib.parse.urlsplit(self.path).path
         try:
+            gateway: CoachGateway = self.server.gateway  # type: ignore[attr-defined]
             route = ROUTES.get(path)
+            if path == LIVE_RUN_PATH and gateway.config.live_run_owner:
+                route = ("POST", "live_run_samples")
             if route is None:
                 raise GatewayError(HTTPStatus.NOT_FOUND, "not_found")
             allowed_method, kind = route
             if method != allowed_method:
                 raise GatewayError(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
-            gateway: CoachGateway = self.server.gateway  # type: ignore[attr-defined]
-            if kind in {"health", "readiness"}:
+            if kind == "live_run_samples":
+                owner_id = gateway.live_run_writer(_bearer_token(self.headers.get("Authorization")))
+                sample = self._json_body(max_bytes=1024)
+                try:
+                    payload = gateway.live_runs.ingest(owner_id, sample)
+                except ValueError:
+                    raise _invalid("invalid live run sample") from None
+                status = HTTPStatus.OK
+            elif kind in {"health", "readiness"}:
                 payload = gateway.health()
                 status = (
                     HTTPStatus.OK
