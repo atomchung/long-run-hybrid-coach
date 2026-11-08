@@ -421,6 +421,8 @@ class OwnerDeletionTests(OwnerDataTestCase):
                 "token_fingerprints": 1,
                 "token_scopes": 0,
                 "owner_revocations": 0,
+                "watch_pairings": 0,
+                "watch_devices": 0,
             },
             receipt["removed"]["identity_rows"],
         )
@@ -432,6 +434,8 @@ class OwnerDeletionTests(OwnerDataTestCase):
                 "token_fingerprints": 0,
                 "token_scopes": 0,
                 "owner_revocations": 0,
+                "watch_pairings": 0,
+                "watch_devices": 0,
             },
             owner_identity_row_counts(self.identity_db, self.owner_a),
         )
@@ -481,6 +485,8 @@ class OwnerDeletionTests(OwnerDataTestCase):
                 "token_fingerprints": 0,
                 "token_scopes": 0,
                 "owner_revocations": 0,
+                "watch_pairings": 0,
+                "watch_devices": 0,
             },
             owner_identity_row_counts(self.identity_db, self.owner_a),
         )

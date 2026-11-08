@@ -47,9 +47,11 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import sqlite3
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
@@ -145,6 +147,27 @@ _SCHEMA_STATEMENTS = (
         refusal TEXT NOT NULL,
         calls INTEGER NOT NULL,
         PRIMARY KEY (owner_id, day, tool, outcome, refusal)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS watch_pairings (
+        code_fingerprint TEXT PRIMARY KEY,
+        secret_fingerprint TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        owner_id TEXT REFERENCES owners(owner_id) ON DELETE CASCADE,
+        claimed_at TEXT,
+        account_label TEXT,
+        consumed_at TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS watch_devices (
+        credential_fingerprint TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES owners(owner_id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        account_label TEXT
     )
     """,
 )
@@ -553,6 +576,8 @@ def _no_owner_rows() -> dict[str, int]:
         "token_fingerprints": 0,
         "token_scopes": 0,
         "owner_revocations": 0,
+        "watch_pairings": 0,
+        "watch_devices": 0,
     }
 
 
@@ -588,12 +613,20 @@ def _owner_row_counts(connection: sqlite3.Connection, owner_id: str) -> dict[str
     owner_revocations = connection.execute(
         "SELECT COUNT(*) FROM owner_revocations WHERE owner_id = ?", (owner_id,)
     ).fetchone()[0]
+    watch_pairings = connection.execute(
+        "SELECT COUNT(*) FROM watch_pairings WHERE owner_id = ?", (owner_id,)
+    ).fetchone()[0]
+    watch_devices = connection.execute(
+        "SELECT COUNT(*) FROM watch_devices WHERE owner_id = ?", (owner_id,)
+    ).fetchone()[0]
     return {
         "owners": owners,
         "provider_identities": provider_identities,
         "token_fingerprints": token_fingerprints,
         "token_scopes": token_scopes,
         "owner_revocations": owner_revocations,
+        "watch_pairings": watch_pairings,
+        "watch_devices": watch_devices,
     }
 
 
@@ -659,6 +692,10 @@ def delete_owner_identity(db_path: Path | str, owner_id: str) -> dict[str, int]:
             # Which platform they arrived through is a fact about them too, and the one
             # here that names a third party. It goes with the rest.
             connection.execute("DELETE FROM entry_origins WHERE owner_id = ?", (owner_id,))
+            # A paired watch holds a credential that uploads for this account; it goes
+            # with the account, explicitly as well as by cascade.
+            connection.execute("DELETE FROM watch_devices WHERE owner_id = ?", (owner_id,))
+            connection.execute("DELETE FROM watch_pairings WHERE owner_id = ?", (owner_id,))
             connection.execute("DELETE FROM provider_identities WHERE owner_id = ?", (owner_id,))
             connection.execute("DELETE FROM owners WHERE owner_id = ?", (owner_id,))
             return counts
@@ -1190,3 +1227,284 @@ def activity_report(db_path: Path | str, *, since: str | None = None) -> dict[st
         "since": since,
         "owners": ordered,
     }
+
+
+# --- watch pairing ------------------------------------------------------------------
+#
+# A Connect IQ data field pairs to an account like an OAuth device flow (RFC 8628): the
+# watch asks for a short code and shows it, the athlete says the code in their Coach
+# conversation (which binds it to the owner of that conversation), and the watch, polling
+# with a secret only it knows, receives a write-only device credential. Only keyed
+# fingerprints of the code, the secret and the credential are stored.
+
+WATCH_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+WATCH_CODE_LENGTH = 8
+WATCH_PAIRING_PENDING = "pending"
+WATCH_PAIRING_ISSUED = "issued"
+WATCH_PAIRING_INVALID = "invalid"
+_WATCH_SECRET_MIN = 32
+_WATCH_SECRET_MAX = 256
+_WATCH_PAIRING_RETAIN = dt.timedelta(days=1)
+
+
+@dataclass(frozen=True)
+class WatchRedeemResult:
+    """Outcome of a watch polling for its credential. ``credential`` is set only when
+    ``status`` is ``issued``, and is never recoverable from the registry afterwards."""
+
+    status: str
+    credential: str | None = None
+    account_label: str | None = None
+
+
+def _domain_fingerprint(domain: str, value: str, *, hmac_key: bytes) -> str:
+    """Keyed fingerprint of ``value`` under a per-domain subkey.
+
+    Deriving a subkey rather than prefixing the message keeps a code, a watch secret, a
+    device credential and an access token (``token_fingerprint``, the unprefixed key) from
+    ever producing the same fingerprint, whatever bytes the values contain.
+    """
+    _text(value, domain)
+    if not isinstance(hmac_key, (bytes, bytearray)) or not bytes(hmac_key):
+        raise IdentityError("token fingerprint key must be non-empty bytes")
+    subkey = hmac.new(bytes(hmac_key), b"watch-pairing:" + domain.encode("ascii"), hashlib.sha256)
+    return hmac.new(subkey.digest(), value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _watch_time(moment: dt.datetime | None) -> dt.datetime:
+    if moment is None:
+        return dt.datetime.now(dt.timezone.utc)
+    if moment.tzinfo is None:
+        raise IdentityError("now must be timezone-aware")
+    return moment.astimezone(dt.timezone.utc)
+
+
+def _watch_stamp(moment: dt.datetime) -> str:
+    """Fixed-width UTC timestamp, so string comparison orders the same as time does."""
+    return moment.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _normalize_watch_code(code: object) -> str | None:
+    if not isinstance(code, str):
+        return None
+    normalized = "".join(ch for ch in code.upper() if ch not in " -\t")
+    if len(normalized) != WATCH_CODE_LENGTH or any(
+        ch not in WATCH_CODE_ALPHABET for ch in normalized
+    ):
+        return None
+    return normalized
+
+
+def start_watch_pairing(
+    db_path: Path | str,
+    device_secret: str,
+    *,
+    hmac_key: bytes,
+    now: dt.datetime | None = None,
+    ttl_seconds: int = 600,
+) -> str:
+    """Open a pairing for a watch and return the short code it should display.
+
+    ``device_secret`` is the watch's own 32-256 character secret; only its fingerprint is
+    kept. The code is eight characters from an alphabet without look-alikes, drawn with
+    ``secrets``. Pairings that expired, or were consumed, more than a day ago are deleted
+    here so the table does not grow without a separate sweeper.
+    """
+    if (
+        not isinstance(device_secret, str)
+        or not _WATCH_SECRET_MIN <= len(device_secret) <= _WATCH_SECRET_MAX
+    ):
+        raise IdentityError("watch secret must be a string of 32 to 256 characters")
+    if not isinstance(ttl_seconds, int) or isinstance(ttl_seconds, bool) or ttl_seconds <= 0:
+        raise IdentityError("ttl_seconds must be a positive integer")
+    moment = _watch_time(now)
+    secret_fingerprint = _domain_fingerprint("secret", device_secret, hmac_key=hmac_key)
+    created = _watch_stamp(moment)
+    expires = _watch_stamp(moment + dt.timedelta(seconds=ttl_seconds))
+    cutoff = _watch_stamp(moment - _WATCH_PAIRING_RETAIN)
+    try:
+        with _write_transaction(db_path) as connection:
+            connection.execute(
+                "DELETE FROM watch_pairings WHERE expires_at < ? OR consumed_at < ?",
+                (cutoff, cutoff),
+            )
+            for _ in range(8):
+                code = "".join(secrets.choice(WATCH_CODE_ALPHABET) for _ in range(WATCH_CODE_LENGTH))
+                code_fingerprint = _domain_fingerprint("code", code, hmac_key=hmac_key)
+                cursor = connection.execute(
+                    "INSERT OR IGNORE INTO watch_pairings"
+                    " (code_fingerprint, secret_fingerprint, created_at, expires_at)"
+                    " VALUES (?, ?, ?, ?)",
+                    (code_fingerprint, secret_fingerprint, created, expires),
+                )
+                if cursor.rowcount == 1:
+                    return code
+            raise IdentityError("could not allocate a pairing code")
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry write failed: {exc}") from exc
+
+
+def claim_watch_pairing(
+    db_path: Path | str,
+    code: str,
+    owner_id: str,
+    *,
+    hmac_key: bytes,
+    account_label: str | None = None,
+    now: dt.datetime | None = None,
+) -> bool:
+    """Bind a displayed code to the owner of the conversation that said it.
+
+    The code is normalized (case, spaces, hyphens). True only for an unexpired, unclaimed,
+    unconsumed pairing and an owner that exists; every other case is the same ``False``,
+    so a caller cannot probe which codes are live. ``account_label`` is the masked email
+    the watch will show, supplied by the caller.
+    """
+    normalized = _normalize_watch_code(code)
+    if normalized is None or not isinstance(owner_id, str) or not owner_id:
+        return False
+    if account_label is not None and not isinstance(account_label, str):
+        raise IdentityError("account_label must be a string")
+    moment = _watch_time(now)
+    code_fingerprint = _domain_fingerprint("code", normalized, hmac_key=hmac_key)
+    try:
+        with _write_transaction(db_path) as connection:
+            if connection.execute(
+                "SELECT 1 FROM owners WHERE owner_id = ?", (owner_id,)
+            ).fetchone() is None:
+                return False
+            cursor = connection.execute(
+                "UPDATE watch_pairings SET owner_id = ?, claimed_at = ?, account_label = ?"
+                " WHERE code_fingerprint = ? AND owner_id IS NULL AND consumed_at IS NULL"
+                " AND expires_at > ?",
+                (owner_id, _watch_stamp(moment), account_label, code_fingerprint, _watch_stamp(moment)),
+            )
+            return cursor.rowcount == 1
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry write failed: {exc}") from exc
+
+
+def redeem_watch_pairing(
+    db_path: Path | str,
+    code: str,
+    device_secret: str,
+    *,
+    hmac_key: bytes,
+    now: dt.datetime | None = None,
+) -> WatchRedeemResult:
+    """What a polling watch is told: ``pending``, ``issued`` or ``invalid``.
+
+    ``issued`` mints the device credential, replaces any credential this owner's earlier
+    watch held (one watch per owner), and consumes the pairing in the same transaction,
+    so a second poll gets ``invalid`` rather than a second credential. Wrong secret,
+    unknown, expired and already-consumed pairings are indistinguishable.
+    """
+    invalid = WatchRedeemResult(WATCH_PAIRING_INVALID)
+    normalized = _normalize_watch_code(code)
+    if (
+        normalized is None
+        or not isinstance(device_secret, str)
+        or not _WATCH_SECRET_MIN <= len(device_secret) <= _WATCH_SECRET_MAX
+    ):
+        return invalid
+    moment = _watch_time(now)
+    stamp = _watch_stamp(moment)
+    code_fingerprint = _domain_fingerprint("code", normalized, hmac_key=hmac_key)
+    secret_fingerprint = _domain_fingerprint("secret", device_secret, hmac_key=hmac_key)
+    try:
+        with _write_transaction(db_path) as connection:
+            row = connection.execute(
+                "SELECT secret_fingerprint, expires_at, owner_id, account_label, consumed_at"
+                " FROM watch_pairings WHERE code_fingerprint = ?",
+                (code_fingerprint,),
+            ).fetchone()
+            if (
+                row is None
+                or not hmac.compare_digest(str(row[0]), secret_fingerprint)
+                or str(row[1]) <= stamp
+                or row[4] is not None
+            ):
+                return invalid
+            owner_id, account_label = row[2], row[3]
+            if owner_id is None:
+                return WatchRedeemResult(WATCH_PAIRING_PENDING)
+            credential = secrets.token_urlsafe(32)
+            connection.execute("DELETE FROM watch_devices WHERE owner_id = ?", (owner_id,))
+            connection.execute(
+                "INSERT INTO watch_devices"
+                " (credential_fingerprint, owner_id, created_at, last_seen_at, account_label)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    _domain_fingerprint("credential", credential, hmac_key=hmac_key),
+                    owner_id,
+                    stamp,
+                    stamp,
+                    account_label,
+                ),
+            )
+            connection.execute(
+                "UPDATE watch_pairings SET consumed_at = ? WHERE code_fingerprint = ?",
+                (stamp, code_fingerprint),
+            )
+            return WatchRedeemResult(WATCH_PAIRING_ISSUED, credential, account_label)
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry write failed: {exc}") from exc
+
+
+def owner_for_watch_credential(
+    db_path: Path | str,
+    credential: str,
+    *,
+    hmac_key: bytes,
+    now: dt.datetime | None = None,
+    touch_after_seconds: int = 600,
+) -> str | None:
+    """Resolve a device credential to its owner, or ``None`` when it is not one.
+
+    ``last_seen_at`` moves only when the stored value is older than
+    ``touch_after_seconds``, so a watch uploading every few seconds is a read, not a
+    write, on nearly every call.
+    """
+    if not isinstance(credential, str) or not credential.strip():
+        return None
+    moment = _watch_time(now)
+    fingerprint = _domain_fingerprint("credential", credential, hmac_key=hmac_key)
+    try:
+        with _connect(db_path, create=False) as connection:
+            row = connection.execute(
+                "SELECT owner_id, last_seen_at FROM watch_devices WHERE credential_fingerprint = ?",
+                (fingerprint,),
+            ).fetchone()
+        if row is None:
+            return None
+        stale_before = _watch_stamp(moment - dt.timedelta(seconds=touch_after_seconds))
+        if str(row[1]) < stale_before:
+            with _write_transaction(db_path) as connection:
+                connection.execute(
+                    "UPDATE watch_devices SET last_seen_at = ? WHERE credential_fingerprint = ?",
+                    (_watch_stamp(moment), fingerprint),
+                )
+        return str(row[0])
+    except FileNotFoundError:
+        return None
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+
+
+def forget_watch_devices(db_path: Path | str, owner_id: str) -> int:
+    """Delete this owner's paired watch credentials and pairings; return the device rows removed.
+
+    Zero, without creating the registry, for an owner or a registry that does not exist.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    if not Path(db_path).exists():
+        return 0
+    try:
+        with _write_transaction(db_path) as connection:
+            removed = connection.execute(
+                "DELETE FROM watch_devices WHERE owner_id = ?", (owner_id,)
+            ).rowcount
+            connection.execute("DELETE FROM watch_pairings WHERE owner_id = ?", (owner_id,))
+            return int(removed)
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry write failed: {exc}") from exc
