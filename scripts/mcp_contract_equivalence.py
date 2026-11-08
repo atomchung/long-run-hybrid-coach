@@ -60,7 +60,11 @@ if importlib.util.find_spec("garmin_coach_loop.product_scope") is not None:
     from garmin_coach_loop import product_scope
     default_health = product_scope.health_data_default(product)
     health_data = default_health if health_setting == "default" else health_setting == "on"
-    selected = product_scope.surface(health_data)
+    import inspect
+    if "product" in inspect.signature(product_scope.surface).parameters:
+        selected = product_scope.surface(health_data, product=product)
+    else:
+        selected = product_scope.surface(health_data)
 elif product != "hybrid" or health_setting == "off":
     raise SystemExit(
         f"base ref has no product_scope surface for {product} / health_data={health_setting}; "
@@ -181,7 +185,9 @@ def served_surface(
     from garmin_coach_loop import mcp_sdk_transport, product_scope
 
     default_health = product_scope.health_data_default(product)
-    selected = product_scope.surface(default_health if health_data is None else health_data)
+    selected = product_scope.surface(
+        default_health if health_data is None else health_data, product=product
+    )
     prompt_names = tuple(sorted(selected.prompts))
 
     def refuse(kind: str, arguments: dict[str, Any]) -> dict[str, Any]:  # pragma: no cover

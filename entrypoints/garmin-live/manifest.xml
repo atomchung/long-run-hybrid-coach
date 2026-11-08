@@ -1,15 +1,100 @@
 <?xml version="1.0"?>
+<!-- The Connect IQ Store build of the Coach data field. Every watch here runs data fields
+     at API level 5.0 or later, the first level that lets a data field send from the
+     foreground. build.py, given check-devices, holds this list to the SDK device profiles. -->
 <iq:manifest xmlns:iq="http://www.garmin.com/xml/connectiq" version="3">
-    <iq:application id="4f2dc5eed59a43dabc9de3724411f507" type="datafield"
+    <iq:application id="40c537f34f334f3d96e93f27624a390e" type="datafield"
         name="@Strings.AppName" entry="LiveCoachApp" launcherIcon="@Drawables.LauncherIcon"
-        minApiLevel="5.0.0">
+        minApiLevel="5.0.0" version="1.0.0">
         <iq:products>
+            <iq:product id="approachs50"/>
+            <iq:product id="approachs7042mm"/>
+            <iq:product id="approachs7047mm"/>
+            <iq:product id="approachs7243mm"/>
+            <iq:product id="approachs7247mm"/>
+            <iq:product id="d2airx10"/>
+            <iq:product id="d2mach1"/>
+            <iq:product id="d2mach2"/>
+            <iq:product id="d2mach2pro"/>
+            <iq:product id="descentg2"/>
+            <iq:product id="descentmk343mm"/>
+            <iq:product id="descentmk351mm"/>
+            <iq:product id="enduro3"/>
+            <iq:product id="enduro4"/>
+            <iq:product id="epix2"/>
+            <iq:product id="epix2pro42mm"/>
+            <iq:product id="epix2pro47mm"/>
+            <iq:product id="epix2pro51mm"/>
+            <iq:product id="fenix7"/>
+            <iq:product id="fenix7pro"/>
+            <iq:product id="fenix7pronowifi"/>
+            <iq:product id="fenix7s"/>
+            <iq:product id="fenix7spro"/>
+            <iq:product id="fenix7x"/>
+            <iq:product id="fenix7xpro"/>
+            <iq:product id="fenix7xpronowifi"/>
+            <iq:product id="fenix843mm"/>
+            <iq:product id="fenix847mm"/>
+            <iq:product id="fenix8pro47mm"/>
+            <iq:product id="fenix8solar47mm"/>
+            <iq:product id="fenix8solar51mm"/>
+            <iq:product id="fenix943mm"/>
+            <iq:product id="fenix947mm"/>
+            <iq:product id="fenix9pro43mm"/>
+            <iq:product id="fenix9pro47mm"/>
+            <iq:product id="fenix9pro51mm"/>
+            <iq:product id="fenix9prosolar47mm"/>
+            <iq:product id="fenix9prosolar51mm"/>
+            <iq:product id="fenixe"/>
+            <iq:product id="fr165"/>
+            <iq:product id="fr165m"/>
+            <iq:product id="fr170"/>
+            <iq:product id="fr170m"/>
+            <iq:product id="fr255"/>
+            <iq:product id="fr255m"/>
+            <iq:product id="fr255s"/>
+            <iq:product id="fr255sm"/>
+            <iq:product id="fr265"/>
+            <iq:product id="fr265s"/>
             <iq:product id="fr57042mm"/>
             <iq:product id="fr57047mm"/>
+            <iq:product id="fr70"/>
+            <iq:product id="fr955"/>
+            <iq:product id="fr965"/>
+            <iq:product id="fr970"/>
+            <iq:product id="instinct3amoled45mm"/>
+            <iq:product id="instinct3amoled50mm"/>
+            <iq:product id="instinct3solar45mm"/>
+            <iq:product id="instinctcrossoveramoled"/>
+            <iq:product id="instincte40mm"/>
+            <iq:product id="instincte45mm"/>
+            <iq:product id="marq2"/>
+            <iq:product id="marq2aviator"/>
+            <iq:product id="marq3"/>
+            <iq:product id="venu2"/>
+            <iq:product id="venu2plus"/>
+            <iq:product id="venu2s"/>
+            <iq:product id="venu3"/>
+            <iq:product id="venu3s"/>
+            <iq:product id="venu441mm"/>
+            <iq:product id="venu445mm"/>
+            <iq:product id="venusq2"/>
+            <iq:product id="venusq2m"/>
+            <iq:product id="venux1"/>
+            <iq:product id="vivoactive5"/>
+            <iq:product id="vivoactive6"/>
         </iq:products>
         <iq:permissions>
             <iq:uses-permission id="Communications"/>
         </iq:permissions>
-        <iq:languages><iq:language>eng</iq:language></iq:languages>
+        <iq:languages>
+            <iq:language>eng</iq:language>
+            <iq:language>zht</iq:language>
+        </iq:languages>
+        <!-- Offered for running after install (API 5.2 and later); the field itself only
+             sends during a running activity. -->
+        <iq:activityFilter>
+            <iq:activity sport="Toybox.Activity.SPORT_RUNNING"/>
+        </iq:activityFilter>
     </iq:application>
 </iq:manifest>

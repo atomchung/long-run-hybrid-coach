@@ -1558,6 +1558,31 @@ _ATTEMPT_CLEAR_OUTPUT = _output(
     }
 )
 
+# What a pairing did, and what the athlete is owed before the first run reaches the coach:
+# what leaves the watch, how long it is kept, and how to stop it. The gateway writes the
+# sentences; the model relays them.
+_WATCH_CONNECT_OUTPUT = _output(
+    {
+        "account_label": {
+            "type": ["string", "null"],
+            "description": (
+                "The masked email the watch shows once it picks the pairing up, or null "
+                "when the account's email could not be read."
+            ),
+        },
+        "watch": {"type": "string"},
+        "sends": {"type": "string"},
+        "kept": {"type": "string"},
+        "stop": {"type": "string"},
+        "detail": {"type": "string"},
+    },
+    status=(
+        '"connected": the code now belongs to this account. "code_not_accepted": no '
+        "pairing waits under it -- mistyped, expired or already used, which are not told "
+        "apart."
+    ),
+)
+
 _DATA_EXPORT_OUTPUT = _output(
     {
         "api_version": {"type": "string"},
@@ -3209,6 +3234,45 @@ TOOLS: tuple[Tool, ...] = (
         # No properties, for the reason in the description: an athlete identifier here
         # would be the field a cross-owner export would have to travel in.
         input_schema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="connectWatch",
+        kind="watch_connect",
+        output_schema=_WATCH_CONNECT_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS,
+        # Not read-only: it binds a pairing in this service's registry. Destructive,
+        # because the watch that picks the pairing up replaces any watch this account
+        # had paired before, which then stops sending. Idempotent: the same code said
+        # again by the same account is the same pairing. Nothing reaches Intervals.
+        annotations=_hints(
+            "Connect the athlete's watch",
+            read_only=False,
+            destructive=True,
+            idempotent=True,
+            affects_intervals=False,
+        ),
+        description=(
+            "Call when the athlete gives the code the Coach data field shows on their "
+            "watch -- 連接我的手錶 K7P4QX9A. It ties that watch to this account so its "
+            "runs reach this coach without waiting for Intervals. Never invent a code; "
+            "if they want to connect without one, tell them to open Run and read it off "
+            "the field. Relay what the result says the field sends, how long a run is "
+            "kept, and how to stop."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["code"],
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "maxLength": 32,
+                    "description": (
+                        "The eight characters on the watch as the athlete read them; "
+                        "case and spaces do not matter."
+                    ),
+                },
+            },
+        },
     ),
 )
 

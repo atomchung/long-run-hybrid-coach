@@ -21,7 +21,7 @@ class ProductProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             for product, health, scopes, count in (
-                ("hybrid", True, FULL_SCOPES, 23),
+                ("hybrid", True, FULL_SCOPES, 24),
                 ("hybrid", False, FULL_SCOPES, 22),
                 ("training", False, TRAINING_SCOPES, 22),
                 ("training", True, FULL_SCOPES, 23),

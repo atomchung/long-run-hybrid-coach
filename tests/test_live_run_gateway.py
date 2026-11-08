@@ -1,6 +1,5 @@
-"""Exercise the watch POST and the existing authenticated Coach MCP read over HTTP."""
+"""The watch data field over HTTP: pairing, uploads, and the reads that carry the run."""
 
-import hashlib
 import json
 import tempfile
 import threading
@@ -10,21 +9,26 @@ import urllib.request
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from urllib.parse import parse_qsl, urlsplit
 
+from garmin_coach_loop import connected_account, product_scope
 from garmin_coach_loop.gateway import (
-    CoachGateway, CoachGatewayHandler, CoachGatewayServer, GatewayConfig, GatewayConfigError, GatewayError,
-    LIVE_RUN_PATH, MCP_PATH, PILOT_ATHLETE_DIGEST_ENV, load_config, run_preflight,
+    LIVE_RUN_PATH, MCP_PATH, WATCH_FIELD_SENDS, WATCH_PAIRING_PATH, WATCH_PAIRING_POLL_PATH,
+    WATCH_ROUTES, WATCH_RUN_KEPT, WATCH_STOP, CoachGateway, CoachGatewayHandler, CoachGatewayServer,
+    GatewayConfig, GatewayError, run_preflight,
 )
-from garmin_coach_loop.hosted import HostedClient, code_verifier
 from garmin_coach_loop.identity import (
-    lookup_or_create_owner, owner_count, owner_for_fingerprint, record_token_fingerprint, token_fingerprint,
+    lookup_or_create_owner, record_token_fingerprint, token_fingerprint, watch_device,
 )
 from garmin_coach_loop.live_run import RETENTION_SECONDS, LiveRunStore
+from garmin_coach_loop.rate_limit import RateLimiter
 from tests.test_gateway import (
     CLIENT_ID_VALUE, CLIENT_SECRET_VALUE, HMAC_KEY, NOW, TOKEN_A, TOKEN_B, FakeIntervals, GatewayTestCase,
-    publishable_plan,
+    athlete_profile, publishable_plan,
 )
+
+
+SECRET = "a1" * 32
+OTHER_SECRET = "b2" * 32
 
 
 def running(seq, timer_ms, observed_at, **updates):
@@ -34,29 +38,147 @@ def running(seq, timer_ms, observed_at, **updates):
             "power_w": None, "steps_done": 0, **updates}
 
 
-class LiveRunGatewayTests(GatewayTestCase):
-    watch = "synthetic-watch-writer-for-local-test-only"
+class WatchGatewayTestCase(GatewayTestCase):
+    """A full-product gateway with two accounts, A holding a plan."""
 
     def setUp(self):
         super().setUp()
         self.owner = self.seed_owner(TOKEN_A, plan=publishable_plan())
-        other = self.seed_owner(TOKEN_B, athlete_id="i2")
-        self.grant_activity(TOKEN_B, other)
-        self.grant_activity(TOKEN_A, self.owner)
-        self.enabled = replace(self.config, live_run_owner=self.owner,
-                               live_run_token_sha256=hashlib.sha256(self.watch.encode()).hexdigest())
-        self.gateway.config = self.enabled
-        self.sample = running(1, 5000, int(time.time()))
+        self.other = self.seed_owner(TOKEN_B, athlete_id="i2")
 
-    def grant_activity(self, token, owner):
-        record_token_fingerprint(self.identity_db, token_fingerprint(token, hmac_key=HMAC_KEY),
-                                 owner, "intervals", scope_names=("ACTIVITY:READ",))
+    def tool(self, token, name, arguments=None):
+        status, reply = self.call("POST", MCP_PATH, body=self.tool_rpc(name, arguments),
+                                  token=self.mcp_bearer(token))
+        self.assertEqual(200, status, reply)
+        return reply["result"]
 
     def read(self, token, tool="getCoachState"):
-        status, reply = self.call("POST", MCP_PATH, body=self.tool_rpc(tool),
-                                  token=self.mcp_bearer(token))
-        self.assertEqual(200, status)
-        return reply["result"]["structuredContent"]
+        result = self.tool(token, tool)
+        self.assertFalse(result.get("isError"), result)
+        return result["structuredContent"]
+
+    def start(self, secret=SECRET, headers=None):
+        status, started = self.call("POST", WATCH_PAIRING_PATH, body={"secret": secret}, headers=headers)
+        self.assertEqual(200, status, started)
+        return started
+
+    def poll(self, code, secret=SECRET, headers=None):
+        status, polled = self.call("POST", WATCH_PAIRING_POLL_PATH, body={"code": code, "secret": secret},
+                                   headers=headers)
+        self.assertEqual(200, status, polled)
+        return polled
+
+    def pair(self, token=TOKEN_A, secret=SECRET):
+        code = self.start(secret)["code"]
+        self.assertEqual({"status": "pending"}, self.poll(code, secret))
+        said = self.tool(token, "connectWatch", {"code": code})["structuredContent"]
+        self.assertEqual("connected", said["status"], said)
+        issued = self.poll(code, secret)
+        self.assertEqual("issued", issued["status"])
+        return issued["credential"]
+
+    def raw_post(self, path, body, *, token=None, headers=None):
+        request = urllib.request.Request(self.base_url + path, data=json.dumps(body).encode(), method="POST",
+                                         headers={"Content-Type": "application/json", **(headers or {})})
+        if token is not None:
+            request.add_header("Authorization", "Bearer " + token)
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status, dict(response.headers), json.loads(response.read() or b"{}")
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, dict(exc.headers), json.loads(exc.read() or b"{}")
+
+
+class WatchPairingTests(WatchGatewayTestCase):
+    def test_a_code_said_in_the_conversation_pairs_the_watch_to_that_account(self):
+        started = self.start()
+        self.assertEqual({"code", "expires_in", "interval"}, set(started))
+        self.assertEqual((8, 600, 5), (len(started["code"]), started["expires_in"], started["interval"]))
+        code = started["code"]
+        self.assertEqual({"status": "pending"}, self.poll(code))
+        said = self.tool(TOKEN_A, "connectWatch", {"code": code.lower()[:4] + " " + code[4:]})
+        self.assertFalse(said.get("isError"), said)
+        result = said["structuredContent"]
+        label = connected_account.masked_email(athlete_profile("i1")["email"])
+        self.assertEqual(("connected", label), (result["status"], result["account_label"]))
+        self.assertEqual((WATCH_FIELD_SENDS, WATCH_RUN_KEPT, WATCH_STOP),
+                         (result["sends"], result["kept"], result["stop"]))
+        self.assertIn(label, result["watch"])
+        self.assertNotIn("api_version", result)
+        issued = self.poll(code)
+        self.assertEqual(("issued", label), (issued["status"], issued["account_label"]))
+        self.assertGreaterEqual(len(issued["credential"]), 32)
+        # One credential per pairing, and the same code said again is the same pairing.
+        self.assertEqual({"status": "invalid"}, self.poll(code))
+        again = self.tool(TOKEN_A, "connectWatch", {"code": code})["structuredContent"]
+        self.assertEqual("connected", again["status"])
+        self.assertEqual({"paired_at", "last_seen_at", "account_label"},
+                         set(watch_device(self.identity_db, self.owner)))
+        # Nothing that opens anything reaches a log line: not the code, not either secret.
+        for secret in (code, SECRET, issued["credential"]):
+            self.assertFalse(any(secret in line for line in self.log_handler.records), secret)
+        # Asked, said, issued, refused on the second poll, said again.
+        events = [line for line in self.log_handler.records if '"event": "watch_pairing"' in line]
+        self.assertEqual(5, len(events), events)
+
+    def test_a_code_that_is_wrong_expired_or_taken_is_not_accepted_alike(self):
+        code = self.start()["code"]
+        self.assertEqual("connected", self.tool(TOKEN_A, "connectWatch", {"code": code})["structuredContent"]["status"])
+        other_code = self.start(OTHER_SECRET)["code"]
+        self.now = NOW.replace(minute=11)
+        refusals = [
+            self.tool(TOKEN_B, "connectWatch", {"code": code})["structuredContent"],        # taken
+            self.tool(TOKEN_B, "connectWatch", {"code": other_code})["structuredContent"],  # expired
+            self.tool(TOKEN_B, "connectWatch", {"code": "ZZZZ2222"})["structuredContent"],  # unknown
+            self.tool(TOKEN_B, "connectWatch", {"code": "not a code"})["structuredContent"],
+        ]
+        for refusal in refusals:
+            self.assertEqual({"status", "detail"}, set(refusal))
+            self.assertEqual(refusals[0], refusal)
+        self.assertEqual("code_not_accepted", refusals[0]["status"])
+        self.assertIsNone(watch_device(self.identity_db, self.other))
+
+    def test_a_wrong_secret_never_receives_the_credential(self):
+        code = self.start()["code"]
+        self.tool(TOKEN_A, "connectWatch", {"code": code})
+        self.assertEqual({"status": "invalid"}, self.poll(code, OTHER_SECRET))
+        self.assertEqual("issued", self.poll(code)["status"])
+
+    def test_a_secret_that_is_not_one_is_refused_before_anything_is_stored(self):
+        for body in ({}, {"secret": "short"}, {"secret": SECRET, "owner_id": self.owner},
+                     {"secret": "é" * 40}, {"secret": 12345678901234567890123456789012345}):
+            with self.subTest(body=body):
+                self.assertEqual(400, self.call("POST", WATCH_PAIRING_PATH, body=body)[0])
+
+    def test_an_unreadable_email_costs_the_label_not_the_pairing(self):
+        self.fake.profile_status = 403
+        code = self.start()["code"]
+        result = self.tool(TOKEN_A, "connectWatch", {"code": code})["structuredContent"]
+        self.assertEqual(("connected", None), (result["status"], result["account_label"]))
+        issued = self.poll(code)
+        self.assertEqual(("issued", None), (issued["status"], issued["account_label"]))
+
+    def test_pairing_another_watch_retires_the_first_credential(self):
+        first = self.pair()
+        self.gateway._watch_upload_limit = RateLimiter(10_000, 60)
+        sample = running(1, 5000, int(time.time()))
+        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=first, body=sample)[0])
+        second = self.pair(secret=OTHER_SECRET)
+        status, refused = self.call("POST", LIVE_RUN_PATH, token=first, body=running(2, 10000, int(time.time())))
+        self.assertEqual((401, "invalid_device_credential"), (status, refused["error"]))
+        self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=second,
+                                        body=running(2, 10000, int(time.time())))[0])
+
+
+class WatchRunReadTests(WatchGatewayTestCase):
+    def setUp(self):
+        super().setUp()
+        self.watch = self.pair()
+        # A whole run arrives here in one burst; a real watch spends 20 minutes on it.
+        self.gateway._watch_upload_limit = RateLimiter(10_000, 60)
+        self.gateway._watch_address_limits["live_run_samples"] = RateLimiter(10_000, 60)
+        self.sample = running(1, 5000, int(time.time()))
 
     def post(self, sample):
         status, ack = self.call("POST", LIVE_RUN_PATH, token=self.watch, body=sample)
@@ -81,8 +203,16 @@ class LiveRunGatewayTests(GatewayTestCase):
                 self.assertEqual(("garmin_watch", "ended", 20.0, 3.36, 140),
                                  (recap["source"], recap["state"], recap["timer_minutes"], recap["distance_km"],
                                   recap["average_hr"]))
+        # An account with no paired watch reads exactly what it read before watches existed.
         self.assertNotIn("watch_run", self.read(TOKEN_B))
         self.assertNotIn("watch_run", self.read(TOKEN_B, "startCoachSession"))
+
+    def test_the_run_does_not_wait_on_an_intervals_permission(self):
+        self.finish_a_run()
+        limited = "synthetic-calendar-only"
+        record_token_fingerprint(self.identity_db, token_fingerprint(limited, hmac_key=HMAC_KEY),
+                                 self.owner, "intervals", scope_names=("CALENDAR:READ",))
+        self.assertEqual("ended", self.read(limited)["watch_run"]["state"])
 
     def test_the_watch_run_changes_nothing_the_coach_counts_or_stores(self):
         before = self.read(TOKEN_A, "startCoachSession")
@@ -116,157 +246,147 @@ class LiveRunGatewayTests(GatewayTestCase):
         self.assertIsNone(self.read(TOKEN_A)["watch_run"])
         self.assertIsNone(self.read(TOKEN_A, "startCoachSession")["watch_run"])
 
-    def test_the_full_product_keeps_every_scope_with_a_watch_configured(self):
-        self.assertEqual(self.config.intervals_oauth_scopes, self.enabled.intervals_oauth_scopes)
-        self.assertIn("CALENDAR:WRITE", self.enabled.intervals_oauth_scopes)
-
-    def test_a_connection_without_activity_read_does_not_see_the_run(self):
-        self.finish_a_run()
-        limited = "synthetic-calendar-only"
-        record_token_fingerprint(self.identity_db, token_fingerprint(limited, hmac_key=HMAC_KEY),
-                                 self.owner, "intervals", scope_names=("CALENDAR:READ",))
-        self.assertNotIn("watch_run", self.read(limited))
-        self.assertNotIn("watch_run", self.read(limited, "startCoachSession"))
-
-    def test_the_watch_credential_is_separate_and_the_path_closes_without_an_owner(self):
-        for bad in (None, TOKEN_A, self.mcp_bearer(TOKEN_A)):
-            self.assertEqual(401, self.call("POST", LIVE_RUN_PATH, token=bad, body=self.sample)[0])
+    def test_the_device_credential_opens_uploads_and_nothing_else(self):
+        for bad in (None, TOKEN_A, self.mcp_bearer(TOKEN_A), self.watch + "x"):
+            with self.subTest(bearer=bad):
+                status, refused = self.call("POST", LIVE_RUN_PATH, token=bad, body=self.sample)
+                self.assertEqual((401, "invalid_device_credential"), (status, refused["error"]))
         self.assertEqual(401, self.call("POST", MCP_PATH, token=self.watch,
                                         body=self.tool_rpc("getCoachState"))[0])
         self.assertEqual(400, self.call("POST", LIVE_RUN_PATH, token=self.watch,
                                         body={**self.sample, "owner_id": self.owner})[0])
-        self.gateway.config = self.config
-        self.assertEqual(404, self.call("POST", LIVE_RUN_PATH, token=self.watch, body=self.sample)[0])
-        self.assertNotIn("watch_run", self.read(TOKEN_A))
-        with self.assertRaises(GatewayConfigError):
-            replace(self.enabled, health_data=False)
-        with self.assertRaises(GatewayConfigError):
-            replace(self.enabled, live_run_token_sha256=None)
+        refusals = [line for line in self.log_handler.records if '"event": "watch_authentication"' in line]
+        self.assertEqual(4, len(refusals), refusals)
+        self.assertFalse(any(self.watch in line for line in self.log_handler.records))
+
+
+class WatchRateLimitTests(WatchGatewayTestCase):
+    def test_asking_for_codes_is_counted_per_source_address(self):
+        here = {"X-Real-IP": "203.0.113.7"}
+        for _ in range(10):
+            self.start(headers=here)
+        status, headers, refused = self.raw_post(WATCH_PAIRING_PATH, {"secret": SECRET}, headers=here)
+        self.assertEqual((429, "rate_limited"), (status, refused["error"]))
+        self.assertGreaterEqual(int(headers["Retry-After"]), 1)
+        # Another address has its own count, and a header that is not an address is the
+        # socket peer's count rather than a key of the caller's choosing.
+        self.start(headers={"X-Real-IP": "2001:db8::7"})
+        for _ in range(10):
+            self.start(headers={"X-Real-IP": "not-an-address"})
+        self.assertEqual(429, self.raw_post(WATCH_PAIRING_PATH, {"secret": SECRET},
+                                            headers={"X-Real-IP": "127.0.0.1"})[0])
+
+    def test_polling_and_uploads_are_counted_too(self):
+        code = self.start()["code"]
+        here = {"X-Real-IP": "198.51.100.4"}
+        for _ in range(60):
+            self.poll(code, headers=here)
+        self.assertEqual(429, self.raw_post(WATCH_PAIRING_POLL_PATH, {"code": code, "secret": SECRET},
+                                            headers=here)[0])
+        watch = self.pair()
+        for seq in range(1, 31):
+            self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=watch,
+                                            body=running(seq, seq * 5000, int(time.time())))[0])
+        status, headers, refused = self.raw_post(LIVE_RUN_PATH, running(31, 155000, int(time.time())), token=watch)
+        self.assertEqual((429, "rate_limited"), (status, refused["error"]))
+        self.assertIn("Retry-After", headers)
+
+    def test_an_account_saying_codes_in_a_loop_is_stopped(self):
+        for _ in range(10):
+            self.assertEqual("code_not_accepted",
+                             self.tool(TOKEN_A, "connectWatch", {"code": "ZZZZ2222"})["structuredContent"]["status"])
+        refused = self.tool(TOKEN_A, "connectWatch", {"code": "ZZZZ2222"})
+        self.assertTrue(refused.get("isError"), refused)
+        self.assertIn("rate_limited", json.dumps(refused))
+        # Another account is not held to this one's count.
+        self.assertEqual("code_not_accepted",
+                         self.tool(TOKEN_B, "connectWatch", {"code": "ZZZZ2222"})["structuredContent"]["status"])
 
 
 class TrainingProductBoundaryTests(unittest.TestCase):
-    """The Plugin entry holds no watch samples: none in, none out, whatever its store holds."""
+    """The Plugin entry pairs no watch: no route, no tool, no run in any read."""
 
-    def setUp(self):
+    def gateway_for(self, product, health_data):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.config = GatewayConfig(
-            state_root=Path(tmp.name).resolve(), token_hmac_key=HMAC_KEY, product="training",
+        config = GatewayConfig(
+            state_root=Path(tmp.name).resolve(), token_hmac_key=HMAC_KEY, product=product,
             intervals_client_id=CLIENT_ID_VALUE, intervals_client_secret=CLIENT_SECRET_VALUE,
+            health_data=health_data,
         )
-        run_preflight(self.config)
-        self.gateway = CoachGateway(self.config, fetch=FakeIntervals(), now=lambda: NOW)
-        self.owner = lookup_or_create_owner(self.config.identity_db_path, "intervals", "synthetic-athlete")
-        record_token_fingerprint(self.config.identity_db_path, token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY),
-                                 self.owner, "intervals", scope_names=("ACTIVITY:READ",))
+        run_preflight(config)
+        gateway = CoachGateway(config, fetch=FakeIntervals(), now=lambda: NOW)
+        owner = lookup_or_create_owner(config.identity_db_path, "intervals", "synthetic-athlete")
+        record_token_fingerprint(config.identity_db_path, token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY),
+                                 owner, "intervals", scope_names=("ACTIVITY:READ",))
+        return gateway, owner
 
-    def test_a_training_deployment_cannot_be_given_a_watch(self):
-        digest = hashlib.sha256(b"synthetic-watch").hexdigest()
+    def closed(self):
+        return (("training", False), ("training", True), ("hybrid", False))
+
+    def test_only_the_full_product_with_health_data_pairs_a_watch(self):
+        for product, health_data in (*self.closed(), ("hybrid", True)):
+            with self.subTest(product=product, health_data=health_data):
+                gateway, _ = self.gateway_for(product, health_data)
+                expected = (product, health_data) == ("hybrid", True)
+                self.assertIs(expected, gateway.config.watch_pairing)
+                self.assertIs(expected, "connectWatch" in gateway.surface.tools_by_name)
+
+    def test_a_closed_deployment_answers_every_watch_route_404(self):
+        for product, health_data in self.closed():
+            with self.subTest(product=product, health_data=health_data):
+                gateway, _ = self.gateway_for(product, health_data)
+                server = CoachGatewayServer(("127.0.0.1", 0), CoachGatewayHandler, gateway=gateway)
+                thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+                thread.start()
+                try:
+                    for path in WATCH_ROUTES:
+                        request = urllib.request.Request(
+                            "http://127.0.0.1:%d%s" % (server.server_address[1], path),
+                            data=json.dumps({"secret": SECRET, "code": "K7P4QX9A"}).encode(), method="POST",
+                            headers={"Content-Type": "application/json", "Authorization": "Bearer synthetic-watch"},
+                        )
+                        with self.assertRaises(urllib.error.HTTPError) as refused:
+                            urllib.request.urlopen(request, timeout=10)
+                        refused.exception.close()
+                        self.assertEqual(404, refused.exception.code, path)
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(5)
+
+    def test_a_closed_deployment_refuses_the_pairing_act_called_directly(self):
+        for product, health_data in self.closed():
+            with self.subTest(product=product, health_data=health_data):
+                gateway, owner = self.gateway_for(product, health_data)
+                self.assertNotIn("connectWatch", gateway.surface.tools_by_name)
+                for call in (lambda: gateway.route("watch_connect", owner, TOKEN_A, {"code": "K7P4QX9A"}),
+                             lambda: gateway.start_watch_pairing({"secret": SECRET}),
+                             lambda: gateway.poll_watch_pairing({"code": "K7P4QX9A", "secret": SECRET}),
+                             lambda: gateway.live_run_writer("synthetic-watch")):
+                    with self.assertRaises(GatewayError) as refused:
+                        call()
+                    self.assertEqual(404, refused.exception.status)
+
+    def test_a_closed_read_never_returns_samples_its_store_holds(self):
+        for product, health_data in self.closed():
+            with self.subTest(product=product, health_data=health_data):
+                gateway, owner = self.gateway_for(product, health_data)
+                gateway.live_runs.ingest(owner, running(1, 5000, int(time.time())))
+                for kind in ("state", "session"):
+                    answer = gateway.route(kind, owner, TOKEN_A, {})
+                    self.assertNotIn("watch_run", answer)
+                    self.assertNotIn("fixture-1", json.dumps(answer))
+
+    def test_the_plugin_catalogue_is_the_one_it_already_had(self):
         for health_data in (False, True):
-            with self.subTest(health_data=health_data), self.assertRaises(GatewayConfigError):
-                replace(self.config, health_data=health_data, live_run_owner=self.owner,
-                        live_run_token_sha256=digest)
-
-    def test_a_training_deployment_refuses_samples_over_http(self):
-        server = CoachGatewayServer(("127.0.0.1", 0), CoachGatewayHandler, gateway=self.gateway)
-        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
-        thread.start()
-        self.addCleanup(thread.join, 5)
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        request = urllib.request.Request(
-            "http://127.0.0.1:%d%s" % (server.server_address[1], LIVE_RUN_PATH),
-            data=json.dumps(running(1, 5000, int(time.time()))).encode(), method="POST",
-            headers={"Content-Type": "application/json", "Authorization": "Bearer synthetic-watch"},
+            with self.subTest(health_data=health_data):
+                served = product_scope.surface(health_data, product="training")
+                self.assertNotIn("connectWatch", served.tools_by_name)
+        self.assertEqual(
+            "da469a84bfa7d3bddaacf7cb52f5911cadc03406cb192019b1a2655a793b0c93",
+            product_scope.surface(False, product="training").tool_catalogue_sha256(),
         )
-        with self.assertRaises(urllib.error.HTTPError) as refused:
-            urllib.request.urlopen(request, timeout=10)
-        refused.exception.close()
-        self.assertEqual(404, refused.exception.code)
-
-    def test_a_training_read_never_returns_samples_its_store_holds(self):
-        self.gateway.live_runs.ingest(self.owner, running(1, 5000, int(time.time())))
-        for kind in ("state", "session"):
-            with self.subTest(kind=kind):
-                answer = self.gateway.route(kind, self.owner, TOKEN_A, {})
-                self.assertNotIn("watch_run", answer)
-                self.assertNotIn("fixture-1", json.dumps(answer))
-
-
-class PrivateAthletePilotTests(GatewayTestCase):
-    allowed = "synthetic-private-athlete"
-    denied = "synthetic-other-athlete"
-    redirect = "http://127.0.0.1:8765/callback"
-
-    def setUp(self):
-        super().setUp()
-        self.digest = hashlib.sha256(self.allowed.encode()).hexdigest()
-        self.private = replace(self.config, pilot_athlete_sha256=self.digest)
-        self.client = HostedClient(self.base_url)
-        self.client_id = self.client.register(self.redirect)
-        self.verifier = code_verifier()
-
-    def browser_callback(self, athlete, token):
-        url = self.client.authorization_url(client_id=self.client_id, redirect_uri=self.redirect,
-                                            verifier=self.verifier, state="synthetic-client-state")
-        request = self.gateway.start_authorization(dict(parse_qsl(urlsplit(url).query)),
-                                                   base_url=self.base_url)
-        state = dict(parse_qsl(urlsplit(request.location).query))["state"]
-        self.fake.token_payload = {"athlete": {"id": athlete}, "access_token": token,
-                                   "scope": "ACTIVITY:READ"}
-        callback = self.gateway.complete_authorization({"state": state, "code": "synthetic-code"},
-                                                       base_url=self.base_url)
-        return dict(parse_qsl(urlsplit(callback.location).query))
-
-    def exchange(self, code):
-        return self.gateway.issue_access_token({
-            "grant_type": "authorization_code", "client_id": self.client_id,
-            "code": code, "code_verifier": self.verifier, "redirect_uri": self.redirect,
-        }, base_url=self.base_url)
-
-    def test_only_matching_provider_athlete_can_finish_oauth(self):
-        self.gateway.config = self.private
-        for different in (self.denied, self.allowed.upper(), self.allowed + " "):
-            with self.subTest(athlete=different):
-                reply = self.browser_callback(different, TOKEN_B)
-                self.assertEqual({"state": "synthetic-client-state", "error": "access_denied"}, reply)
-                self.assertEqual(0, owner_count(self.identity_db))
-                self.assertIsNone(owner_for_fingerprint(self.identity_db,
-                                  token_fingerprint(TOKEN_B, hmac_key=HMAC_KEY)))
-        self.assertFalse(any(self.denied in line or TOKEN_B in line for line in self.log_handler.records))
-        callback = self.browser_callback(self.allowed, TOKEN_A)
-        bearer = self.exchange(callback["code"])["access_token"]
-        self.assertEqual(1, owner_count(self.identity_db))
-        self.assertEqual(200, self.call("POST", MCP_PATH, body=self.tool_rpc("getCoachState"), token=bearer)[0])
-
-    def test_restriction_rechecks_old_bearers_and_outstanding_codes(self):
-        old_bearer = self.exchange(self.browser_callback(self.denied, TOKEN_B)["code"])["access_token"]
-        old_code = self.browser_callback(self.denied, TOKEN_B)["code"]
-        owner = self.gateway.resolve_owner(TOKEN_B)
-        watch = "synthetic-mismatched-watch"
-        self.gateway.config = replace(self.private, live_run_owner=owner,
-                                      live_run_token_sha256=hashlib.sha256(watch.encode()).hexdigest())
-        self.assertEqual(401, self.call("POST", MCP_PATH, body=self.tool_rpc("getCoachState"), token=old_bearer)[0])
-        with self.assertRaises(GatewayError) as error:
-            self.exchange(old_code)
-        self.assertEqual("invalid_grant", error.exception.code)
-        with self.assertRaises(GatewayError) as error:
-            self.gateway.live_run_writer(watch)
-        self.assertEqual(403, error.exception.status)
-
-    def test_private_config_is_opt_in_and_rejects_empty_or_noncanonical_digests(self):
-        env = {"GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT": str(self.state_root),
-               "GARMIN_COACH_LOOP_TOKEN_HMAC_KEY": HMAC_KEY.decode(),
-               "GARMIN_COACH_LOOP_INTERVALS_CLIENT_ID": "test",
-               "GARMIN_COACH_LOOP_INTERVALS_CLIENT_SECRET": "test"}
-        self.assertIsNone(load_config(env).pilot_athlete_sha256)
-        self.assertEqual(self.digest, load_config({**env, PILOT_ATHLETE_DIGEST_ENV: self.digest}).pilot_athlete_sha256)
-        for bad in ("", " " + self.digest, self.digest.upper(), "0" * 63):
-            with self.subTest(bad=bad), self.assertRaises(GatewayConfigError):
-                load_config({**env, PILOT_ATHLETE_DIGEST_ENV: bad})
-        for options in ({"product": "training"}, {"health_data": False}):
-            with self.subTest(options=options), self.assertRaises(GatewayConfigError):
-                replace(self.private, **options)
 
 
 if __name__ == "__main__":

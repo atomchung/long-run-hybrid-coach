@@ -31,10 +31,13 @@ from garmin_coach_loop import owner_data, store
 from garmin_coach_loop.gateway import CoachGateway
 from garmin_coach_loop.identity import (
     IdentityError,
+    claim_watch_pairing,
     owner_for_fingerprint,
     owner_identity_row_counts,
     record_token_fingerprint,
+    redeem_watch_pairing,
     revoke_owner_connections,
+    start_watch_pairing,
     token_fingerprint,
 )
 from garmin_coach_loop.store import (
@@ -227,6 +230,8 @@ class OwnerExportTests(OwnerDataTestCase):
                 "revoked_after",
                 "token_scope_names",
                 "usage_days",
+                "watch_devices",
+                "watch_pairings",
             },
             exported_keys - identity_rows_keys,
         )
@@ -235,8 +240,26 @@ class OwnerExportTests(OwnerDataTestCase):
             "call_outcomes_removed",
             "entry_origins_removed",
             "client_disclosures_removed",
+            "watch_pairing_removed",
         ):
             self.assertIn(stated, preview["removes"])
+
+    def test_another_athletes_watch_cannot_block_an_erasure_through_a_swept_pairing(self):
+        """A pairing this athlete's watch used is swept a day later by whichever watch
+        next asks for a code. That must not move the scope the requester was shown."""
+        code = start_watch_pairing(self.identity_db, "w" * 40, hmac_key=HMAC_KEY, now=self.now)
+        claim_watch_pairing(self.identity_db, code, self.owner_a, hmac_key=HMAC_KEY, now=self.now)
+        self.assertEqual(
+            "issued",
+            redeem_watch_pairing(self.identity_db, code, "w" * 40, hmac_key=HMAC_KEY, now=self.now).status,
+        )
+        preview = self.deletion_preview()
+        start_watch_pairing(self.identity_db, "v" * 40, hmac_key=HMAC_KEY, now=self.now + dt.timedelta(days=2))
+        self.assertEqual(0, owner_identity_row_counts(self.identity_db, self.owner_a)["watch_pairings"])
+        self.assertEqual(preview, self.deletion_preview())
+        receipt = self.confirmed_deletion()
+        self.assertEqual(1, receipt["removed"]["identity_rows"]["watch_devices"])
+        self.assertEqual(0, owner_identity_row_counts(self.identity_db, self.owner_a)["watch_devices"])
 
     def test_calls_between_a_preview_and_its_confirmation_cannot_block_an_erasure(self):
         """The failure mode that made the preview state its counters rather than count them.

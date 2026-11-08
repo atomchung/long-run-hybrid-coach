@@ -37,7 +37,7 @@ class ProductProfile:
     def surface(self, health_data: bool | None = None):
         # Lazy import keeps profile configuration independent of the MCP implementation.
         from .product_scope import surface
-        return surface(self.effective_health_data(health_data))
+        return surface(self.effective_health_data(health_data), product=self.product)
 
 
 def get_profile(product: str) -> ProductProfile:

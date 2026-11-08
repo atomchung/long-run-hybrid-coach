@@ -16,7 +16,9 @@ This module adds the missing half and deliberately nothing else:
   as the cue they recognise faster. Both are display strings with one job -- letting a
   person recognise the account before something is written to it. Neither is ever an
   authorization input, an owner key, persisted, or logged; the caller reads them on
-  demand for one response and drops them.
+  demand for one response and drops them. The one derived value that is kept is
+  `masked_email`, stored beside a paired watch so the watch can show whose account it
+  joined.
 - **A binding, keyed, safe to carry.** `account_ref` is the deployment-keyed handle of
   the *identity row*, so a prepared delivery can name the account it targets and the
   apply can refuse a bearer that resolves to a different one. It is what travels in a
@@ -92,6 +94,24 @@ def is_binding(value: Any) -> bool:
 
 def _clean(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def masked_email(value: Any) -> str | None:
+    """``t***@gmail.com``: enough for a person to recognise their own address on a watch.
+
+    The first character of the local part and the whole domain, lowercased. Three
+    asterisks whatever the local part's length, so the mask does not tell how long the
+    address is. Unlike the live label above, this one is stored -- beside a paired watch,
+    so the watch can show whose account it joined -- which is why it is masked at all.
+    ``None`` for anything that is not one address.
+    """
+    email = _clean(value)
+    if email is None or any(character.isspace() for character in email):
+        return None
+    local, at, domain = email.rpartition("@")
+    if not at or not local or "." not in domain.strip(".") or len(email) > 254:
+        return None
+    return f"{local[0].lower()}***@{domain.lower()}"
 
 
 def _athlete_id(value: Any) -> str | None:

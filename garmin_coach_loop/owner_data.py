@@ -63,6 +63,9 @@ from .store import (
 
 ARCHIVE_VERSION = "1"
 
+# Identity tables a deletion preview states rather than counts; see `deletion_preview`.
+_STATED_WATCH_TABLES = frozenset({"watch_pairings", "watch_devices"})
+
 # What the delivery fence calls this operation when it refuses one. The store's default
 # is the operator command name, which is the wrong thing to put in front of an athlete
 # who has no shell to run it in.
@@ -255,7 +258,11 @@ def deletion_preview(
             # to name them would understate what confirming actually costs them.
             "long_term_goals": len(evidence["long_term_goals"]),
             "training_preferences": len(evidence["training_preferences"]),
-            "identity_rows": owner_identity_row_counts(identity_db, owner_id),
+            "identity_rows": {
+                table: count
+                for table, count in owner_identity_row_counts(identity_db, owner_id).items()
+                if table not in _STATED_WATCH_TABLES
+            },
             # A literal, and every part of that is deliberate. This preview is what the
             # deletion proposal hashes, so anything here that can differ between the
             # preview and the confirmation refuses the erasure -- and a usage counter
@@ -277,6 +284,11 @@ def deletion_preview(
             # it. Counted here, that would refuse their erasure over a sentence they were
             # shown.
             "client_disclosures_removed": True,
+            # Same literal for a paired watch. A pairing that expired or was picked up is
+            # swept by the next watch to ask for a code -- any athlete's -- and a pairing
+            # the athlete started can complete while they read this. Counted here, either
+            # would refuse an erasure over a row they did not touch. The export counts them.
+            "watch_pairing_removed": True,
             "stored_snapshots": store["snapshots_dir_existed"],
         },
         "not_removed": list(NOT_REMOVED),

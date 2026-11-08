@@ -107,7 +107,7 @@ class ReleaseCandidateSurfaceTests(unittest.TestCase):
 
     def test_the_surface_without_health_data_is_the_one_this_release_states(self):
         """What Scan Tools reads off the Plugin deployment, written down like the rest."""
-        served = product_scope.surface(False)
+        served = product_scope.surface(False, product="training")
         self.assertEqual(RELEASE_CANDIDATE_WITHOUT_HEALTH_TOOL_COUNT, len(served.tools))
         self.assertEqual(
             RELEASE_CANDIDATE_WITHOUT_HEALTH_TOOL_CATALOGUE_SHA256,

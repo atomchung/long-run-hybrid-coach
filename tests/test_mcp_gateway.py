@@ -1011,7 +1011,7 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(23, len(tools))
+        self.assertEqual(24, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
@@ -1037,6 +1037,7 @@ class McpToolTests(McpTestCase):
                 "applyWorkoutDelivery",
                 "clearDeliveryAttempt",
                 "exportOwnerData",
+                "connectWatch",
             },
             {tool["name"] for tool in tools},
         )
@@ -1509,6 +1510,10 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     "applyWorkoutDelivery": (False, True, True, True),
     "clearDeliveryAttempt": (False, True, True, False),
     "exportOwnerData": (True, False, True, False),
+    # Binds a pairing in this service's registry. Destructive because the watch that
+    # redeems it replaces the one this account paired before; idempotent because the same
+    # code said again by the same account is the same pairing. Nothing reaches Intervals.
+    "connectWatch": (False, True, True, False),
     # No deletion pair: erasing a whole account left this catalogue in 1.4.5 and is a
     # written request now (issue #417), so the product no longer serves a destructive
     # tool at all.

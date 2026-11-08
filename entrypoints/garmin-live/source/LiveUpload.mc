@@ -182,6 +182,12 @@ class LiveUpload {
         pump(ticks);
     }
 
+    // The server refused this watch's credential: it was replaced or its account is gone.
+    function refused() {
+        return authFailed;
+    }
+
+    // An internal code, not display text: the field translates it.
     function status(ticks) {
         if (!configured) { return "Set up"; }
         if (authFailed) { return "Check key"; }

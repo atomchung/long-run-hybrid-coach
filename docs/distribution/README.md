@@ -373,7 +373,7 @@ invariant, not a deployment choice: see [`../../AGENTS.md`](../../AGENTS.md).
 
 ## The tool catalogue and its annotations
 
-23 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
+24 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
 hints, and a justification for each hint. This is that table.
 
 Every name, title and hint below is asserted against the running catalogue by
@@ -424,6 +424,7 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `applyWorkoutDelivery` | Apply the confirmed delivery or withdrawal to Intervals | no | yes | yes | Applies a separately prepared calendar set: it can fill the one confirmed missing threshold pace, replace a session already on the calendar, or remove a superseded one. Idempotent — retrying the identical set is the documented way a partial delivery converges. |
 | `clearDeliveryAttempt` | Abandon an unfinished delivery record | no | yes | no | Abandons a reservation whose outcome is unknown, which is a decision that cannot be taken back. Touches no provider. |
 | `exportOwnerData` | Give the athlete a copy of their own data | yes | no | no | Reads and returns; changes nothing. Its description also carries the support URL a whole-account deletion is requested at, because a tool description is a channel every client delivers and served instructions are not. |
+| `connectWatch` | Connect the athlete's watch | no | yes | no | Binds the code the Coach watch data field shows to this account, in this service's own registry, with the account's email stored only masked. The watch that redeems it replaces any watch this account paired before, which then stops sending. Repeating the same code is the same pairing. Never reaches Intervals. Full product only: the Plugin entry does not list it. |
 
 There is no deletion tool. The pair that erased an account left the catalogue in 1.4.5:
 a client could refuse the confirming call at its own approval layer with nothing about
@@ -433,7 +434,7 @@ that reaching the service, so an athlete was shown a preview and kept their data
 refusal naming the support page, so a client holding the old catalogue cannot narrate an
 erasure that did not happen — and they are in no `tools/list`.
 
-The split is 6 read-only and 17 write; the longest name is 27 characters, against the
+The split is 6 read-only and 18 write; the longest name is 27 characters, against the
 64-character cap. For one release it read 0 and 24: every dispatched call recorded
 per-account usage and outcome counters, and a review rule that counts a log line as a
 state change counts those. The counters were removed in 1.4.3 rather than argued with

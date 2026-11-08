@@ -47,7 +47,7 @@ ALLOWED_ACTS: tuple[str, ...] = (READ_EVIDENCE, PREVIEW_PLAN_CHANGE)
 # permission list: none of it is reachable from this process, and the names exist only so
 # that a model reaching for one is answered in its own vocabulary rather than told the name
 # does not exist. `tests/test_demo_boundary.py` holds this equal to the served catalogue, so
-# a twenty-fourth operation cannot land and be silently absent from here.
+# a new operation cannot land and be silently absent from here.
 REFUSED_ACTS: tuple[str, ...] = (
     "applyCoachDecision",
     "applyWorkoutDelivery",
@@ -55,6 +55,7 @@ REFUSED_ACTS: tuple[str, ...] = (
     "prepareCoachDecision",
     "clearDeliveryAttempt",
     "confirmActivityMatch",
+    "connectWatch",
     "confirmPrescribedStrength",
     "confirmSessionNotTrained",
     "exportOwnerData",

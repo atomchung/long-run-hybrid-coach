@@ -60,6 +60,10 @@ PROVIDER_CALLBACK = "provider_callback"
 TOKEN_ISSUANCE = "token_issuance"
 MCP_AUTHENTICATION = "mcp_authentication"
 MCP_PROTOCOL = "mcp_protocol"
+# The watch data field's own boundary: a pairing code asked for, said in a conversation
+# or redeemed, and a device credential presented with a run's samples.
+WATCH_PAIRING = "watch_pairing"
+WATCH_AUTHENTICATION = "watch_authentication"
 
 EVENTS: frozenset[str] = frozenset(
     {
@@ -69,6 +73,8 @@ EVENTS: frozenset[str] = frozenset(
         TOKEN_ISSUANCE,
         MCP_AUTHENTICATION,
         MCP_PROTOCOL,
+        WATCH_PAIRING,
+        WATCH_AUTHENTICATION,
     }
 )
 
@@ -106,6 +112,9 @@ UNRECOGNIZED_TOKEN = "unrecognized_token"
 AUDIENCE_MISMATCH = "audience_mismatch"
 UNKNOWN_OWNER = "unknown_owner"
 UNSUPPORTED_PROTOCOL_VERSION = "unsupported_protocol_version"
+# A pairing code that is unknown, expired, already used or presented with the wrong
+# watch secret. One reason for all of them, as the registry answers one ``invalid``.
+INVALID_PAIRING_CODE = "invalid_pairing_code"
 UNCLASSIFIED = "unclassified"
 
 REASONS: frozenset[str] = frozenset(
@@ -134,6 +143,7 @@ REASONS: frozenset[str] = frozenset(
         AUDIENCE_MISMATCH,
         UNKNOWN_OWNER,
         UNSUPPORTED_PROTOCOL_VERSION,
+        INVALID_PAIRING_CODE,
         UNCLASSIFIED,
     }
 )

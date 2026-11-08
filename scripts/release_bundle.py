@@ -80,9 +80,10 @@ _CATALOGUE_PROGRAM = (
 # A deployment with health data off serves a surface derived in code (`product_scope`), so
 # its catalogue and its instructions are both read by running the commit's package.
 _SURFACE_WITHOUT_HEALTH_PROGRAM = (
-    "import json;"
+    "import inspect, json;"
     "from garmin_coach_loop.product_scope import surface;"
-    "served = surface(False);"
+    "served = (surface(False, product='training')"
+    " if 'product' in inspect.signature(surface).parameters else surface(False));"
     "print(json.dumps({'tool_catalogue_sha256': served.tool_catalogue_sha256(),"
     " 'instructions': served.instructions()}))"
 )

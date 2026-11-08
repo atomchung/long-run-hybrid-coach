@@ -1355,10 +1355,12 @@ def claim_watch_pairing(
 ) -> bool:
     """Bind a displayed code to the owner of the conversation that said it.
 
-    The code is normalized (case, spaces, hyphens). True only for an unexpired, unclaimed,
-    unconsumed pairing and an owner that exists; every other case is the same ``False``,
-    so a caller cannot probe which codes are live. ``account_label`` is the masked email
-    the watch will show, supplied by the caller.
+    The code is normalized (case, spaces, hyphens). True for an unexpired, unclaimed,
+    unconsumed pairing and an owner that exists, and again when that same owner repeats a
+    code it already holds -- a retried call is the same pairing, label unchanged. Every
+    other case is the same ``False``, so a caller cannot probe which codes are live or
+    whose they are. ``account_label`` is the masked email the watch will show, supplied by
+    the caller.
     """
     normalized = _normalize_watch_code(code)
     if normalized is None or not isinstance(owner_id, str) or not owner_id:
@@ -1373,13 +1375,21 @@ def claim_watch_pairing(
                 "SELECT 1 FROM owners WHERE owner_id = ?", (owner_id,)
             ).fetchone() is None:
                 return False
+            stamp = _watch_stamp(moment)
             cursor = connection.execute(
                 "UPDATE watch_pairings SET owner_id = ?, claimed_at = ?, account_label = ?"
                 " WHERE code_fingerprint = ? AND owner_id IS NULL AND consumed_at IS NULL"
                 " AND expires_at > ?",
-                (owner_id, _watch_stamp(moment), account_label, code_fingerprint, _watch_stamp(moment)),
+                (owner_id, stamp, account_label, code_fingerprint, stamp),
             )
-            return cursor.rowcount == 1
+            if cursor.rowcount == 1:
+                return True
+            # Already this owner's: still waiting for the watch, or picked up by it.
+            return connection.execute(
+                "SELECT 1 FROM watch_pairings WHERE code_fingerprint = ? AND owner_id = ?"
+                " AND (consumed_at IS NOT NULL OR expires_at > ?)",
+                (code_fingerprint, owner_id, stamp),
+            ).fetchone() is not None
     except sqlite3.Error as exc:
         raise IdentityError(f"identity registry write failed: {exc}") from exc
 
@@ -1489,6 +1499,26 @@ def owner_for_watch_credential(
         return None
     except sqlite3.Error as exc:
         raise IdentityError(f"identity registry read failed: {exc}") from exc
+
+
+def watch_device(db_path: Path | str, owner_id: str) -> dict[str, str | None] | None:
+    """This owner's paired watch -- when it paired, when it last uploaded, the label it
+    shows -- or ``None`` when no watch is paired or the registry does not exist."""
+    owner_id = _text(owner_id, "owner_id")
+    try:
+        with _connect(db_path, create=False) as connection:
+            row = connection.execute(
+                "SELECT created_at, last_seen_at, account_label FROM watch_devices"
+                " WHERE owner_id = ? ORDER BY created_at DESC LIMIT 1",
+                (owner_id,),
+            ).fetchone()
+    except FileNotFoundError:
+        return None
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    if row is None:
+        return None
+    return {"paired_at": str(row[0]), "last_seen_at": str(row[1]), "account_label": row[2]}
 
 
 def forget_watch_devices(db_path: Path | str, owner_id: str) -> int:

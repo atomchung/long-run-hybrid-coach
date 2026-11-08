@@ -1,4 +1,0 @@
-<properties>
-    <property id="Endpoint" type="string"></property>
-    <property id="DeviceToken" type="string"></property>
-</properties>

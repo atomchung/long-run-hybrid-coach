@@ -46,8 +46,8 @@ from test_plan_init import initialization_request
 from scripts.release_bundle import expected_deployment_identity_from_env
 
 
-NO_HEALTH = product_scope.surface(False)
-FULL = product_scope.surface(True)
+NO_HEALTH = product_scope.surface(False, product="training")
+FULL = product_scope.surface(True, product="hybrid")
 
 # Names the training surface must not hand the model. A guard on what the model is told,
 # not proof of what the code processes -- the gateway tests below hold that.
@@ -83,7 +83,8 @@ class TrainingSurfaceTests(unittest.TestCase):
     def test_training_catalogue_drops_the_excluded_tool_fields_and_codes(self):
         tools = NO_HEALTH.tools_by_name
         self.assertNotIn("recordBodyMeasurement", tools)
-        self.assertEqual(len(mcp_transport.TOOLS) - 1, len(NO_HEALTH.tools))
+        self.assertNotIn("connectWatch", tools)
+        self.assertEqual(len(mcp_transport.TOOLS) - 2, len(NO_HEALTH.tools))
         session = tools["startCoachSession"]
         for field in ("red_flags", "all_clear", "recovery_signals"):
             self.assertNotIn(field, session.input_schema["properties"])
@@ -414,7 +415,14 @@ class TrainingGatewayTests(unittest.TestCase):
         self.assertEqual(before["plan_state"], after["plan_state"])
         self.assertTrue(self._wellness_requests("training"))
         self.assertIn("recovery_trends", after["context"])
-        self.assertIs(FULL, switched.surface)
+        # Health data on gives the training product every full tool except the watch's,
+        # which pairs only to the full product.
+        self.assertIs(product_scope.surface(True, product="training"), switched.surface)
+        self.assertEqual(
+            {tool.name for tool in FULL.tools} - {"connectWatch"},
+            {tool.name for tool in switched.surface.tools},
+        )
+        self.assertNotIn("watch_run", after)
         self.assertEqual("on", switched.health()["health_data"])
 
 
