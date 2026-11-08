@@ -126,7 +126,7 @@ class IdentityRegistryTests(unittest.TestCase):
         )
         self.assertEqual(owner, owner_for_fingerprint(self.db_path, fingerprint))
         self.assertEqual(
-            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1, "owner_revocations": 0},
+            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1, "owner_revocations": 0, "watch_pairings": 0, "watch_devices": 0},
             owner_identity_row_counts(self.db_path, owner),
         )
         self.assertEqual(
@@ -400,7 +400,7 @@ class DeleteOwnerIdentityTests(unittest.TestCase):
         counts = owner_identity_row_counts(self.db_path, owner)
 
         self.assertEqual(
-            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1, "owner_revocations": 0},
+            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1, "owner_revocations": 0, "watch_pairings": 0, "watch_devices": 0},
             counts,
         )
 
@@ -410,7 +410,7 @@ class DeleteOwnerIdentityTests(unittest.TestCase):
         counts = owner_identity_row_counts(missing_db, "11111111-2222-3333-4444-555555555555")
 
         self.assertEqual(
-            {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0, "owner_revocations": 0},
+            {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0, "owner_revocations": 0, "watch_pairings": 0, "watch_devices": 0},
             counts,
         )
         self.assertFalse(missing_db.exists())
@@ -421,12 +421,12 @@ class DeleteOwnerIdentityTests(unittest.TestCase):
         removed = delete_owner_identity(self.db_path, owner)
 
         self.assertEqual(
-            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1, "owner_revocations": 0},
+            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1, "owner_revocations": 0, "watch_pairings": 0, "watch_devices": 0},
             removed,
         )
         self.assertIsNone(owner_for_provider_athlete(self.db_path, "intervals", "i1"))
         self.assertEqual(
-            {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0, "owner_revocations": 0},
+            {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0, "owner_revocations": 0, "watch_pairings": 0, "watch_devices": 0},
             owner_identity_row_counts(self.db_path, owner),
         )
 
@@ -439,7 +439,7 @@ class DeleteOwnerIdentityTests(unittest.TestCase):
         self.assertIsNone(owner_for_provider_athlete(self.db_path, "intervals", "i1"))
         self.assertEqual(second, owner_for_provider_athlete(self.db_path, "intervals", "i2"))
         self.assertEqual(
-            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1, "owner_revocations": 0},
+            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1, "owner_revocations": 0, "watch_pairings": 0, "watch_devices": 0},
             owner_identity_row_counts(self.db_path, second),
         )
 
@@ -449,7 +449,7 @@ class DeleteOwnerIdentityTests(unittest.TestCase):
         removed = delete_owner_identity(self.db_path, unknown)
 
         self.assertEqual(
-            {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0, "owner_revocations": 0},
+            {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0, "owner_revocations": 0, "watch_pairings": 0, "watch_devices": 0},
             removed,
         )
 
@@ -459,7 +459,7 @@ class DeleteOwnerIdentityTests(unittest.TestCase):
         removed = delete_owner_identity(missing_db, "11111111-2222-3333-4444-555555555555")
 
         self.assertEqual(
-            {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0, "owner_revocations": 0},
+            {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0, "owner_revocations": 0, "watch_pairings": 0, "watch_devices": 0},
             removed,
         )
         self.assertFalse(missing_db.exists())
@@ -471,7 +471,7 @@ class DeleteOwnerIdentityTests(unittest.TestCase):
         second_removal = delete_owner_identity(self.db_path, owner)
 
         self.assertEqual(
-            {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0, "owner_revocations": 0},
+            {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0, "owner_revocations": 0, "watch_pairings": 0, "watch_devices": 0},
             second_removal,
         )
 
@@ -871,7 +871,7 @@ class ClientDisclosureRollbackTests(unittest.TestCase):
         self.assertEqual([], self._disclosure_rows(self.owner))
         self.assertEqual(
             {"owners": 0, "provider_identities": 0, "token_fingerprints": 0,
-             "token_scopes": 0, "owner_revocations": 0},
+             "token_scopes": 0, "owner_revocations": 0, "watch_pairings": 0, "watch_devices": 0},
             owner_identity_row_counts(self.db_path, self.owner),
         )
         # The other athlete is untouched: their notice, their identity, their account.

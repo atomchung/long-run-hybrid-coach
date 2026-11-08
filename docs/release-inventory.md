@@ -13,7 +13,7 @@ is named below.
 Interface scale, all of it derived from code by tests rather than written down here:
 **23 MCP tools** (`garmin_coach_loop.mcp_transport.TOOLS`), **2 prompts**
 (`coach_orchestration` and `coach_training_judgment`), **34 CLI commands**, **4 JSON Schema contracts** under
-`contracts/`, **10 identity tables**.
+`contracts/`, **12 identity tables**.
 
 ---
 
