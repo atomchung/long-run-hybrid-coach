@@ -125,7 +125,7 @@ class ForbiddenWritePathTest(unittest.TestCase):
         self.assertEqual(set(), set(boundary.ALLOWED_ACTS) & set(boundary.REFUSED_ACTS))
 
     def test_the_refused_set_is_the_product_s_whole_operation_catalogue(self):
-        """A twenty-fourth operation cannot land and be quietly absent from the refusal.
+        """A new operation cannot land and be quietly absent from the refusal.
 
         ``boundary.py`` keeps the names as a literal rather than importing the transport,
         so the demo image stays two directories deep; this is what stops that literal from

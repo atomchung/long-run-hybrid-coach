@@ -29,6 +29,8 @@ LIVE_SMOKE_PATHS = frozenset(
     {
         "garmin_coach_loop/gateway.py",
         "garmin_coach_loop/live_run.py",
+        # Decides whether a watch's request is answered or told to wait.
+        "garmin_coach_loop/rate_limit.py",
         "garmin_coach_loop/identity.py",
         "garmin_coach_loop/token_envelope.py",
         "garmin_coach_loop/source_intervals.py",
@@ -75,9 +77,11 @@ PROFILE_SURFACE_PATHS = frozenset({
 PROFILE_SURFACE_MOVED_REASON = "product profiles (served tools, prompts or health-data boundary moved)"
 TRAINING_METADATA_REASON = "training profile (OAuth permissions, version or submission packet changed or unavailable)"
 PROFILE_SURFACE_PROGRAM = r"""
-import ast, hashlib, json
+import ast, hashlib, inspect, json
 from pathlib import Path
 from garmin_coach_loop import product_scope
+# A base from before the surface was chosen by product takes the health setting alone.
+_BY_PRODUCT = "product" in inspect.signature(product_scope.surface).parameters
 # Runtime filtering and direct-call refusals can change without moving a descriptor.
 # Keep the conservative source gate for everything outside the default selector;
 # its observable value is included below for each product.
@@ -89,7 +93,8 @@ for product in ("hybrid", "training"):
     readings = {}
     for label, enabled in (("default", product_scope.health_data_default(product)),
                            ("on", True), ("off", False)):
-        s = product_scope.surface(enabled)
+        s = (product_scope.surface(enabled, product=product) if _BY_PRODUCT
+             else product_scope.surface(enabled))
         readings[label] = {
             "tools": [t.descriptor() for t in s.tools], "instructions": s.instructions(),
             "prompts": {name: [descriptor(), body()]

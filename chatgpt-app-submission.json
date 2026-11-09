@@ -283,6 +283,18 @@
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not delete or overwrite the exported training records."
       }
+    },
+    "connectWatch": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Binds a pairing code to this account in the service's own identity registry, so it changes state.",
+        "open_world_justification": "Writes only this service's own registry; nothing is published and no third-party account, Intervals included, is changed.",
+        "destructive_justification": "The watch that picks the pairing up replaces any watch this account paired before, which then stops sending, so it is not purely additive."
+      }
     }
   },
   "test_cases": [

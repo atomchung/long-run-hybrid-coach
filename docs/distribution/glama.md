@@ -60,7 +60,7 @@ test account, not the owner's own:
 | `token_issuance` | accepted |
 | `mcp_authentication` | accepted; one `getCoachState` call returned stored plan state |
 
-And read back from the client rather than from the scan's own output: all 23 tools appear,
+And read back from the client rather than from the scan's own output: every tool appears,
 matching the running catalogue.
 
 ## Two things to know before pointing anyone at the Inspector

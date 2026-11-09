@@ -114,6 +114,37 @@ function countWorkoutEventsAcrossPauseAndReset(logger) {
     field.onWorkoutStepComplete();
     Test.assert(field.label.equals("Done 2"));
     field.onTimerReset();
-    Test.assert(field.label.equals("Live Coach"));
+    Test.assert(field.label.equals("Coach"));
     return true;
 }
+
+(:test)
+function aRefusedCredentialIsReported(logger) {
+    var upload = new CapturingUpload();
+    upload.sample(100, 1000, 140, 84, 2.8);
+    Test.assert(!upload.refused());
+    var sample = upload.requests[0];
+    upload.handleResponse(401, null, [sample["session_id"], sample["seq"]], 1100);
+    Test.assert(upload.refused());
+    upload.sample(106, 7000, 140, 84, 2.8);
+    Test.assert(upload.requests.size() == 1);
+    return true;
+}
+
+(:test)
+function theFieldTranslatesUploadCodesAndShowsPairing(logger) {
+    var field = new LiveCoachField();
+    Test.assert(field.describe("Sent 3s").equals("Sent 3s"));
+    Test.assert(field.describe("Pause sent").equals("Pause sent"));
+    Test.assert(field.describe("Ready").equals("Ready"));
+    return true;
+}
+
+(:test)
+function anUnpairedFieldShowsNoCodeOnceTheRunStarts(logger) {
+    var field = new LiveCoachField();
+    Test.assert(field.unpaired(false, 1000).equals("Not connected"));
+    Test.assert(field.label.equals("Coach"));
+    return true;
+}
+

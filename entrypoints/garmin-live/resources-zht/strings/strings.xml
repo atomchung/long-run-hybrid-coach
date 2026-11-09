@@ -1,0 +1,18 @@
+<resources>
+    <string id="AppName">Long Run Hybrid Coach</string>
+    <string id="Label">Coach</string>
+    <string id="Code">配對碼</string>
+    <string id="Connected">已連接</string>
+    <string id="Connecting">連線中</string>
+    <string id="NotConnected">未連接</string>
+    <string id="SetUp">需設定</string>
+    <string id="Ready">就緒</string>
+    <string id="Sending">傳送中</string>
+    <string id="Sent">已送</string>
+    <string id="Retry">重試</string>
+    <string id="Paused">已暫停</string>
+    <string id="PauseSent">暫停已送</string>
+    <string id="EndPending">結束待送</string>
+    <string id="EndSent">結束已送</string>
+    <string id="Done">完成</string>
+</resources>

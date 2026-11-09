@@ -24,7 +24,7 @@ Six fixed fields (older deployments wrote the first five):
 
 | field | what it is |
 | --- | --- |
-| `event` | `client_registration`, `authorization`, `provider_callback`, `token_issuance`, `mcp_authentication`, `mcp_protocol` |
+| `event` | `client_registration`, `authorization`, `provider_callback`, `token_issuance`, `mcp_authentication`, `mcp_protocol`, `watch_pairing`, `watch_authentication` |
 | `result` | `accepted` or `refused` |
 | `reason` | why it was refused, from a closed vocabulary (`blocked_redirect_origin`, `unknown_client`, `pkce_verification_failed`, …); `null` otherwise |
 | `origin` | the callback's `scheme://host[:port]` and nothing else — never the path, query, or fragment; `null` where no callback is involved |
@@ -98,6 +98,26 @@ Three of them are ordinary traffic, and reading them as attacks will waste an af
   of these on its next call, so a revocation shows up as a *burst* across several
   `client` handles at once, each ending when that client re-authorizes. AGENTS.md has why
   one revocation reaches every entry.
+
+The watch data field (full product only) adds two events with no `client` handle and no
+`origin`:
+
+- `watch_pairing accepted` — a watch asked for a code, a conversation said one
+  (`connectWatch`), or a watch picked up its credential. One pairing writes three, in
+  that order. A poll that is still waiting writes nothing.
+- `watch_pairing refused / invalid_pairing_code` — a code that is unknown, expired,
+  already used, or polled with the wrong watch secret, which the product does not tell
+  apart. A watch stops polling once it stores its credential, so one of these right after
+  an issuing acceptance means that reply never reached the watch: the conversation said
+  connected, and the field will ask for a new code. A run of them from conversations is
+  someone saying codes that are not on their watch.
+- `watch_authentication refused / unrecognized_token` (or `missing_bearer`) — an upload
+  whose device credential no longer resolves: the athlete paired another watch, or the
+  account was deleted. The watch shows a new code after the first one, so a long run of
+  these is not a watch.
+
+A watch route over its count answers `429` with `Retry-After` and writes no security event;
+the access line records it as `error=rate_limited`.
 
 One more has a routine cause worth knowing before it is investigated:
 
@@ -184,7 +204,7 @@ sentence beside a refusal, never an owner id, a token, or any athlete value.
 ## What is deliberately not in them
 
 No authorization code, access token, provider token, PKCE verifier or challenge, OAuth
-`state`, full callback URL, request or
+`state`, watch pairing code, watch secret or device credential, full callback URL, request or
 response body, owner id, provider athlete id, PlanState, or health and training content. A test holds this property against a complete
 live flow, so it fails the build rather than the athlete if a field is added carelessly.
 

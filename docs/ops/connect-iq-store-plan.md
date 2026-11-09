@@ -5,9 +5,10 @@ submitted to Garmin or accepted there.
 
 Order of work:
 
-1. Device pairing storage in the identity registry (`identity.py`), which PR #533 does not touch.
-2. After PR #533 merges: pairing routes, the `connectWatch` tool, per-owner device
-   credentials in place of the environment variables, and the watch field's pairing screen.
+1. Device pairing storage in the identity registry (`identity.py`): PR #534, merged.
+2. Pairing routes, the `connectWatch` tool, per-owner device credentials in place of the
+   environment variables, and the watch field's pairing screen: built after PR #533
+   merged; not yet deployed.
 3. Store build, listing and privacy page; submission from the owner's developer account.
 4. Next milestone: own account (Intervals.icu plus Google), the Coach without Intervals.icu,
    and the device app.

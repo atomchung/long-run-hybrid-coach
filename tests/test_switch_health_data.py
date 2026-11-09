@@ -41,13 +41,15 @@ class SwitchTests(unittest.TestCase):
     def _switch(self, readings: list[dict], fail_on: str | None = None, **extra):
         self.commands: list[list[str]] = []
         self.built: list[tuple] = []
+        self.catalogue_products: list = []
         queue = list(readings)
 
         def read(domain: str) -> dict:
             return queue.pop(0) if len(queue) > 1 else queue[0]
 
-        def build(commit: str, domain: str, health_data: bool) -> dict:
+        def build(commit: str, domain: str, health_data: bool, *, catalogue_product=None) -> dict:
             self.built.append((commit, domain, health_data))
+            self.catalogue_products.append(catalogue_product)
             return BUNDLE
 
         def execute(command: list[str]) -> None:
@@ -67,6 +69,14 @@ class SwitchTests(unittest.TestCase):
             sleep=lambda seconds: None,
             **extra,
         )
+
+    def test_the_bundle_binds_the_running_products_catalogue(self):
+        readings = [
+            {**_reading("off", "gclr-old"), "deployment_product": "training"},
+            {**_reading("on", "gclr-new"), "deployment_product": "training"},
+        ]
+        self._switch(readings)
+        self.assertEqual(["training"], self.catalogue_products)
 
     def test_stages_everything_once_then_redeploys_then_reads_back(self):
         confirmed = self._switch(

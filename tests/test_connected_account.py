@@ -1320,5 +1320,26 @@ class StoredCalendarReplayTests(GatewayTestCase):
             self.assertNotIn(b"Fixture Athlete", data, path)
 
 
-if __name__ == "__main__":  # pragma: no cover
+
+class MaskedEmailTests(unittest.TestCase):
+    """The only form of the address that is ever stored: beside a paired watch."""
+
+    def test_the_first_character_and_the_domain_remain(self):
+        address = "Tingchung" + "@" + "Example.Invalid"
+        self.assertEqual("t***@example.invalid", connected_account.masked_email(address))
+        self.assertEqual("t***@example.invalid", connected_account.masked_email("  t" + "@" + "example.invalid "))
+
+    def test_the_mask_does_not_tell_the_length(self):
+        short = connected_account.masked_email("ab" + "@" + "example.invalid")
+        long = connected_account.masked_email("a" + "b" * 40 + "@" + "example.invalid")
+        self.assertEqual(short, long)
+
+    def test_anything_that_is_not_one_address_is_none(self):
+        for value in (None, "", "   ", "no-at-sign", "@example.invalid", "a@", "a@localhost",
+                      "a b" + "@" + "example.invalid", 42, "x" * 250 + "@" + "example.invalid"):
+            with self.subTest(value=value):
+                self.assertIsNone(connected_account.masked_email(value))
+
+
+if __name__ == "__main__":
     unittest.main()

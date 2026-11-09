@@ -51,6 +51,7 @@ import tempfile
 import threading
 import time
 import http.client
+import ipaddress
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -105,8 +106,12 @@ from .delivery import (
 )
 from . import owner_data
 from .live_run import LiveRunStore
+from .rate_limit import RateLimiter
 from .identity import (
+    WATCH_PAIRING_INVALID,
+    WATCH_PAIRING_ISSUED,
     IdentityError,
+    claim_watch_pairing,
     ensure_registry,
     lookup_or_create_owner,
     owner_for_fingerprint,
@@ -115,11 +120,15 @@ from .identity import (
     record_client_origin_disclosure,
     record_entry_origin,
     record_token_fingerprint,
+    owner_for_watch_credential,
+    redeem_watch_pairing,
     revoked_after,
     scopes_for_fingerprint,
     forget_token_fingerprint,
     spend_authorization_code,
+    start_watch_pairing,
     token_fingerprint,
+    watch_device,
 )
 from .decision_delivery import prepare_decision_delivery, delivery_preview, apply_decision_delivery
 from .plan_change import ChangeRequestError, project_change_request, _Errors
@@ -338,10 +347,66 @@ TRUSTED_CLIENT_ORIGINS: tuple[str, ...] = (
 )
 
 
+# The watch data field's three routes. None carries an MCP bearer: a watch asks for a
+# pairing code with only a secret of its own, polls with the code and that secret, and
+# uploads with the device credential the poll issued. They exist only where watch pairing
+# does (`GatewayConfig.watch_pairing`); everywhere else they are 404, like any unknown path.
+WATCH_PAIRING_PATH = "/v1/watch/pairings"
+WATCH_PAIRING_POLL_PATH = "/v1/watch/pairings/poll"
 LIVE_RUN_PATH = "/v1/live-run/samples"
-LIVE_RUN_OWNER_ENV = "GARMIN_COACH_LOOP_LIVE_RUN_OWNER_ID"
-LIVE_RUN_DIGEST_ENV = "GARMIN_COACH_LOOP_LIVE_RUN_TOKEN_SHA256"
-PILOT_ATHLETE_DIGEST_ENV = "GARMIN_COACH_LOOP_PILOT_ATHLETE_SHA256"
+WATCH_ROUTES: dict[str, tuple[str, str]] = {
+    WATCH_PAIRING_PATH: ("POST", "watch_pairing_start"),
+    WATCH_PAIRING_POLL_PATH: ("POST", "watch_pairing_poll"),
+    LIVE_RUN_PATH: ("POST", "live_run_samples"),
+}
+WATCH_PAIRING_TTL_SECONDS = 600
+# How often a watch showing a code asks whether it was said (RFC 8628's `interval`).
+WATCH_POLL_INTERVAL_SECONDS = 5
+_WATCH_SECRET = re.compile(r"[A-Za-z0-9_-]{32,256}")
+# Calls per source address on the routes a caller reaches before it holds a credential,
+# and per account on uploads. A watch shows a code for at most ten minutes, polls every
+# five seconds and uploads about every five seconds while running; the per-address
+# numbers leave room for several watches behind one carrier's shared address.
+_WATCH_ADDRESS_LIMITS: dict[str, tuple[int, int]] = {
+    "watch_pairing_start": (10, 600),
+    "watch_pairing_poll": (60, 60),
+    "live_run_samples": (240, 60),
+}
+_WATCH_UPLOADS_PER_ACCOUNT = (30, 60)
+# Codes handed out per ten minutes to everyone together. Asking for one writes a row in
+# the identity registry and needs no credential, so the per-address count alone would let
+# a caller with many addresses grow the table without end. Only a watch not yet paired
+# asks, at most three times each time Run opens; when this is spent, watches wait.
+_WATCH_STARTS_OVERALL = (120, 600)
+# How many codes one account may say per ten minutes. Guessing a code someone else's
+# watch shows is already hopeless at 30**8; this keeps it so for a client that loops.
+_WATCH_CLAIMS_PER_ACCOUNT = (10, 600)
+
+# What a pairing tells the athlete, written once here rather than by the model.
+WATCH_FIELD_SENDS = (
+    "While the run's timer is going, about every 5 seconds through Garmin Connect on the "
+    "phone: heart rate, cadence, speed, timer, distance, altitude, ascent and descent, "
+    "power, and how many workout steps are done. No location. Nothing is sent without "
+    "the phone and its connection."
+)
+WATCH_RUN_KEPT = (
+    "Only the latest run is kept, in this service's memory, until 24 hours after its "
+    "last sample or until the next run replaces it; a restart of the service clears it. "
+    "It is read to recap that run and is not added to the plan, the training totals or "
+    "the data export."
+)
+WATCH_STOP = (
+    "Remove the Coach field from the run's data screens, or uninstall it, and nothing "
+    "more is sent. Pairing another watch to this account retires this one. To pair this "
+    "watch to a different account, uninstall the field and install it again first."
+)
+WATCH_CODE_NOT_ACCEPTED = (
+    "No pairing waits under this code for this account: mistyped, more than 10 minutes "
+    "old, already used, or said first in another conversation. Ask the athlete to open Run "
+    "without starting it and read the code the field shows now; if it says Not connected, "
+    "close Run and open it again. If it already shows Connected with an address that is "
+    "not theirs, they uninstall the field, install it again and pair from here."
+)
 
 
 class GatewayConfigError(RuntimeError):
@@ -370,6 +435,7 @@ class GatewayError(RuntimeError):
         oauth: bool = False,
         extra: dict[str, Any] | None = None,
         upstream_unauthorized: bool = False,
+        headers: dict[str, str] | None = None,
     ):
         super().__init__(f"{int(status)} {code}")
         self.status = int(status)
@@ -378,6 +444,8 @@ class GatewayError(RuntimeError):
         self.oauth = oauth
         self.extra = extra or {}
         self.upstream_unauthorized = upstream_unauthorized
+        # Response headers a refusal owes its caller, such as `Retry-After` on a `429`.
+        self.headers = dict(headers or {})
 
     def payload(self) -> dict[str, Any]:
         if self.oauth:
@@ -444,9 +512,6 @@ class GatewayConfig:
     # decides whose records these are, so the switch can move without moving anybody's
     # plan. Unset, it follows the product's default (`product_scope.health_data_default`).
     health_data: bool | None = None
-    live_run_owner: str | None = None
-    live_run_token_sha256: str | None = None
-    pilot_athlete_sha256: str | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -458,29 +523,14 @@ class GatewayConfig:
                 self, "health_data", product_scope.health_data_default(self.product)
             )
 
-        if self.pilot_athlete_sha256 is not None:
-            if self.product != "hybrid" or not self.health_data:
-                raise GatewayConfigError("the private athlete pilot requires the hybrid health-data product")
-            if not re.fullmatch(r"[0-9a-f]{64}", self.pilot_athlete_sha256):
-                raise GatewayConfigError(f"{PILOT_ATHLETE_DIGEST_ENV} must be a lowercase SHA-256 digest")
-
-        if self.live_run_owner is not None or self.live_run_token_sha256 is not None:
-            if self.product != "hybrid" or not self.health_data:
-                raise GatewayConfigError("a watch owner requires the hybrid health-data product")
-            if not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", self.live_run_owner or ""):
-                raise GatewayConfigError(f"{LIVE_RUN_OWNER_ENV} must be an existing owner's UUID")
-            if not re.fullmatch(r"[0-9a-f]{64}", self.live_run_token_sha256 or ""):
-                raise GatewayConfigError(f"{LIVE_RUN_DIGEST_ENV} must be a lowercase SHA-256 digest")
-
     @property
     def product_state_root(self) -> Path:
         return product_identity.product_state_root(self.state_root, self.product)
 
-    def admits_athlete(self, athlete_id: str) -> bool:
-        if self.pilot_athlete_sha256 is None:
-            return True
-        digest = hashlib.sha256(athlete_id.encode("utf-8")).hexdigest()
-        return hmac.compare_digest(digest, self.pilot_athlete_sha256)
+    @property
+    def watch_pairing(self) -> bool:
+        """Whether watches pair here: the full product with health data on, nothing else."""
+        return product_scope.watch_pairing(self.product, bool(self.health_data))
 
     @property
     def identity_db_path(self) -> Path:
@@ -705,9 +755,6 @@ def load_config(
         state_root=state_root,
         product=product,
         health_data=health_data,
-        live_run_owner=source.get(LIVE_RUN_OWNER_ENV) or None,
-        live_run_token_sha256=source.get(LIVE_RUN_DIGEST_ENV) or None,
-        pilot_athlete_sha256=source.get(PILOT_ATHLETE_DIGEST_ENV),
         token_hmac_key=key.encode("utf-8"),
         intervals_client_id=str(source[CLIENT_ID_ENV_VAR]).strip(),
         intervals_client_secret=str(source[CLIENT_SECRET_ENV_VAR]).strip(),
@@ -2355,12 +2402,18 @@ class CoachGateway:
         self.config = config
         # What this deployment serves and accepts. Built here so a surface without health
         # data that no longer derives from the full text refuses the boot.
-        self.surface = product_scope.surface(config.health_data)
+        self.surface = product_scope.surface(config.health_data, product=config.product)
         self.fetch = fetch
         self._reader_factory = evidence_reader_factory
         self._transport_factory = workout_transport_factory
         self._now = now or (lambda: dt.datetime.now(dt.timezone.utc))
         self.live_runs = LiveRunStore()
+        self._watch_address_limits = {
+            kind: RateLimiter(limit, window) for kind, (limit, window) in _WATCH_ADDRESS_LIMITS.items()
+        }
+        self._watch_upload_limit = RateLimiter(*_WATCH_UPLOADS_PER_ACCOUNT)
+        self._watch_start_ceiling = RateLimiter(*_WATCH_STARTS_OVERALL)
+        self._watch_claim_limit = RateLimiter(*_WATCH_CLAIMS_PER_ACCOUNT)
         # Everything this process handed out or accepted that a later call may name
         # instead of resend, per owner, most recent last. Process memory and nothing
         # else; see `_hold`.
@@ -2426,10 +2479,6 @@ class CoachGateway:
         owner_id = owner_for_fingerprint(self.config.identity_db_path, fingerprint)
         if owner_id is None:
             raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized")
-        if self.config.pilot_athlete_sha256 is not None:
-            athlete_id = self._registered_athlete_id(owner_id)
-            if athlete_id is None or not self.config.admits_athlete(athlete_id):
-                raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized")
         return owner_id
 
     # What an owner maintenance fence stops from *beginning* (issue #128). The store
@@ -2489,6 +2538,7 @@ class CoachGateway:
         "athlete_record_retract": "retract_athlete_record",
         "history_import": "import_athlete_history",
         "data_export": "export_owner_data",
+        "watch_connect": "connect_watch",
     }
 
     @classmethod
@@ -2543,14 +2593,14 @@ class CoachGateway:
                 disclosure = self._client_disclosure(owner_id, token, client_origin)
                 if disclosure is not None:
                     answer = {**answer, "client_disclosure": disclosure}
-            if (
-                kind in {"session", "state"}
-                and owner_id == self.config.live_run_owner
-                and "ACTIVITY:READ" in (self._recorded_scope_names(token) or ())
-            ):
+            if kind in {"session", "state"} and self.config.watch_pairing:
                 # Beside the answer, never inside the context: no count, plan match or
-                # delivery reads it, and nothing writes it to the store.
-                answer = {**answer, "watch_run": self.live_runs.recap(owner_id)}
+                # delivery reads it, and nothing writes it to the store. Present for an
+                # account with a paired watch -- null while no run is held -- and absent
+                # for every other account, whose reads stay what they were.
+                recap = self.live_runs.recap(owner_id)
+                if recap is not None or self._watch_paired(owner_id):
+                    answer = {**answer, "watch_run": recap}
             _refuse_oversized_read(kind, answer)
             return answer
         except GatewayError:
@@ -2628,20 +2678,186 @@ class CoachGateway:
         except IdentityError as exc:
             raise GatewayError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error") from exc
 
-    def live_run_writer(self, bearer: str | None) -> str:
-        """Authenticate a write-only watch, bound by the operator to one registered owner."""
-        owner = self.config.live_run_owner
-        digest = self.config.live_run_token_sha256
-        if not owner or not digest:
+    # -- the watch data field ------------------------------------------------------------
+
+    def limit_watch_route(self, kind: str, address: str) -> None:
+        """Refuse a watch route past its per-address count, or a code request past the
+        count for everyone together, with how long to wait."""
+        wait = self._watch_address_limits[kind].allow(address)
+        if wait is None and kind == "watch_pairing_start":
+            wait = self._watch_start_ceiling.allow("all")
+        if wait is not None:
+            raise GatewayError(
+                HTTPStatus.TOO_MANY_REQUESTS, "rate_limited", headers={"Retry-After": str(wait)}
+            )
+
+    def start_watch_pairing(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Hand a watch the code it shows, against a secret only that watch holds."""
+        if not self.config.watch_pairing:
             raise GatewayError(HTTPStatus.NOT_FOUND, "not_found")
-        candidate = hashlib.sha256((bearer or "").encode("utf-8")).hexdigest()
-        if not bearer or not hmac.compare_digest(candidate, digest):
+        secret = body.get("secret")
+        if set(body) != {"secret"} or not isinstance(secret, str) or not _WATCH_SECRET.fullmatch(secret):
+            raise _invalid("send only secret: 32 to 256 letters, digits, - or _")
+        try:
+            code = start_watch_pairing(
+                self.config.identity_db_path,
+                secret,
+                hmac_key=self.config.token_hmac_key,
+                now=self._now(),
+                ttl_seconds=WATCH_PAIRING_TTL_SECONDS,
+            )
+        except IdentityError as exc:
+            raise GatewayError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error") from exc
+        security_log.emit(
+            security_log.WATCH_PAIRING, security_log.ACCEPTED, key=self.config.token_hmac_key
+        )
+        return {
+            "code": code,
+            "expires_in": WATCH_PAIRING_TTL_SECONDS,
+            "interval": WATCH_POLL_INTERVAL_SECONDS,
+        }
+
+    def poll_watch_pairing(self, body: dict[str, Any]) -> dict[str, Any]:
+        """``pending``, ``issued`` with the device credential, or ``invalid``.
+
+        ``invalid`` covers a wrong secret, an unknown, expired or used code and a body
+        that is not one, alike: a watch acts on all of them the same way, by asking for a
+        new code, and a caller learns nothing about which codes exist.
+        """
+        if not self.config.watch_pairing:
+            raise GatewayError(HTTPStatus.NOT_FOUND, "not_found")
+        try:
+            result = redeem_watch_pairing(
+                self.config.identity_db_path,
+                body.get("code"),
+                body.get("secret"),
+                hmac_key=self.config.token_hmac_key,
+                now=self._now(),
+            )
+        except IdentityError as exc:
+            raise GatewayError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error") from exc
+        if result.status == WATCH_PAIRING_ISSUED:
+            security_log.emit(
+                security_log.WATCH_PAIRING, security_log.ACCEPTED, key=self.config.token_hmac_key
+            )
+            return {
+                "status": result.status,
+                "credential": result.credential,
+                "account_label": result.account_label,
+            }
+        if result.status == WATCH_PAIRING_INVALID:
+            security_log.emit(
+                security_log.WATCH_PAIRING,
+                security_log.REFUSED,
+                key=self.config.token_hmac_key,
+                reason=security_log.INVALID_PAIRING_CODE,
+            )
+        return {"status": result.status}
+
+    def live_run_writer(self, bearer: str | None) -> str:
+        """The account a watch's device credential was paired to, or a refusal.
+
+        ``401`` is what turns a watch back to showing a code: its credential was replaced
+        by another pairing, or its account is gone.
+        """
+        if not self.config.watch_pairing:
+            raise GatewayError(HTTPStatus.NOT_FOUND, "not_found")
+        owner_id = None
+        if bearer:
+            try:
+                owner_id = owner_for_watch_credential(
+                    self.config.identity_db_path,
+                    bearer,
+                    hmac_key=self.config.token_hmac_key,
+                    now=self._now(),
+                )
+            except IdentityError as exc:
+                raise GatewayError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error") from exc
+        if owner_id is None:
+            security_log.emit(
+                security_log.WATCH_AUTHENTICATION,
+                security_log.REFUSED,
+                key=self.config.token_hmac_key,
+                reason=security_log.UNRECOGNIZED_TOKEN if bearer else security_log.MISSING_BEARER,
+            )
             raise GatewayError(HTTPStatus.UNAUTHORIZED, "invalid_device_credential")
-        athlete_id = self._registered_athlete_id(owner)
-        if athlete_id is None or not self.config.admits_athlete(athlete_id):
-            self.live_runs.discard(owner)
-            raise GatewayError(HTTPStatus.FORBIDDEN, "live_run_owner_unavailable")
-        return owner
+        wait = self._watch_upload_limit.allow(owner_id)
+        if wait is not None:
+            raise GatewayError(
+                HTTPStatus.TOO_MANY_REQUESTS, "rate_limited", headers={"Retry-After": str(wait)}
+            )
+        return owner_id
+
+    def _watch_paired(self, owner_id: str) -> bool:
+        """Whether this account has a paired watch; a registry it cannot read says no."""
+        try:
+            return watch_device(self.config.identity_db_path, owner_id) is not None
+        except IdentityError:
+            return False
+
+    def connect_watch(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Bind the code a watch shows to this connection's account (``connectWatch``).
+
+        The label the watch will show is the account's Intervals email, masked before it
+        is stored. A label that cannot be read costs the label, never the pairing: the
+        account is the one this connection authenticated as either way.
+        """
+        if not self.config.watch_pairing:
+            raise GatewayError(HTTPStatus.NOT_FOUND, "not_found")
+        code = body.get("code")
+        if not isinstance(code, str) or not code.strip():
+            raise _invalid("code is the eight characters the watch shows")
+        wait = self._watch_claim_limit.allow(owner_id)
+        if wait is not None:
+            raise GatewayError(
+                HTTPStatus.TOO_MANY_REQUESTS,
+                "rate_limited",
+                f"Too many codes from this account; try again in {wait} seconds.",
+            )
+        account = self._connected_account(owner_id, token)
+        label = (
+            connected_account.masked_email(account.get("email"))
+            if account.get("resolution") == connected_account.RESOLVED
+            else None
+        )
+        try:
+            claimed = claim_watch_pairing(
+                self.config.identity_db_path,
+                code,
+                owner_id,
+                hmac_key=self.config.token_hmac_key,
+                account_label=label,
+                now=self._now(),
+            )
+        except IdentityError as exc:
+            raise GatewayError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error") from exc
+        security_log.emit(
+            security_log.WATCH_PAIRING,
+            security_log.ACCEPTED if claimed else security_log.REFUSED,
+            key=self.config.token_hmac_key,
+            reason=None if claimed else security_log.INVALID_PAIRING_CODE,
+        )
+        if not claimed:
+            return {
+                "status": "code_not_accepted",
+                **self._envelope(),
+                "detail": WATCH_CODE_NOT_ACCEPTED,
+            }
+        shown = f"Connected and {label}" if label else "Connected"
+        return {
+            "status": "connected",
+            **self._envelope(),
+            "account_label": label,
+            "watch": (
+                f"Within a few seconds the field stops showing the code and shows {shown}. "
+                "If that is not the athlete's address, this conversation is signed in to "
+                "another account: they uninstall the field, install it again, and say the "
+                "new code in a conversation signed in to the right one."
+            ),
+            "sends": WATCH_FIELD_SENDS,
+            "kept": WATCH_RUN_KEPT,
+            "stop": WATCH_STOP,
+        }
 
     def _recorded_scope_names(self, token: str) -> tuple[str, ...] | None:
         """What Intervals said this connection was granted, off the row already written.
@@ -3357,11 +3573,6 @@ class CoachGateway:
             # token may open, and guessing would be the one mistake that mixes athletes.
             raise GatewayError(HTTPStatus.BAD_GATEWAY, "server_error", oauth=True)
 
-        # The identity comes from the server-to-server Intervals exchange. Make the
-        # admission decision before either an owner or a credential is registered.
-        if not self.config.admits_athlete(str(athlete_id)):
-            raise GatewayError(HTTPStatus.FORBIDDEN, "access_denied", oauth=True)
-
         try:
             owner_id = lookup_or_create_owner(
                 self.config.identity_db_path, PROVIDER, str(athlete_id).strip()
@@ -3741,9 +3952,7 @@ class CoachGateway:
         Never refuses issuance itself. The credential inside this token was just proven
         live by the OAuth exchange that produced it, so an owner that briefly fails to
         resolve here is not a reason to withhold the token -- only a reason not to also
-        claim an epoch this call cannot vouch for. The one caller that refuses on ``None``
-        is a restricted pilot, where the registered owner must still be admitted under the
-        current configuration.
+        claim an epoch this call cannot vouch for.
         """
         try:
             owner_id = self.resolve_owner(provider_token)
@@ -3901,17 +4110,10 @@ class CoachGateway:
         # refuse every call this token ever makes, where omitting it just falls back to
         # the `iat` check below, exactly as every token minted before this claim existed
         # already does.
-        epoch = (
-            self._revocation_epoch(provider_token)
-            if isinstance(provider_token, str) and provider_token else None
-        )
-        if self.config.pilot_athlete_sha256 is not None and epoch is None:
-            # A code may have been issued just before this pilot was restricted.
-            raise self._token_refusal(
-                security_log.UNKNOWN_OWNER, "invalid_grant", client_id=client_id
-            )
-        if epoch is not None:
-            payload["revocation_epoch"] = epoch
+        if isinstance(provider_token, str) and provider_token:
+            epoch = self._revocation_epoch(provider_token)
+            if epoch is not None:
+                payload["revocation_epoch"] = epoch
         access_token = token_envelope.seal(
             product_identity.product_claims(payload, self.config.product),
             kind=token_envelope.ACCESS_TOKEN,
@@ -7884,19 +8086,31 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         # not always this gateway's own JSON object shape.
         mcp_headers: list[tuple[str, str]] | None = None
         mcp_body: bytes | None = None
+        refusal_headers: dict[str, str] = {}
         path = urllib.parse.urlsplit(self.path).path
         try:
             gateway: CoachGateway = self.server.gateway  # type: ignore[attr-defined]
             route = ROUTES.get(path)
-            if path == LIVE_RUN_PATH and gateway.config.live_run_owner:
-                route = ("POST", "live_run_samples")
+            if route is None and gateway.config.watch_pairing:
+                route = WATCH_ROUTES.get(path)
             if route is None:
                 raise GatewayError(HTTPStatus.NOT_FOUND, "not_found")
             allowed_method, kind = route
             if method != allowed_method:
                 raise GatewayError(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
-            if kind == "live_run_samples":
+            if path in WATCH_ROUTES:
+                gateway.limit_watch_route(kind, self._client_address())
+            if kind == "watch_pairing_start":
+                payload = gateway.start_watch_pairing(self._json_body(max_bytes=1024))
+                status = HTTPStatus.OK
+            elif kind == "watch_pairing_poll":
+                payload = gateway.poll_watch_pairing(self._json_body(max_bytes=1024))
+                status = HTTPStatus.OK
+            elif kind == "live_run_samples":
                 owner_id = gateway.live_run_writer(_bearer_token(self.headers.get("Authorization")))
+                # The same keyed handle an MCP line carries, so one account's uploads and
+                # its conversation read as one account, and neither names the owner id.
+                owner_handle = gateway.owner_log_handle(owner_id)
                 sample = self._json_body(max_bytes=1024)
                 try:
                     payload = gateway.live_runs.ingest(owner_id, sample)
@@ -8015,6 +8229,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 raise GatewayInternalError("no dispatch branch for route kind %r" % kind)
         except GatewayError as exc:
             status, payload = exc.status, exc.payload()
+            refusal_headers = exc.headers
         except Exception:  # pragma: no cover - defensive; never leaks the cause
             LOGGER.exception("unhandled gateway failure on %s %s", method, path)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
@@ -8032,7 +8247,9 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         elif text_body is not None:
             self._send_text(int(status), text_body)
         else:
-            self._send_json(int(status), payload, headers=self._challenge(path, int(status)))
+            self._send_json(
+                int(status), payload, headers={**self._challenge(path, int(status)), **refusal_headers}
+            )
         # Replayed from the answer already on the wire, not re-derived: a refusal's
         # `payload` carries the exact machine-readable code this response's body just
         # sent the caller, under "error" for every shape this module raises (RFC 6749's
@@ -8109,6 +8326,28 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             f" error={error_code}" if error_code else "",
             request_spend,
         )
+
+    def _client_address(self) -> str:
+        """The caller's address, which the watch routes count requests by.
+
+        Railway's edge sets ``X-Real-IP`` to the client's remote address on every request
+        (its networking Specs & Limits); that it replaces a copy the caller sent is a
+        forum answer, not documentation, which is why code requests also have a ceiling
+        for everyone together. Without that edge -- a local run -- the socket peer is the
+        caller. A value that is not one IP address is not used, and an IPv6 address counts
+        as its /64, the block one subscriber is usually given, so stepping through one's
+        own addresses is not a new count each time.
+        """
+        candidate = str(self.headers.get("X-Real-IP") or "").strip()
+        try:
+            address = ipaddress.ip_address(candidate)
+        except ValueError:
+            address = ipaddress.ip_address(str(self.client_address[0]))
+        if isinstance(address, ipaddress.IPv6Address):
+            if address.ipv4_mapped is not None:
+                return str(address.ipv4_mapped)
+            return str(ipaddress.ip_network(f"{address}/64", strict=False))
+        return str(address)
 
     def _query(self) -> dict[str, str]:
         """This request's query parameters, one value each or a refusal.

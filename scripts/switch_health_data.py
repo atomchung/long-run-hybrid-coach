@@ -124,7 +124,7 @@ def switch(
     domain: str,
     scope: list[str],
     read: Callable[[str], dict[str, Any]] = read_readiness,
-    build: Callable[[str, str, bool], dict[str, Any]] = release_bundle.bundle,
+    build: Callable[..., dict[str, Any]] = release_bundle.bundle,
     execute: Callable[[list[str]], None] = run,
     commit_present: Callable[[str], bool] = has_commit,
     wait_seconds: float = WAIT_SECONDS,
@@ -156,7 +156,13 @@ def switch(
     # Built for the domain the running release names, not the URL used to reach it: the
     # issuer, audience and OAuth callback come from it, so another value would sign every
     # connection out.
-    bundle = build(commit, identity["gateway_domain"], health_data)
+    # The catalogue is the running product's: with health data on, the Plugin entry
+    # serves the full catalogue less the watch tool, and a full-product digest would leave
+    # it blocked.
+    bundle = build(
+        commit, identity["gateway_domain"], health_data,
+        catalogue_product=live.get("deployment_product"),
+    )
     stage, redeploy = railway_commands(service, staged_variables(bundle, health_data), scope)
     try:
         execute(stage)

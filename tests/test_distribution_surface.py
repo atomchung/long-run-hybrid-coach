@@ -186,11 +186,18 @@ class OrchestrationBoundaryTests(unittest.TestCase):
 
     def test_every_tool_is_sequenced_somewhere_in_it(self):
         """The other direction: an operation the orchestration layer forgot is an
-        operation whose sequencing the model has to guess at."""
+        operation whose sequencing the model has to guess at.
+
+        The watch tools are held to the opposite. This text is served unchanged by
+        deployments that do not list them, so naming one here would point those models at
+        a tool they do not have; a pairing is one call, and its description says when."""
         text = orchestration.instructions()
         for tool in TOOLS:
             with self.subTest(tool=tool.name):
-                self.assertIn(f"`{tool.name}`", text)
+                if tool.name in product_scope.WATCH_TOOLS:
+                    self.assertNotIn(f"`{tool.name}`", text)
+                else:
+                    self.assertIn(f"`{tool.name}`", text)
 
 
 # The runbook gives the operator one copyable statement of the authorize set, and a
@@ -342,8 +349,11 @@ def _identity_table_names() -> list[str]:
     from garmin_coach_loop import identity
 
     pattern = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+)")
+    index = re.compile(r"CREATE INDEX IF NOT EXISTS \w+ ON \w+")
     names = []
     for statement in identity._SCHEMA_STATEMENTS:  # noqa: SLF001 -- the schema is the fact
+        if index.search(statement):
+            continue  # an index belongs to a table already counted
         match = pattern.search(statement)
         assert match, f"unrecognised schema statement: {statement[:40]}"
         names.append(match.group(1))
@@ -755,7 +765,7 @@ class TrainingSubmissionPacketTests(SubmissionPacketTests):
     """
 
     PACKET = TRAINING_SUBMISSION_PACKET
-    TOOLS = product_scope.surface(False).tools
+    TOOLS = product_scope.surface(False, product="training").tools
 
     # The listing describes what the Plugin entry does, never what it leaves out (owner
     # decision, 2026-10-28): naming the categories it does not collect, or the care it

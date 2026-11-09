@@ -1,3 +1,4 @@
 project.manifest = manifest.xml
 base.sourcePath = source
 base.resourcePath = resources
+base.lang.zht = resources-zht

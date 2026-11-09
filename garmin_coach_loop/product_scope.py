@@ -65,6 +65,21 @@ def health_data_setting(value: str | None) -> bool | None:
 
 
 # --------------------------------------------------------------------------------------
+# What only the full product serves
+# --------------------------------------------------------------------------------------
+
+# The watch data field pairs to an account of the full product with health data on, and
+# to nothing else. Any other deployment lists no such tool, answers the watch routes with
+# 404 and carries no watch run in a read, whatever else it is configured to do.
+WATCH_TOOLS = frozenset({"connectWatch"})
+
+
+def watch_pairing(product: str, health_data: bool) -> bool:
+    """Whether a deployment of ``product`` with this health setting pairs watches."""
+    return validate_product(product) == "hybrid" and health_data is True
+
+
+# --------------------------------------------------------------------------------------
 # What a deployment without health data never reaches
 # --------------------------------------------------------------------------------------
 
@@ -344,15 +359,26 @@ _TOOL_EDITS: dict[str, Callable[[mcp_transport.Tool], mcp_transport.Tool]] = {
 }
 
 
+def tools_without_watch(tools: tuple[mcp_transport.Tool, ...]) -> tuple[mcp_transport.Tool, ...]:
+    """The full tools less the ones that pair a watch, otherwise byte for byte."""
+    missing = WATCH_TOOLS - {tool.name for tool in tools}
+    if missing:
+        raise ProductScopeError(f"watch tools the full surface lacks: {sorted(missing)}")
+    return tuple(tool for tool in tools if tool.name not in WATCH_TOOLS)
+
+
 def tools_without_health(tools: tuple[mcp_transport.Tool, ...]) -> tuple[mcp_transport.Tool, ...]:
-    """The catalogue without health data: the full tools, less the excluded ones, edited."""
+    """The catalogue without health data: the full tools, less the excluded ones, edited.
+
+    A watch pairs only where health data is on, so its tools go too.
+    """
     names = {tool.name for tool in tools}
     missing = (_EXCLUDED_TOOLS | set(_TOOL_EDITS)) - names
     if missing:
         raise ProductScopeError(f"health-data edits name tools the full surface lacks: {sorted(missing)}")
     return tuple(
         _TOOL_EDITS.get(tool.name, lambda unchanged: unchanged)(tool)
-        for tool in tools
+        for tool in tools_without_watch(tools)
         if tool.name not in _EXCLUDED_TOOLS
     )
 
@@ -463,6 +489,12 @@ FULL_SURFACE = Surface(
 
 
 @functools.cache
+def _full_surface_without_watch() -> Surface:
+    """Health data on, no watch: the full surface less the tools only the full product has."""
+    return dataclasses.replace(FULL_SURFACE, tools=tools_without_watch(FULL_SURFACE.tools))
+
+
+@functools.cache
 def _surface_without_health() -> Surface:
     surface = Surface(
         health_data=False,
@@ -477,6 +509,13 @@ def _surface_without_health() -> Surface:
     return surface
 
 
-def surface(health_data: bool) -> Surface:
-    """The surface one deployment serves; built eagerly so a stale edit refuses boot."""
-    return FULL_SURFACE if health_data else _surface_without_health()
+def surface(health_data: bool, *, product: str) -> Surface:
+    """The surface one deployment serves; built eagerly so a stale edit refuses boot.
+
+    ``product`` is required rather than defaulted: a caller that forgot it would be
+    handed the full product's watch tool on a deployment that must never list it.
+    """
+    if not health_data:
+        validate_product(product)
+        return _surface_without_health()
+    return FULL_SURFACE if watch_pairing(product, health_data) else _full_surface_without_watch()

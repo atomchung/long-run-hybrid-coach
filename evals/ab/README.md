@@ -696,3 +696,29 @@ controls per arm. Every control holds in both arms: neither reads a direction fr
 attached session, and neither converts nineteen unmatched sessions into missed ones
 (*"不是因為練得不好"*).
 
+
+### The 2026-11-08 `connectWatch` routing run
+
+Not a coaching question, so not a packet: what a new tool has to show (AGENTS.md 15) is
+that a real client fails the athlete's request without it and handles it with it. Each
+turn was one headless Claude Code run (`claude -p`, model `claude-sonnet-5-5`, CLI
+2.1.317) from a directory outside the repository, connected over MCP to a local gateway of
+this branch with a fake Intervals and one seeded account, its file, shell and web tools
+disabled.
+The **before** arm is the same gateway with `connectWatch` removed from the client's tool
+list, which is `origin/main`'s full catalogue; the **after** arm serves it. Codes were real
+pairings the local gateway had issued to a watch secret.
+
+| arm | turn | tools called | outcome |
+| --- | --- | --- | --- |
+| after | 連接我的手錶 `<code>` | `connectWatch` with the code | paired; relayed what the field sends, the 24 h hold and how to stop, and that the watch will show the masked email |
+| after | 幫我把手錶連上，手錶上顯示 `<4 4>` | `connectWatch` with the code as typed, space included | paired; same relay |
+| after | 我剛在手錶上裝了 Coach 資料欄位，要怎麼跟你連起來？ | none | asked for the code on the field; invented none |
+| after | 我想讓手錶跑步時的資料直接傳給你，要怎麼設定？ | none | same, and said only the athlete can read the code |
+| before | 連接我的手錶 `<code>` | `getCoachState`, `startCoachSession` | could not use the code; sent the athlete to connect Garmin in Intervals.icu settings |
+| before | 我剛在手錶上裝了 Coach 資料欄位，要怎麼跟你連起來？ | `getCoachState`, `startCoachSession` | same misdirection; said it could not tell where the field sends data |
+
+Four of four pass with the tool and two of two fail without it, one sample per turn, one
+model, about $0.67 in all. That is the before-and-after the tool needed and nothing more:
+it says nothing about ChatGPT, Grok or Gemini, nor about a run with several turns before
+the code. The answers are retained outside the repository with the other runs.

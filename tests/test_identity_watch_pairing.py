@@ -17,6 +17,7 @@ from garmin_coach_loop.identity import (
     redeem_watch_pairing,
     start_watch_pairing,
     token_fingerprint,
+    watch_device,
     _domain_fingerprint,
 )
 
@@ -122,7 +123,13 @@ class WatchPairingTests(unittest.TestCase):
         self.assertEqual("issued", self.redeem(code).status)
         self.assertEqual("invalid", self.redeem(code).status)
         self.assertEqual(1, len(self.rows("watch_devices")))
-        self.assertFalse(self.claim(code))
+        # Said again by the account that holds it, the code is the same pairing; nobody
+        # else can take it, and the watch is not issued a second credential either way.
+        self.assertTrue(self.claim(code))
+        other = lookup_or_create_owner(self.db_path, "intervals", "i2")
+        self.assertFalse(self.claim(code, owner=other))
+        self.assertEqual("invalid", self.redeem(code).status)
+        self.assertEqual(1, len(self.rows("watch_devices")))
 
     def test_second_watch_replaces_the_first_credential(self):
         first_code = self.start()
@@ -217,6 +224,53 @@ class WatchPairingTests(unittest.TestCase):
             connection.execute("DELETE FROM owners WHERE owner_id = ?", (self.owner,))
         self.assertEqual([], self.rows("watch_devices"))
         self.assertEqual([], self.rows("watch_pairings"))
+
+    def test_the_sweep_reads_the_expiry_index_not_the_table(self):
+        self.start()
+        with sqlite3.connect(self.db_path) as connection:
+            plan = " ".join(
+                str(row[-1]) for row in connection.execute(
+                    "EXPLAIN QUERY PLAN DELETE FROM watch_pairings WHERE expires_at < ?", ("x",)
+                )
+            )
+        self.assertIn("watch_pairings_expiry", plan)
+
+    def test_the_same_account_repeating_a_code_is_the_same_pairing(self):
+        code = self.start()
+        self.assertTrue(self.claim(code))
+        # A retried call: still the same pairing, and the first label stands.
+        self.assertTrue(self.claim(code, label="x***@example.invalid", now=at(20)))
+        other = lookup_or_create_owner(self.db_path, "intervals", "i2")
+        self.assertFalse(self.claim(code, owner=other, now=at(30)))
+        self.assertEqual("t***@gmail.com", self.redeem(code).account_label)
+        # Past its ten minutes and never picked up, a code is nobody's any more.
+        late = self.start(OTHER_SECRET)
+        self.assertTrue(self.claim(late))
+        self.assertFalse(self.claim(late, now=at(601)))
+
+    def test_a_used_code_is_connected_only_while_its_watch_is_the_current_one(self):
+        first = self.start()
+        self.claim(first)
+        self.redeem(first, now=at(20))
+        self.assertTrue(self.claim(first, now=at(30)))
+        second = self.start(OTHER_SECRET, now=at(40))
+        self.claim(second, now=at(50))
+        self.redeem(second, OTHER_SECRET, now=at(60))
+        # The first watch was replaced: saying its code again must not report it connected.
+        self.assertFalse(self.claim(first, now=at(70)))
+        self.assertTrue(self.claim(second, now=at(70)))
+
+    def test_watch_device_says_whether_and_when_this_account_paired(self):
+        self.assertIsNone(watch_device(self.db_path, self.owner))
+        self.assertIsNone(watch_device(Path(self._tmp.name) / "missing.db", self.owner))
+        code = self.start()
+        self.claim(code)
+        self.redeem(code, now=at(40))
+        device = watch_device(self.db_path, self.owner)
+        self.assertEqual({"paired_at", "last_seen_at", "account_label"}, set(device))
+        self.assertEqual("t***@gmail.com", device["account_label"])
+        forget_watch_devices(self.db_path, self.owner)
+        self.assertIsNone(watch_device(self.db_path, self.owner))
 
 
 if __name__ == "__main__":

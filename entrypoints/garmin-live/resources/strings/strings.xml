@@ -1,1 +1,18 @@
-<resources><string id="AppName">Live Coach</string></resources>
+<resources>
+    <string id="AppName">Long Run Hybrid Coach</string>
+    <string id="Label">Coach</string>
+    <string id="Code">Code</string>
+    <string id="Connected">Connected</string>
+    <string id="Connecting">Connecting</string>
+    <string id="NotConnected">Not connected</string>
+    <string id="SetUp">Set up</string>
+    <string id="Ready">Ready</string>
+    <string id="Sending">Sending</string>
+    <string id="Sent">Sent</string>
+    <string id="Retry">Retry</string>
+    <string id="Paused">Paused</string>
+    <string id="PauseSent">Pause sent</string>
+    <string id="EndPending">End pending</string>
+    <string id="EndSent">End sent</string>
+    <string id="Done">Done</string>
+</resources>
