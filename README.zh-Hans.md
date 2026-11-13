@@ -23,7 +23,7 @@
 1. **一个 Intervals.icu 账号。** 免费，用 Google 登录大约 30 秒就能开好。
 2. **Claude 或 ChatGPT。**
    - **Claude**（claude.ai／Claude Desktop）：免费方案就可以，免费账号限一个自定义连接器。这条路径已经做过完整实机验证——production OAuth、教练对话、以及把课表送进 Intervals。
-   - **ChatGPT**：目前需要 Business、Enterprise 或 Edu 的网页版 workspace，在 Apps／developer mode 建立 custom app。个人方案的 custom MCP 只有 read/fetch，跑不完本产品「写计划＋交付课表」的流程；个人方案请先等这个教练在 ChatGPT 目录上架。最新限制以 [OpenAI 官方说明](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt) 为准。
+   - **ChatGPT**：目前需要 Business、Enterprise 或 Edu 的网页版 workspace，在 Apps／developer mode 建立 custom app。个人方案的 custom MCP 只有 read/fetch，跑不完本产品「写计划＋交付课表」的流程。ChatGPT 插件目录上另有这个教练的 [Plugin 版](#在-chatgpt-安装-plugin-版)。最新限制以 [OpenAI 官方说明](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt) 为准。
    - **其他 MCP client**：OpenClaw 与自建 client 见[下面一节](#其他-mcp-client)。
 3. **可选**：已经会把活动同步进 Intervals.icu 的手表或训练 app。没有手表也可以用——教练会把拿不到的字段当成「不知道」，不会当成 0。
 
@@ -54,6 +54,16 @@ https://mcp.paceandstaystrong.com/mcp
 Intervals 也有只读的设置权限；这里要写入，是因为上面那个补值动作真的会写。它之所以需要，是因为 Intervals 这边没有阈值配速时，它照样收下带配速的课表，但往手表送的时候会把配速目标拿掉——你会收到距离正确、却没有任何目标的一堂课。少勾任何一个权限，需要它的功能就会坏掉，而且不容易看出原因；重新连接补上即可。
 
 **不要把 Intervals 密码、API key 或 token 贴进对话。**
+
+### 在 ChatGPT 安装 Plugin 版
+
+ChatGPT 的插件目录上有这个教练的 Plugin 版，不用贴网址。先准备好一个 Intervals.icu 账号，而且手表的训练记录已经同步进去。
+
+1. 打开 [Long Run Hybrid Coach 的安装页](https://chatgpt.com/plugins/plugin_asdk_app_6ae202f14434819180f54642d659a519)，点页面上的安装按钮。还没登录 ChatGPT 的话，会先请你登录。
+2. 连接时登录**你自己的 Intervals.icu 账号**并同意。Plugin 版只要三项权限：`ACTIVITY:READ`、`CALENDAR:WRITE`、`SETTINGS:WRITE`。
+3. 在 ChatGPT 的对话里问它，例如「读我最近的训练，告诉我这周该怎么练。」
+
+Plugin 版从 Intervals.icu 只读你完成的训练（活动、配速、运动心率、训练负荷），不读那里的恢复数据。它的计划和完整版（上面的个人 MCP 连接，`https://mcp.paceandstaystrong.com/mcp`）各自独立，不互通。
 
 ### Intervals 账号是新的或空的？
 
