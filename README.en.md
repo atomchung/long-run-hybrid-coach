@@ -23,7 +23,7 @@ The website walks the same flow as four clicks: [Get started](https://paceandsta
 1. **An Intervals.icu account.** Free, and Google sign-in creates one in about 30 seconds.
 2. **Claude or ChatGPT.**
    - **Claude** (claude.ai / Claude Desktop): the free plan works, and a free account is limited to one custom connector. This path has completed a real production OAuth, coaching turn, and Intervals delivery.
-   - **ChatGPT:** currently needs a Business, Enterprise, or Edu web workspace, where you create a custom app through Apps / developer mode. Custom MCP on a personal plan is read/fetch only, which cannot complete this coach's plan-write and delivery flow — on a personal plan, wait for this coach to appear in the ChatGPT directory. Check the latest limits in [OpenAI's own documentation](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt).
+   - **ChatGPT:** currently needs a Business, Enterprise, or Edu web workspace, where you create a custom app through Apps / developer mode. Custom MCP on a personal plan is read/fetch only, which cannot complete this coach's plan-write and delivery flow. ChatGPT's plugin directory also carries a [Plugin version](#install-the-plugin-version-in-chatgpt) of this coach. Check the latest limits in [OpenAI's own documentation](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt).
    - **Other MCP clients:** OpenClaw and self-hosted clients are [further down](#other-mcp-clients).
 3. **Optional:** a watch or training app that already syncs activities into Intervals.icu. It works without one — anything the coach cannot read stays unknown rather than becoming zero.
 
@@ -54,6 +54,16 @@ Your browser opens the Intervals.icu consent page. Sign in to **your own Interva
 Intervals does offer a read-only settings scope; this asks for write because that one correction really does write. It is needed because without a threshold pace on the Intervals side, Intervals still accepts a paced workout and then strips the pace target on the way to your watch — you get the right distances with no targets. Skip any one of the four and the feature that needs it breaks in a way that is hard to trace back; reconnect and grant the missing permission.
 
 **Do not paste an Intervals password, API key, or token into chat.**
+
+### Install the Plugin version in ChatGPT
+
+ChatGPT's plugin directory carries a Plugin version of this coach, with no address to paste. Have an Intervals.icu account ready, with your watch already syncing its training there.
+
+1. Open [Long Run Hybrid Coach's install page](https://chatgpt.com/plugins/plugin_asdk_app_6ae202f14434819180f54642d659a519) and choose **Install plugin**. If you are not signed in to ChatGPT, it asks you to sign in first.
+2. When it connects, sign in to **your own Intervals.icu account** and approve. The Plugin version asks for three permissions only: `ACTIVITY:READ`, `CALENDAR:WRITE` and `SETTINGS:WRITE`.
+3. Ask it in a ChatGPT conversation, for example "Read my latest training and tell me what I should do this week."
+
+From Intervals.icu the Plugin version reads only your completed training (activities, pace, exercise heart rate, training load), not the recovery data held there. Its plan is separate from the full version's (the personal MCP connection above, `https://mcp.paceandstaystrong.com/mcp`); nothing is shared between the two.
 
 ### Is your Intervals.icu account new or empty?
 
