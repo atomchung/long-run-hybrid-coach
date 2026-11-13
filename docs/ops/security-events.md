@@ -227,7 +227,9 @@ a retention period it does not implement.
 
 **Check the actual window in the Railway dashboard for the plan this project is on**
 before relying on it — log retention is a plan property that can change under the service
-without anything here changing.
+without anything here changing. As of 2026-11-13, `railway logs --since` reaches back about
+seven days; `railway logs --lines N` without `--since` returns only the newest N lines,
+which at current traffic is a few hours, and is not the retention.
 
 ### The window was too short, once, and this is what was done about it
 
@@ -273,7 +275,11 @@ elsewhere.
 
 So the archive is the operator's responsibility, not the product's: **keep it only as
 long as the investigation that justified it, and delete it when that closes.** It is not
-backed up, not synced, and not a system of record. Nothing in the product reads it.
+backed up, not synced, and not a system of record. Nothing in the product reads it. The
+privacy policy says request logs last only as long as the hosting platform keeps them, so
+an archive that outlives its investigation contradicts it. Counting weekly use needs no
+archive: [`read-usage-stats.md`](read-usage-stats.md#weekly-active-accounts) keeps counts,
+not lines.
 
 The durable version of the same idea is a Railway **log drain**, configured in the
 project dashboard, which pushes every line to a sink as it is written rather than waiting
