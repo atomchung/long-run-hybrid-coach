@@ -22,6 +22,46 @@ What that leaves is this page, honestly narrower than it was:
   1.4.3 reads `active_days: 0` forever, and that is not a dormant athlete.
 - **For anything about live traffic, read the security log** (`security-events.md`). It is
   the same stream `mcp_authentication` events go to, and its retention is Railway's.
+- **How many accounts used the product in a given week is still answerable** -- from the
+  access log rather than a counter. See [Weekly active accounts](#weekly-active-accounts).
+
+## Weekly active accounts
+
+Since issue #425, every authenticated request logs `owner=<handle>` -- the first 16
+characters of the account's keyed `owner_reference` -- and a tool call adds `tool=<name>`.
+A log line is not a write, so this costs no client approval and moves no annotation. The
+weekly count is read from it, per deployment and per Monday-to-Sunday week:
+
+| Number | What it counts | Source |
+| --- | --- | --- |
+| **active** | external accounts with at least one `tool=` line that week | access log |
+| opened | external accounts that called `startCoachSession` | access log |
+| wrote | external accounts with a commit in their owner store that week | commit receipts' `created_at` |
+| attached | external accounts with any authenticated request, tool or not | access log |
+
+`active` is the weekly-active number. `wrote` needs no log, so it can be recomputed for
+any past week, and it is a floor: a conversation that changes nothing writes nothing.
+`attached` includes a client initializing or refreshing its tool list, which shows a
+connector is still installed, not that anybody used it.
+
+The counter is operator tooling, kept beside the operator's own account list rather than
+in this repository. Whatever runs it keeps these rules:
+
+- **Counts outlive the log; handles and lines do not.** `railway logs --since` reaches
+  back about seven days on this project's plan (as of 2026-11-13), while `--lines N`
+  without `--since` returns only the newest N lines. The counter pulls each finished day
+  inside that window, holds a week's handles only until the week ends, then keeps the
+  numbers alone. It stores no log line, which keeps it inside the privacy policy's
+  statement that request logs last only as long as the hosting platform keeps them.
+- **A missed week is a floor, never a zero.** Days that fell out of the window before
+  they were pulled leave that week reported as at least its `wrote` count.
+- **The operator's accounts are excluded by provider athlete id, resolved on the volume.**
+  An owner id changes when an account is reset; the athlete id does not.
+- **Handles are per deployment and per key.** Each is derived with that deployment's
+  `GARMIN_COACH_LOOP_TOKEN_HMAC_KEY`, so the full product and the Plugin entry are counted
+  apart, and the operator's handles are computed in the container rather than copied out
+  of a log. A rotated key makes every handle new; it shows up as accounts writing to their
+  store with no tool call of theirs in the log, and is reported rather than counted as zero.
 
 ## The report
 
