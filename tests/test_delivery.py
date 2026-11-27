@@ -1107,8 +1107,7 @@ class DeliveryFlowTests(unittest.TestCase):
             item for item in changed_session_plan["week"]["sessions"]
             if item["session_id"] == "run-quality-01"
         )
-        session["plan"]["name"] = "Changed without a version bump"
-        rerendered(session)
+        session["label"] = "tempo_run"  # changed without a version bump
         with self.assertRaisesRegex(DeliveryError, "session changed"):
             publish_delivery(
                 self.proposal,

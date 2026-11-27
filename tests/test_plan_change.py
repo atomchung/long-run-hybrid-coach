@@ -465,6 +465,57 @@ class DeliveryBookkeepingTests(PlanChangeTestCase):
         )
         self.assertEqual("passed", report["status"], report["errors"])
 
+    def test_whitespace_around_an_unstructured_days_purpose_keeps_its_delivery(self):
+        # Delivery writes the purpose without its outer whitespace, so this reword
+        # changes nothing on the calendar.
+        before = self.delivered("strength-upper-01", None, unstructured=True)
+        session = self.sessions(before)["strength-upper-01"]
+        request = coaching_request(sessions=[{
+            "operation": "keep",
+            "session_id": "strength-upper-01",
+            "purpose": f"  {session['purpose']} ",
+        }])
+
+        projection = self.project(request, before)
+
+        kept = self.sessions(projection["after_plan"])["strength-upper-01"]
+        self.assertNotEqual(session["purpose"], kept["purpose"])
+        self.assertEqual("intervals_accepted", kept["execution"]["delivery_state"])
+        self.assertEqual("9001", kept["execution"]["external_id"])
+        report = validate_bundle(
+            self.context, before, projection["after_plan"], projection["decision_event"]
+        )
+        self.assertEqual("passed", report["status"], report["errors"])
+
+    def test_restating_a_run_without_its_old_name_keeps_its_delivery(self):
+        # The stored plan.name reached the calendar before titles were composed and
+        # reaches nothing now; the tool cannot send it, so an identical restatement
+        # arrives without it and is still the workout already delivered.
+        before = self.delivered("run-long-01", None)
+        session = self.sessions(before)["run-long-01"]
+        self.assertIn("name", session["plan"])
+        restated = {key: value for key, value in session["plan"].items() if key != "name"}
+        request = coaching_request(sessions=[{
+            "operation": "replace",
+            "session_id": "run-long-01",
+            "purpose": session["purpose"],
+            "adaptation": session["adaptation"],
+            "cost": session["cost"],
+            "planned_minutes": session["planned_minutes"],
+            "plan": restated,
+        }])
+
+        projection = self.project(request, before)
+
+        kept = self.sessions(projection["after_plan"])["run-long-01"]
+        self.assertNotIn("name", kept["plan"])
+        self.assertEqual("intervals_accepted", kept["execution"]["delivery_state"])
+        self.assertEqual("9001", kept["execution"]["external_id"])
+        report = validate_bundle(
+            self.context, before, projection["after_plan"], projection["decision_event"]
+        )
+        self.assertEqual("passed", report["status"], report["errors"])
+
     def test_restating_a_delivered_strength_day_leaves_it_deliverable_again(self):
         """Withdrawing the observation is right -- the calendar entry no longer describes
         the day. Withdrawing publish support with it was not: the athlete was left with a

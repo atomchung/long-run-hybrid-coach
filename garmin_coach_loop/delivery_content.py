@@ -43,7 +43,16 @@ def delivery_session_content(session: dict[str, Any]) -> dict[str, Any]:
     plan = session.get("plan") if isinstance(session.get("plan"), dict) else {}
     purpose: dict[str, Any] = {}
     if session.get("sport") == "strength" and plan.get("kind") == "unstructured":
-        purpose["purpose"] = session.get("purpose")
+        stored = session.get("purpose")
+        # The value delivery writes, which is the stored one without its outer whitespace
+        # (`delivery._calendar_entry_from_session`): a difference the calendar never shows
+        # is not a reason to send the entry again.
+        purpose["purpose"] = stored.strip() if isinstance(stored, str) else stored
+    # A run's stored `plan.name` titled its calendar entry before titles were composed, and
+    # reaches nothing now, so a restatement that only drops it is the same workout.
+    projected_plan = session.get("plan")
+    if session.get("sport") == "running" and plan.get("kind") == "time_axis":
+        projected_plan = {key: value for key, value in plan.items() if key != "name"}
     return {
         field: session.get(field)
         for field in (
@@ -58,6 +67,7 @@ def delivery_session_content(session: dict[str, Any]) -> dict[str, Any]:
             "adaptation",
             "planned_minutes",
             "hard",
-            "plan",
         )
-    } | purpose | label | {"publish_supported": execution.get("publish_supported")}
+    } | {"plan": projected_plan} | purpose | label | {
+        "publish_supported": execution.get("publish_supported")
+    }

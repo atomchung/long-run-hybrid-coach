@@ -3776,9 +3776,10 @@ class FreeTextLayerCannotGrowBackTests(unittest.TestCase):
             for child in ast.iter_child_nodes(parent)
         }
 
+        reads = [*self._reads(), *self._iterated_reads()]
         stored = [
             node
-            for node in [*self._reads(), *self._iterated_reads()]
+            for node in reads
             if not isinstance(self.parents[node], (ast.Assign, ast.Tuple, ast.List, ast.Set))
         ]
         self.assertEqual(
@@ -3786,6 +3787,44 @@ class FreeTextLayerCannotGrowBackTests(unittest.TestCase):
             [f"line {node.lineno}" for node in stored],
             "delivery_content.py may store a free-text value into the projection and do "
             "nothing else with it",
+        )
+        # A name bound from a read is the same value under another name, so it is held to
+        # the same rule, with one shape added: `.strip()` with no arguments, because
+        # delivery writes the value without its outer whitespace and the projection has to
+        # compare what was sent. A type check and passing the value on unchanged are the
+        # only other uses.
+        aliases = {
+            target.id
+            for node in reads
+            if isinstance(self.parents[node], ast.Assign)
+            for target in self.parents[node].targets
+            if isinstance(target, ast.Name)
+        }
+        misused = []
+        for node in ast.walk(self.tree):
+            if not (
+                isinstance(node, ast.Name)
+                and node.id in aliases
+                and isinstance(node.ctx, ast.Load)
+            ):
+                continue
+            parent = self.parents[node]
+            stripped = (
+                isinstance(parent, ast.Attribute)
+                and parent.attr == "strip"
+                and isinstance(self.parents[parent], ast.Call)
+                and not self.parents[parent].args
+            )
+            type_checked = (
+                isinstance(parent, ast.Call)
+                and isinstance(parent.func, ast.Name)
+                and parent.func.id == "isinstance"
+            )
+            passed_on = isinstance(parent, (ast.Assign, ast.IfExp))
+            if not (stripped or type_checked or passed_on):
+                misused.append(f"line {node.lineno}")
+        self.assertEqual(
+            [], misused, "a free-text value under another name may only be stripped or stored"
         )
         self.assertNotIn("import re", source, "the projection parses nothing")
 
