@@ -63,12 +63,14 @@ PRIORITIES = {"anchor", "flexible", "optional"}
 # product changing its mind underneath a training block that was going fine.
 SUPERSEDE_KINDS = {"corrected", "new_evidence", "policy_changed"}
 # Fields whose movement changes what the athlete actually does, or what the athlete is
-# told. `purpose` sits in the second half, not the first: it never changes a number the
-# watch executes, but delivery_content.delivery_session_content already carries it,
-# because a strength session with no `label` reaches Intervals as a calendar entry whose
-# name is built from purpose. Rewording it is a deliverable change to what the athlete
-# sees, so it belongs here beside the fields that move training itself -- unlike
-# `fallback` wording, which names no delivered artifact and stays outside this set.
+# told. This set decides only whether a decision claiming a change moved anything
+# (`_check_change_is_material`); whether a delivered workout is stale is
+# delivery_content.delivery_session_content's rule, not this one. `purpose` sits in the
+# second half, not the first: it never changes a number the watch executes, but a strength
+# session with no `label` reaches Intervals as a calendar entry whose name is built from
+# purpose. Rewording it is a change to what the athlete is told, so it belongs here beside
+# the fields that move training itself -- unlike `fallback` wording, which names no
+# delivered artifact and stays outside this set.
 # `coach_note` is here on exactly that argument (issue #56): it is delivered content, it
 # reaches the athlete's calendar, and attaching one to a session that is otherwise kept is
 # the case the field exists for -- so a revision that only adds a note is a real change to

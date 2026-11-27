@@ -376,44 +376,49 @@ class DeliveryBookkeepingTests(PlanChangeTestCase):
         )
         self.assertEqual("passed", report["status"], report["errors"])
 
-    def test_retitling_a_delivered_session_withdraws_its_delivery_observation(self):
-        # purpose is delivered content: a strength session written before labels sends
-        # it as the calendar entry's own name. The projection holds it for every session,
-        # so a labelled run pays one redelivery for a reword -- the cheap side of that
-        # trade, and the side this fixture sits on. The run already carries the label the
-        # replace restates, so purpose is the only field that moves.
-        before = self.delivered_plan()
-        session = self.sessions(before)["run-long-01"]
-        session["label"] = "long_run"
+    def delivered(self, session_id: str, label: str | None) -> dict[str, Any]:
+        plan = copy.deepcopy(self.before)
+        session = self.sessions(plan)[session_id]
+        if label is not None:
+            session["label"] = label
+        session["execution"] = {
+            "publish_supported": True,
+            "external_id": "9001",
+            "delivery_state": "intervals_accepted",
+        }
+        return plan
+
+    def reword(self, before: dict[str, Any], session_id: str) -> tuple[dict, dict]:
         request = coaching_request(
-            sessions=[
-                {
-                    "operation": "replace",
-                    "label": "long_run",
-                    "session_id": "run-long-01",
-                    "purpose": "Build aerobic endurance on legs that are still tired",
-                    "adaptation": session["adaptation"],
-                    "cost": session["cost"],
-                    "planned_minutes": session["planned_minutes"],
-                    "plan": session["plan"],
-                }
-            ]
+            sessions=[{
+                "operation": "keep",
+                "session_id": session_id,
+                "purpose": "Same session, said another way",
+            }]
         )
-
         projection = self.project(request, before)
-
-        retitled = self.sessions(projection["after_plan"])["run-long-01"]
-        # Nothing the watch executes moved, and neither did the label.
-        self.assertEqual("long_run", retitled["label"])
-        self.assertEqual(session["plan"], retitled["plan"])
-        self.assertEqual(session["prescription"], retitled["prescription"])
-        self.assertTrue(retitled["execution"]["publish_supported"])
-        self.assertEqual("not_published", retitled["execution"]["delivery_state"])
-        self.assertIsNone(retitled["execution"]["external_id"])
         report = validate_bundle(
             self.context, before, projection["after_plan"], projection["decision_event"]
         )
         self.assertEqual("passed", report["status"], report["errors"])
+        return projection, self.sessions(projection["after_plan"])[session_id]
+
+    def test_rewording_purpose_keeps_a_delivery_whose_calendar_entry_it_never_reached(self):
+        # A labelled session is titled from its label, and a run written before labels
+        # from its plan.name; neither description carries purpose. So the event already
+        # on the calendar is still exactly what the plan says, and nothing is resent.
+        for session_id, label in (
+            ("run-long-01", "long_run"),
+            ("strength-upper-01", "upper_body"),
+            ("run-long-01", None),
+        ):
+            with self.subTest(session_id=session_id, label=label):
+                _, reworded = self.reword(self.delivered(session_id, label), session_id)
+                self.assertEqual("Same session, said another way", reworded["purpose"])
+                self.assertEqual("intervals_accepted", reworded["execution"]["delivery_state"])
+                self.assertEqual("9001", reworded["execution"]["external_id"])
+                self.assertNotIn("superseded_external_id", reworded["execution"])
+
 
     def test_a_delivered_session_that_only_gets_kept_keeps_its_observation(self):
         before = self.delivered_plan()
@@ -426,25 +431,16 @@ class DeliveryBookkeepingTests(PlanChangeTestCase):
         self.assertEqual("intervals_accepted", kept["execution"]["delivery_state"])
         self.assertEqual("9001", kept["execution"]["external_id"])
 
-    def test_a_purpose_only_keep_on_a_delivered_session_withdraws_its_observation(self):
-        """The gap ``test_retitling_a_delivered_session_withdraws_its_delivery_observation``
-        does not reach: that one uses ``replace``, which also flips match_status to
-        replaced -- itself enough to satisfy materiality. Here nothing else moves;
-        match_status stays planned, so purpose alone has to carry both the materiality
-        and the delivery-content reset."""
-        before = self.delivered_plan()
-        session = self.sessions(before)["run-long-01"]
-        request = coaching_request(
-            sessions=[{
-                "operation": "keep",
-                "session_id": "run-long-01",
-                "purpose": "Build aerobic endurance on legs that are still tired",
-            }]
-        )
+    def test_rewording_purpose_redelivers_a_strength_day_it_still_titles(self):
+        """A strength session written before labels reaches the calendar under a name
+        that starts with its purpose, so a reword leaves the event on the calendar saying
+        something the plan no longer does. Nothing else moves -- match_status stays
+        planned -- so purpose alone carries both the materiality and the reset."""
+        before = self.delivered("strength-upper-01", None)
+        session = self.sessions(before)["strength-upper-01"]
 
-        projection = self.project(request, before)
+        projection, reworded = self.reword(before, "strength-upper-01")
 
-        reworded = self.sessions(projection["after_plan"])["run-long-01"]
         self.assertEqual("planned", reworded["match_status"])
         self.assertEqual(session["plan"], reworded["plan"])
         self.assertNotEqual(session["purpose"], reworded["purpose"])

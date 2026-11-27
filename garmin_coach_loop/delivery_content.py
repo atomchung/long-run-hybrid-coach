@@ -36,30 +36,29 @@ def delivery_session_content(session: dict[str, Any]) -> dict[str, Any]:
     # existed hashes exactly as it did, so no receipt or open delivery written then is
     # read as stale for a field it could not have carried.
     label = {"label": session["label"]} if "label" in session else {}
+    # Delivered content `plan` does not carry, but only where it is still delivered: a
+    # strength session with no `label` reaches Intervals as a calendar entry whose name
+    # starts with purpose, so rewording it leaves the calendar holding a title the plan no
+    # longer says. Every other session's title comes from its label or its plan.name and
+    # its description from the plan, so purpose reaches nothing there, and projecting it
+    # would make a reword re-deliver an unchanged event the athlete then has to confirm.
+    purpose: dict[str, Any] = {}
+    if session.get("sport") == "strength" and "label" not in session:
+        purpose["purpose"] = session.get("purpose")
     return {
         field: session.get(field)
         for field in (
             "session_id",
             "sport",
             "scheduled_date",
-            # The delivered content `plan` does not carry: a strength session with no
-            # `label` reaches Intervals as a titled calendar entry whose name is *built
-            # from* purpose (with the plan's primary movement and load, when the plan
-            # renders one), so rewording purpose alone leaves the calendar holding a
-            # title the plan no longer says. Held for every session rather than for
-            # those alone -- a reword that reaches no title pays one redelivery it did
-            # not need, which is the cheaper of the two errors; the other reports a
-            # verified delivery under a title that was never sent.
-            "purpose",
             # The other authored field that reaches Intervals (issue #56). It is appended
             # to the delivered description for both sports, so changing or clearing it
-            # changes what the calendar holds exactly as rewording purpose does -- and a
-            # delivery reported verified under a note that was since edited would be this
-            # projection's one job left undone.
+            # changes what the calendar holds -- and a delivery reported verified under a
+            # note that was since edited would be this projection's one job left undone.
             "coach_note",
             "adaptation",
             "planned_minutes",
             "hard",
             "plan",
         )
-    } | label | {"publish_supported": execution.get("publish_supported")}
+    } | purpose | label | {"publish_supported": execution.get("publish_supported")}
