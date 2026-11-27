@@ -47,9 +47,10 @@ DEFAULT_LANGUAGE = "zh-Hant"
 LANGUAGES = ("zh-Hant", "en")
 
 # What kind of session this is, as one fixed key per sport. A delivered calendar title
-# starts with this key's word from the table below, so the same kind of session carries
-# the same title every week and in the athlete's own language. Only the two sports that
-# deliver carry one; the order is the order an error lists them in.
+# starts with this key's word from the table below -- or with the sport's own word when a
+# session carries none -- so the same kind of session carries the same title every week
+# and in the athlete's own language. Only the two sports that deliver carry one; the order
+# is the order an error lists them in.
 SESSION_LABELS: dict[str, tuple[str, ...]] = {
     "running": (
         "easy_run",
@@ -116,6 +117,10 @@ _WORDS: dict[str, dict[str, str]] = {
         "title_distance_km": "{value}km",
         "title_distance_m": "{value}m",
         "title_planned_minutes": "{minutes}分",
+        # The first word of a title whose session carries no label, one per SESSION_LABELS
+        # sport.
+        "running": "跑步",
+        "strength": "重訓",
         # One word per SESSION_LABELS key.
         "easy_run": "輕鬆跑",
         "long_run": "長跑",
@@ -161,6 +166,8 @@ _WORDS: dict[str, dict[str, str]] = {
         "title_distance_km": "{value}km",
         "title_distance_m": "{value}m",
         "title_planned_minutes": "{minutes} min",
+        "running": "Run",
+        "strength": "Strength",
         "easy_run": "Easy run",
         "long_run": "Long run",
         "recovery_run": "Recovery run",
@@ -383,44 +390,36 @@ def language_of(plan: Any, prescription: Any) -> str:
 def session_title(session: Any, language: str = DEFAULT_LANGUAGE) -> str | None:
     """The name a delivered calendar entry carries, composed from the session.
 
-    A session carrying ``label`` starts with that key's word in the athlete's language,
-    then numbers the plan already holds, one space between each: for a run, the first
-    repeat's count and rep duration and the session's ``planned_minutes``; for strength,
-    the first movement and its measured load (``strength_title_suffix``). The model writes
-    none of the title, so the same kind of session reads the same way every week.
+    The first word is the ``label``'s word in the athlete's language, or the sport's own
+    word when the session carries no label. Then come numbers the plan already holds, one
+    space between each: for a run, the first repeat's count and rep duration and the
+    session's ``planned_minutes``; for strength, the first movement and its measured load
+    (``strength_title_suffix``). The model writes none of the title, so the same kind of
+    session reads the same way every week, and nothing it once wrote -- a purpose, a run's
+    ``plan.name`` -- can go stale on the calendar.
 
-    A session with no ``label`` was written before the field existed, and keeps the first
-    word it always had: ``plan.name`` for a run, which stays the whole title as it always
-    was, and ``purpose`` for strength, which takes the same suffix a labelled day does.
-
-    ``None`` when there is nothing to title: a sport that does not deliver, or a session
-    missing the field its title starts with.
+    ``None`` for a sport that does not deliver.
     """
     if not isinstance(session, dict):
         return None
+    sport = session.get("sport")
+    labels = SESSION_LABELS.get(sport) if isinstance(sport, str) else None
+    if labels is None:
+        return None
     words = _WORDS[normalize_language(language)]
-    sport, label, plan = session.get("sport"), session.get("label"), session.get("plan")
-    if sport == "running":
-        if label in SESSION_LABELS["running"]:
-            return " ".join(
-                part
-                for part in (
-                    words[label],
-                    _repeat_title_text(plan, words),
-                    _planned_minutes_text(session.get("planned_minutes"), words),
-                )
-                if part
-            )
-        name = plan.get("name") if isinstance(plan, dict) else None
-        return name if isinstance(name, str) and name.strip() else None
+    label, plan = session.get("label"), session.get("plan")
+    first_word = words[label] if label in labels else words[sport]
     if sport == "strength":
-        if label in SESSION_LABELS["strength"]:
-            return strength_title(words[label], plan, language)
-        purpose = session.get("purpose")
-        if not isinstance(purpose, str) or not purpose.strip():
-            return None
-        return strength_title(purpose.strip(), plan, language)
-    return None
+        return strength_title(first_word, plan, language)
+    return " ".join(
+        part
+        for part in (
+            first_word,
+            _repeat_title_text(plan, words),
+            _planned_minutes_text(session.get("planned_minutes"), words),
+        )
+        if part
+    )
 
 
 def _title_duration_text(duration: Any, words: dict[str, str]) -> str:
@@ -468,8 +467,7 @@ def _planned_minutes_text(minutes: Any, words: dict[str, str]) -> str:
 def strength_title(first_word: str, plan: Any, language: str = DEFAULT_LANGUAGE) -> str:
     """A strength calendar entry's whole name: its first word, a space, then the suffix.
 
-    ``first_word`` is the label's word, or the purpose of a day written before labels; a
-    purpose is the coach's own sentence and is never translated.
+    ``first_word`` is the label's word, or the sport's own word for a day with no label.
     """
     suffix = strength_title_suffix(plan, language)
     return f"{first_word} {suffix}" if suffix else first_word

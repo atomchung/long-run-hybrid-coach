@@ -5348,10 +5348,10 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual(45, entry["after"]["planned_minutes"])
         self.assertEqual("easy", entry["after"]["cost"])
         self.assertEqual("輕鬆跑 45分 心率上限 150 bpm", entry["after"]["prescription"])
-        # The title is composed from the label; the session it replaces was written
-        # before labels and shows the plan.name it was titled with.
+        # The title is composed from the label; the session it replaces carries none, so
+        # it is titled with the sport's word, never the plan.name it still stores.
         self.assertEqual("輕鬆跑 45分", entry["after"]["workout_name"])
-        self.assertEqual("5x1000m threshold", entry["before"]["workout_name"])
+        self.assertEqual("跑步 5x1km 60分", entry["before"]["workout_name"])
         self.assertIn("planned_minutes", entry["changed_fields"])
         self.assertEqual({"before": 327, "after": 312}, preview["weekly_planned_minutes"])
         self.assertEqual({"before": 1, "after": 0}, preview["hard_sessions"])

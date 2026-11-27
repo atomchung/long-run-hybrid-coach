@@ -123,8 +123,8 @@ _SESSION_REQUIRED = (
 # session, so a three-session first week paid three separate round trips for one field. A
 # first plan's sessions travel to the athlete's calendar exactly as a changed one's do, so
 # there was never a reason they could not carry the sentence that goes with them.
-# `label` is listed here and required by `plan_change._label` for the two sports that
-# deliver, exactly as on a changed session's add.
+# `label` is optional here exactly as on a changed session's add, and `plan_change._label`
+# checks a sent one against the session's sport.
 _SESSION_OPTIONAL = ("time_window", "coach_note", "label")
 
 _AVAILABILITY_FIELDS = ("days", "equipment")
@@ -591,7 +591,7 @@ def _session(raw: Any, field: str, taken: set[str], language: str) -> dict[str, 
     # held to the same rule as every later one -- prose is an output.
     session["prescription"] = render_prescription(session["plan"], language)
     # A session publishes exactly when delivery could send it: the workout a run's
-    # time_axis plan describes, or the strength calendar entry its label titles.
+    # time_axis plan describes, or a strength calendar entry.
     # The flag is a fact about the session, not something a request may assert.
     session["execution"]["publish_supported"] = _publish_supported(session)
     return session

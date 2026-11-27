@@ -376,11 +376,16 @@ class DeliveryBookkeepingTests(PlanChangeTestCase):
         )
         self.assertEqual("passed", report["status"], report["errors"])
 
-    def delivered(self, session_id: str, label: str | None) -> dict[str, Any]:
+    def delivered(
+        self, session_id: str, label: str | None, *, unstructured: bool = False
+    ) -> dict[str, Any]:
         plan = copy.deepcopy(self.before)
         session = self.sessions(plan)[session_id]
         if label is not None:
             session["label"] = label
+        if unstructured:
+            session["plan"] = {"kind": "unstructured"}
+            session["prescription"] = render_prescription(session["plan"])
         session["execution"] = {
             "publish_supported": True,
             "external_id": "9001",
@@ -404,13 +409,14 @@ class DeliveryBookkeepingTests(PlanChangeTestCase):
         return projection, self.sessions(projection["after_plan"])[session_id]
 
     def test_rewording_purpose_keeps_a_delivery_whose_calendar_entry_it_never_reached(self):
-        # A labelled session is titled from its label, and a run written before labels
-        # from its plan.name; neither description carries purpose. So the event already
-        # on the calendar is still exactly what the plan says, and nothing is resent.
+        # Every title comes from a label or the sport, and only an unstructured strength
+        # day's description carries purpose. So for these the event already on the
+        # calendar is still exactly what the plan says, and nothing is resent.
         for session_id, label in (
             ("run-long-01", "long_run"),
-            ("strength-upper-01", "upper_body"),
             ("run-long-01", None),
+            ("strength-upper-01", "upper_body"),
+            ("strength-upper-01", None),
         ):
             with self.subTest(session_id=session_id, label=label):
                 _, reworded = self.reword(self.delivered(session_id, label), session_id)
@@ -418,7 +424,6 @@ class DeliveryBookkeepingTests(PlanChangeTestCase):
                 self.assertEqual("intervals_accepted", reworded["execution"]["delivery_state"])
                 self.assertEqual("9001", reworded["execution"]["external_id"])
                 self.assertNotIn("superseded_external_id", reworded["execution"])
-
 
     def test_a_delivered_session_that_only_gets_kept_keeps_its_observation(self):
         before = self.delivered_plan()
@@ -431,12 +436,17 @@ class DeliveryBookkeepingTests(PlanChangeTestCase):
         self.assertEqual("intervals_accepted", kept["execution"]["delivery_state"])
         self.assertEqual("9001", kept["execution"]["external_id"])
 
-    def test_rewording_purpose_redelivers_a_strength_day_it_still_titles(self):
-        """A strength session written before labels reaches the calendar under a name
-        that starts with its purpose, so a reword leaves the event on the calendar saying
-        something the plan no longer does. Nothing else moves -- match_status stays
+    def test_rewording_purpose_redelivers_an_unstructured_strength_day(self):
+        """A strength day with no movement list reaches the calendar with its purpose as
+        the description's first line, so a reword leaves the event saying something the
+        plan no longer does -- labelled or not. Nothing else moves -- match_status stays
         planned -- so purpose alone carries both the materiality and the reset."""
-        before = self.delivered("strength-upper-01", None)
+        for label in ("back", None):
+            with self.subTest(label=label):
+                self._assert_unstructured_reword_redelivers(label)
+
+    def _assert_unstructured_reword_redelivers(self, label: str | None) -> None:
+        before = self.delivered("strength-upper-01", label, unstructured=True)
         session = self.sessions(before)["strength-upper-01"]
 
         projection, reworded = self.reword(before, "strength-upper-01")
@@ -2002,7 +2012,7 @@ STRENGTH_KEYS = "chest, back, legs, shoulders_arms, core, upper_body, lower_body
 
 
 class SessionLabelTests(PlanChangeTestCase):
-    """Issue #540: `label` is required where `adaptation` is, for the two sports that deliver."""
+    """Issue #540: `label` is optional everywhere; a sent one must be a key of its sport."""
 
     def add(self, sport: str, plan: dict[str, Any], **fields: Any) -> dict[str, Any]:
         return {
@@ -2052,24 +2062,34 @@ class SessionLabelTests(PlanChangeTestCase):
                 self.assertEqual(label, added["label"])
                 self.assertEqual("passed", validate_plan_state(after)["status"])
 
-    def test_a_missing_label_names_the_field_and_the_keys_of_that_sport(self):
-        self.assertRefused(
-            self.add("running", EASY_RUN_WORKOUT),
-            "sessions[0].label is required for a running session", RUNNING_KEYS,
-        )
-        self.assertRefused(
-            self.add("strength", PULL_UP_MOVEMENTS),
-            "sessions[0].label is required for a strength session", STRENGTH_KEYS,
-        )
-        self.assertRefused(
-            self.replace_long_run(),
-            "sessions[0].label is required for a running session", RUNNING_KEYS,
-        )
+    def workout_name(self, operation: dict[str, Any], before=None) -> tuple[dict, str | None]:
+        projection = self.project(coaching_request(sessions=[operation]), before)
+        entry = projection["preview"]["sessions"][0]
+        session = self.sessions(projection["after_plan"])[entry["session_id"]]
+        return session, entry["after"]["workout_name"]
 
-    def test_a_missing_label_is_collected_with_the_other_problems_of_an_add(self):
-        operation = self.add("running", EASY_RUN_WORKOUT)
+    def test_no_operation_refuses_a_session_for_lacking_a_label(self):
+        no_name = {key: value for key, value in EASY_RUN_WORKOUT.items() if key != "name"}
+        for operation, title in (
+            (self.add("running", no_name), "跑步 45分"),
+            (self.add("strength", PULL_UP_MOVEMENTS), "重訓 引體向上3x8 輔助15kg"),
+            (self.replace_long_run(plan=no_name), "跑步 45分"),
+            # A run written before labels, restated without the name that used to title
+            # it, is titled with the sport's word rather than a name that went stale.
+            ({"operation": "reduce", "session_id": "run-long-01", "planned_minutes": 45,
+              "plan": no_name}, "跑步 45分"),
+        ):
+            with self.subTest(operation=operation["operation"], sport=operation.get("sport")):
+                session, name = self.workout_name(operation)
+                self.assertNotIn("label", session)
+                self.assertEqual(title, name)
+
+    def test_a_wrong_label_is_collected_with_the_other_problems_of_an_add(self):
+        operation = self.add("running", EASY_RUN_WORKOUT, label="chest")
         del operation["fallback"]
-        self.assertRefused(operation, "2 problems", "missing fallback", "label is required")
+        self.assertRefused(
+            operation, "2 problems", "missing fallback", "label must be one of"
+        )
 
     def test_a_key_of_the_other_sport_or_no_key_at_all_is_refused(self):
         for sport, plan, label, keys in (
@@ -2097,7 +2117,7 @@ class SessionLabelTests(PlanChangeTestCase):
         )["mobility-2026-08-12"]
         self.assertNotIn("label", added)
 
-    def test_a_replace_into_another_sport_takes_that_sports_label_or_none(self):
+    def test_a_replace_restates_the_label_or_drops_it(self):
         before = copy.deepcopy(self.before)
         self.sessions(before)["run-long-01"]["label"] = "long_run"
         rest = {
@@ -2108,6 +2128,12 @@ class SessionLabelTests(PlanChangeTestCase):
         after = self.project(coaching_request(sessions=[rest]), before)["after_plan"]
         self.assertNotIn("label", self.sessions(after)["run-long-01"])
 
+        # A replace re-decides what the session is, so one that sends no label is titled
+        # with the sport's word rather than the kind of run it used to be.
+        session, name = self.workout_name(self.replace_long_run(), before)
+        self.assertNotIn("label", session)
+        self.assertEqual("跑步 45分", name)
+
         strength = {
             **rest, "sport": "strength", "purpose": "改成上肢", "adaptation": "strength",
             "planned_minutes": 40, "plan": PULL_UP_MOVEMENTS, "label": "long_run",
@@ -2116,38 +2142,21 @@ class SessionLabelTests(PlanChangeTestCase):
             strength, f"must be one of {STRENGTH_KEYS} for a strength session", before=before
         )
 
-    def test_reducing_a_run_written_before_labels_needs_a_label_only_when_its_name_goes(self):
+    def test_a_reduce_keeps_the_label_unless_it_sends_one(self):
         no_name = {key: value for key, value in EASY_RUN_WORKOUT.items() if key != "name"}
         reduce = {
             "operation": "reduce", "session_id": "run-long-01", "planned_minutes": 45,
             "plan": no_name,
         }
-        # The harmful case: nothing would be left to title the run it delivers as.
-        self.assertRefused(
-            reduce,
-            "sessions[0].label is required: run-long-01 was written before labels",
-            RUNNING_KEYS,
-        )
-        # The controls: a label, or a restated name, titles it.
-        labelled = self.sessions(
-            self.project(coaching_request(sessions=[{**reduce, "label": "long_run"}]))[
-                "after_plan"
-            ]
-        )["run-long-01"]
-        self.assertEqual("long_run", labelled["label"])
-        named = self.sessions(
-            self.project(coaching_request(sessions=[{**reduce, "plan": EASY_RUN_WORKOUT}]))[
-                "after_plan"
-            ]
-        )["run-long-01"]
-        self.assertNotIn("label", named)
-        # And a run that already carries a label reduces with no label in the request.
         before = copy.deepcopy(self.before)
         self.sessions(before)["run-long-01"]["label"] = "long_run"
-        reduced = self.sessions(
-            self.project(coaching_request(sessions=[reduce]), before)["after_plan"]
-        )["run-long-01"]
-        self.assertEqual("long_run", reduced["label"])
+        session, name = self.workout_name(reduce, before)
+        self.assertEqual("long_run", session["label"])
+        self.assertEqual("長跑 45分", name)
+        session, name = self.workout_name({**reduce, "label": "easy_run"}, before)
+        self.assertEqual("easy_run", session["label"])
+        self.assertEqual("輕鬆跑 45分", name)
+        self.assertRefused({**reduce, "label": "core"}, f"must be one of {RUNNING_KEYS}")
 
     def test_changing_the_label_alone_redelivers_the_session(self):
         before = copy.deepcopy(self.before)
@@ -2188,7 +2197,8 @@ class SessionLabelTests(PlanChangeTestCase):
             item for item in projection["preview"]["sessions"]
             if item["session_id"] == "run-long-01"
         )
-        self.assertEqual("12km easy run", entry["before"]["workout_name"])
+        # Never the "12km easy run" the stored plan still names it.
+        self.assertEqual("跑步 86分", entry["before"]["workout_name"])
         self.assertEqual("長跑 45分", entry["after"]["workout_name"])
 
 

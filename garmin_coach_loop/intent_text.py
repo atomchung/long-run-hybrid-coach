@@ -1,8 +1,8 @@
 """An authored line may say what a session is for; it may not prescribe (issues #99, #56).
 
 `purpose` and `coach_note` are the two fields the Coach still writes in its own words.
-`purpose` carries intent ("hold aerobic base this week"), and still titles the calendar
-entry of a strength session written before `label` existed; `coach_note` is the sentence
+`purpose` carries intent ("hold aerobic base this week"), and opens the calendar
+description of a strength session with no movement list; `coach_note` is the sentence
 the coach wants beside the session on the day -- why this week's long run is deliberately
 short, when to stop a set. Both reach the athlete verbatim and nothing derives anything
 from either, which is why both are scanned here by one pattern rather than by two rules
@@ -29,9 +29,9 @@ archived issue #93 removed the surface for `prescription` by generating it; `pur
 authored, so the same incident is reachable again through the same field.
 
 **Why a warning is not enough.** The athlete reads `purpose` first, and on a strength
-session with no `label` the watch shows it as the calendar title. A warning is addressed
-to the Coach, which is the party that wrote the number; the athlete never sees it and the
-watch cannot.
+session with no movement list it reaches the calendar as the first line of the entry's
+description. A warning is addressed to the Coach, which is the party that wrote the
+number; the athlete never sees it and the watch cannot.
 
 **Why model judgment is not enough.** SKILL.md has said "the numbers live in `plan`"
 and "check every pace against the anchor it claims" for two issues now. archived issue #93's
@@ -40,9 +40,9 @@ mechanism would not have. This is the mechanism for the one field prose still is
 
 **Why not a narrower capability boundary.** Removing the field, or picking its wording
 from a fixed vocabulary, is archived issue #99's option 2/3. It costs the Coach the only place it
-speaks in its own words, and it costs the athlete the strength calendar title they
-actually read -- "上拉為主的上肢課" is not expressible in a bounded vocabulary, and every
-stored plan would have to be regenerated to adopt one.
+speaks in its own words, and it costs the athlete the line naming an unstructured
+strength day's movements -- "上拉為主的上肢課" is not expressible in a bounded vocabulary,
+and every stored plan would have to be regenerated to adopt one.
 
 **What stays possible.** Everything an intent line is for. A digit alone is legal:
 "維持 Zone 2 有氧基礎", "本週第 3 次長跑", "第 2 組加重" all pass, and so does every

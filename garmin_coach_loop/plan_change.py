@@ -118,16 +118,14 @@ _MEASUREMENT_FIELDS = ("reference_session_id", "measurement_week_start", "compar
 # way null clears `measures` on a replace, because a note that no longer applies has to be
 # removable without rewriting the session it sits on.
 _COACH_NOTE = ("coach_note",)
-# `label` is listed as optional on the two operations that decide what a session is, and
-# `_label` then requires it for the two sports that deliver: whether it is required
-# depends on the session's sport, which a replace may leave unstated.
+# `label` is optional wherever a session's content is stated -- add, replace and reduce --
+# and `_label` checks a sent one against the session's sport. A session without one is
+# titled with its sport's own word.
 _OPERATION_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "keep": (("session_id",), ("purpose", *_COACH_NOTE)),
     "move": (("session_id", "scheduled_date"), ("time_window", *_COACH_NOTE)),
     "reduce": (
         ("session_id", "planned_minutes"),
-        # `label` here only so a run written before labels can be given one when its
-        # restated plan drops the name that titled it (`_reduce`).
         ("purpose", "plan", "label", *_COACH_NOTE),
     ),
     "replace": (
@@ -715,24 +713,20 @@ def _fallback(value: Any, field: str) -> dict[str, str]:
 
 
 def _label(op: dict[str, Any], sport: str, field: str) -> str | None:
-    """The session's label: required for a running or strength session, refused elsewhere.
+    """The label a request sends, checked against the session's sport; None when absent.
 
-    Required where `adaptation` is -- on every add and replace -- because a session of
-    either sport is delivered under a title composed from it. A session of any other sport
-    delivers nothing, so it carries none; null there is the same as leaving it out.
+    Optional: a session without one is titled with its sport's own word. A sent one has to
+    be a key of that sport, and a sport that delivers nothing carries none. Null is the
+    same as leaving it out.
     """
     labels = SESSION_LABELS.get(sport)
     value = op.get("label")
-    if labels is None:
-        if value is not None:
-            raise ChangeRequestError(
-                f"{field}.label is only for a running or strength session; a {sport} "
-                "session carries none"
-            )
-        return None
     if value is None:
+        return None
+    if labels is None:
         raise ChangeRequestError(
-            f"{field}.label is required for a {sport} session: one of {', '.join(labels)}"
+            f"{field}.label is only for a running or strength session; a {sport} "
+            "session carries none"
         )
     if value not in labels:
         raise ChangeRequestError(
@@ -857,36 +851,11 @@ def _reduce(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
     # which is the same sentence because the same plan renders it.
     if "plan" in op:
         session["plan"] = _object(op["plan"], f"{field}.plan")
-    if "label" in op:
-        label = _label(op, str(session.get("sport")), field)
-        if label is not None:
-            session["label"] = label
-    # Blocking, per AGENTS.md 6:
-    #   invariant/harm -- a run is delivered under a title composed from its label, or,
-    #     written before labels, under its plan.name. A reduce restates a run's whole plan,
-    #     and the plan the tool now describes carries no name, so a reduce of such a run
-    #     would leave nothing to title it: the athlete confirms the change, and the
-    #     delivery that follows is refused.
-    #   why not a warning -- the session that cannot be delivered is the confirmed plan.
-    #   valid workflows kept -- every reduce of a labelled run or of strength, and a reduce
-    #     of an older run that sends a label, or restates a plan.name.
-    #   false-positive cost -- one retry naming the field, only for runs written before
-    #     labels, which leave the week as it rolls.
-    plan = session.get("plan") if isinstance(session.get("plan"), dict) else {}
-    name = plan.get("name")
-    # A plan that is not a time axis is the validator's to refuse for a run, with the
-    # reason that actually applies.
-    if (
-        session.get("sport") == "running"
-        and plan.get("kind") == "time_axis"
-        and "label" not in session
-        and not (isinstance(name, str) and name.strip())
-    ):
-        raise ChangeRequestError(
-            f"{field}.label is required: {session['session_id']} was written before labels "
-            "and its restated plan has no name to title it; one of "
-            f"{', '.join(SESSION_LABELS['running'])}"
-        )
+    # Kept unless restated: lowering how much a session holds does not change what kind of
+    # session it is.
+    label = _label(op, str(session.get("sport")), field)
+    if label is not None:
+        session["label"] = label
     _coach_note(session, op, field)
 
 
@@ -896,8 +865,8 @@ def _replace(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
     )
     session["sport"] = sport
     session["purpose"] = _text(op.get("purpose"), f"{field}.purpose")
-    # Re-decided with the rest of what the session is, so a replace that changes the sport
-    # never carries the old sport's label across.
+    # Re-decided with the rest of what the session is, so a replace that sends none is
+    # titled with its sport's word rather than carrying the kind it used to be.
     label = _label(op, sport, field)
     if label is None:
         session.pop("label", None)
@@ -1047,8 +1016,8 @@ def _check_session_shapes(value: Any, errors: _Errors) -> None:
         _check_fields(op, field, ("operation", *required), optional,
                       {name: check for name, check in checks.items()
                        if name in (*required, *optional)}, errors)
-        # Decidable from the request alone only when it names the sport; a replace that
-        # does not is checked against the stored session when it is applied.
+        # A sent label is checked against the sport here when the request names it; a
+        # replace that does not is checked against the stored session when applied.
         sport = op.get("sport")
         if operation in {"add", "replace"} and isinstance(sport, str) and sport in SPORTS:
             errors.try_(lambda op=op, field=field: _label(op, op["sport"], field))
@@ -1132,9 +1101,8 @@ def _apply_sessions(
                 # re-derive whether it publishes -- including reduce, which the check
                 # above requires to bring a matching plan. Only move is exempt: a
                 # different day executes the same thing. A keep that reworded purpose
-                # needs no recompute either: publish_supported for strength depends only
-                # on a label or a non-empty purpose, and _text guarantees the second on
-                # the way in.
+                # needs no recompute either: purpose decides nothing about whether a
+                # session publishes.
                 recompute_publish=operation in {"add", "replace", "reduce"},
                 language=language,
             )
@@ -1147,19 +1115,17 @@ def _publish_supported(session: dict[str, Any]) -> bool:
 
     Sport decides *how* a session is delivered, and both ways are implemented: a running
     session is written as the workout its time_axis plan describes, and a strength session
-    as a calendar entry titled from its label, or from the day's purpose when it predates
-    labels -- which is why ``delivery`` refuses one with nothing to title it. Reading this
-    flag as "a run along a time axis" described only the first way, so every strength
-    session a writer touched came out unpublishable and the delivery boundary then refused
-    a sport the product had already been putting on the athlete's calendar.
+    as a calendar entry whose title is composed from its label or its sport, so every one
+    has something to send. Reading this flag as "a run along a time axis" described only
+    the first way, so every strength session a writer touched came out unpublishable and
+    the delivery boundary then refused a sport the product had already been putting on
+    the athlete's calendar.
     """
     sport = session.get("sport")
     if sport == "running":
         plan = session.get("plan")
         return isinstance(plan, dict) and plan.get("kind") == "time_axis"
-    if sport == "strength":
-        return session_title(session) is not None
-    return False
+    return sport == "strength"
 
 
 def _bookkeeping(
@@ -1332,12 +1298,11 @@ def _session_view(session: dict[str, Any] | None) -> dict[str, Any] | None:
         **{field: session.get(field) for field in _PREVIEW_SESSION_FIELDS},
         "plan_kind": plan.get("kind"),
         # The title the calendar entry would carry, composed the way delivery composes
-        # it and in the language of the prescription beside it. A sport that does not
-        # deliver has no title, and shows the name a plan written before labels gave it.
+        # it and in the language of the prescription beside it; null for a sport that
+        # does not deliver.
         "workout_name": session_title(
             session, language_of(session.get("plan"), session.get("prescription"))
-        )
-        or plan.get("name"),
+        ),
         "delivery_state": (session.get("execution") or {}).get("delivery_state"),
     }
 

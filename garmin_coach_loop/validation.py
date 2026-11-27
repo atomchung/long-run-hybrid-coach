@@ -67,16 +67,16 @@ SUPERSEDE_KINDS = {"corrected", "new_evidence", "policy_changed"}
 # (`_check_change_is_material`); whether a delivered workout is stale is
 # delivery_content.delivery_session_content's rule, not this one. `purpose` sits in the
 # second half, not the first: it never changes a number the watch executes, but a strength
-# session with no `label` reaches Intervals as a calendar entry whose name is built from
-# purpose. Rewording it is a change to what the athlete is told, so it belongs here beside
-# the fields that move training itself -- unlike `fallback` wording, which names no
-# delivered artifact and stays outside this set.
+# session with no movement list reaches Intervals with purpose as the first line of its
+# calendar description. Rewording it is a change to what the athlete is told, so it belongs
+# here beside the fields that move training itself -- unlike `fallback` wording, which
+# names no delivered artifact and stays outside this set.
 # `coach_note` is here on exactly that argument (issue #56): it is delivered content, it
 # reaches the athlete's calendar, and attaching one to a session that is otherwise kept is
 # the case the field exists for -- so a revision that only adds a note is a real change to
 # what the athlete is told, not prose the plan could have skipped a version over. `label`
-# is the first word of the title a labelled session is delivered under, so it is here for
-# the same reason.
+# is the first word of the title a session is delivered under, so it is here for the same
+# reason.
 MATERIAL_SESSION_FIELDS = frozenset({
     "scheduled_date", "sport", "adaptation", "planned_minutes", "priority",
     "cost", "body_stress", "hard", "plan", "time_window", "execution",
@@ -170,8 +170,8 @@ SESSION_PLAN_FIELDS = {
     # could be smuggled in through.
     "unstructured": ("kind",),
 }
-# `name` titled a run's calendar entry until a session carried `label`. Every plan stored
-# before that has one, so it stays accepted; nothing new needs it.
+# `name` titled a run's calendar entry before titles were composed. Every plan stored
+# before that has one, so it stays accepted; nothing reads it.
 SESSION_PLAN_OPTIONAL_FIELDS = {
     "time_axis": ("name",),
     "movement_list": (),
@@ -2707,10 +2707,9 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
     # the same reason -- most sessions carry none, and requiring an empty string on every
     # one of them is how a field stops being read.
     #
-    # `label` is the third. It is required wherever a running or strength session is
-    # written (`plan_change`, `plan_init`), but every session stored before it has none,
-    # and this function revalidates that whole history: so here it is optional, and only
-    # checked when present.
+    # `label` is the third: what kind of session this is, which the calendar title starts
+    # with. Optional everywhere -- a session without one is titled with its sport's own
+    # word -- and checked only when present.
     _keys(session, field, fields, errors, optional=("measures", "coach_note", "label"))
     _nonempty(session.get("session_id"), f"{field}.session_id", errors)
     if "measures" in session:

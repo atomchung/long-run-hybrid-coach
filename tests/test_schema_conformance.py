@@ -196,7 +196,7 @@ FIRST_PLAN_INVENTORY: dict[tuple[Any, ...], dict[str, tuple[str, str]]] = {
         "purpose": _d(ACCEPTED, "carried"),
         "label": _d(
             ACCEPTED,
-            "required for a running or strength session, refused on any other sport",
+            "optional; a sent key must belong to the session's sport",
         ),
         "coach_note": _d(ACCEPTED, "optional on every operation, including a first-plan add"),
         "measures": _d(

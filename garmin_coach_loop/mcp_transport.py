@@ -454,20 +454,23 @@ _SESSION_CHANGE: dict[str, Any] = {
         "purpose": {
             "type": "string",
             "description": (
-                "Why this session exists; not its calendar title. Required for replace "
-                "and add; optional for reduce and keep. On keep this is the only field "
-                "you may send. Intent only, never a prescription -- a number wearing a "
-                "unit (4:30/km, 5km, 80kg, 150bpm, 85%) is refused and the error names it."
+                "Why this session exists; never its calendar title. For a strength "
+                "session with no movement list it is the first line of the calendar "
+                "entry's description. Required for replace and add; optional for reduce "
+                "and keep. On keep this is the only field you may send. Intent only, "
+                "never a prescription -- a number wearing a unit (4:30/km, 5km, 80kg, "
+                "150bpm, 85%) is refused and the error names it."
             ),
         },
         "label": {
             "type": "string",
             "enum": [key for keys in SESSION_LABELS.values() for key in keys],
             "description": (
-                "What kind of session this is. Required for replace and add of a running "
-                "or strength session; no other sport carries one. race and the *_run "
-                "keys are running, the rest strength. The calendar title is composed from "
-                "this key's word in the athlete's language and numbers the plan holds."
+                "Optional. What kind of running or strength session this is; no other "
+                "sport carries one. race and the *_run keys are running, the rest "
+                "strength. The calendar title starts with this key's word in the "
+                "athlete's language, or the sport's own word when there is none, then "
+                "numbers the plan holds."
             ),
         },
         "coach_note": {

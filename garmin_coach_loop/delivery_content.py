@@ -31,19 +31,18 @@ def delivery_session_content(session: dict[str, Any]) -> dict[str, Any]:
     that lists a value and the thing it is derived from is one rule written twice.
     """
     execution = session.get("execution") if isinstance(session.get("execution"), dict) else {}
-    # The word every title of a labelled session starts with, so changing it changes what
-    # the calendar holds. Projected only when present: a session written before the field
-    # existed hashes exactly as it did, so no receipt or open delivery written then is
-    # read as stale for a field it could not have carried.
+    # The word a labelled session's title starts with, so changing it changes what the
+    # calendar holds. Projected only when present, so a session with none carries no key.
     label = {"label": session["label"]} if "label" in session else {}
     # Delivered content `plan` does not carry, but only where it is still delivered: a
-    # strength session with no `label` reaches Intervals as a calendar entry whose name
-    # starts with purpose, so rewording it leaves the calendar holding a title the plan no
-    # longer says. Every other session's title comes from its label or its plan.name and
-    # its description from the plan, so purpose reaches nothing there, and projecting it
-    # would make a reword re-deliver an unchanged event the athlete then has to confirm.
+    # strength session with an unstructured plan reaches Intervals with purpose as the
+    # first line of its description, so rewording it leaves the calendar saying something
+    # the plan no longer does. Every other session's title comes from its label or sport
+    # and its description from the plan, so purpose reaches nothing there, and projecting
+    # it would make a reword re-deliver an unchanged event the athlete then has to confirm.
+    plan = session.get("plan") if isinstance(session.get("plan"), dict) else {}
     purpose: dict[str, Any] = {}
-    if session.get("sport") == "strength" and "label" not in session:
+    if session.get("sport") == "strength" and plan.get("kind") == "unstructured":
         purpose["purpose"] = session.get("purpose")
     return {
         field: session.get(field)

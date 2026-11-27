@@ -7,5 +7,5 @@ OAUTH_SCOPES_OFF = ("ACTIVITY:READ", "CALENDAR:WRITE", "SETTINGS:WRITE")
 # This file owns packet selection; the packet owns its reviewed listing text.
 SUBMISSION_PACKET = "chatgpt-app-submission.training.json"
 TOOL_COUNT = 22
-TOOL_CATALOGUE_SHA256 = "73de6a03d8692e19c4794b5dac4a32c75bf1841e75d21c1e683fc794842a4c91"
+TOOL_CATALOGUE_SHA256 = "fc589a23db868d5ac4560e8f7db0ebb990e448a604196831edbc1f45ec37acc6"
 INSTRUCTIONS_SHA256 = "d083c59b82214ac0c97d9ac6431118b8151d29fdb6d0a61e9c0dff5dc5dd3275"

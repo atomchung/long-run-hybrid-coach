@@ -570,32 +570,33 @@ class DeliveryFlowTests(unittest.TestCase):
         self.assertEqual("intervals_accepted", receipt["delivery_state"])
         written = transport.bulk_calls[0]
         self.assertEqual("WeightTraining", written["type"])
-        # A session written before labels is titled from its purpose, then the primary
-        # lift: 臥推 is movements[0], and its pending load stays in the description.
-        self.assertEqual(
-            "Maintain upper-body strength with low-volume lower accessory work 臥推5x5",
-            written["name"],
-        )
+        # A session with no label is titled with the sport's word, then the primary lift:
+        # 臥推 is movements[0], and its pending load stays in the description.
+        self.assertEqual("重訓 臥推5x5", written["name"])
         # The calendar description is the session's own prescription, which is now the
         # rendering of its movement list rather than a sentence written beside it.
         self.assertEqual("臥推 5x5 待確認\n伏地挺身 3x12 自重", written["description"])
         self.assertNotIn("workout_doc", written)
         self.assertNotIn("steps", proposal["workout"])
 
-    def test_an_intent_line_that_counts_still_titles_the_calendar_entry(self):
+    def test_an_intent_line_that_counts_still_reaches_an_unstructured_day(self):
         """The false-positive control for archived issue #99, end to end rather than in isolation.
 
         Refusing a prescribed number in `purpose` is only worth having if the field still
-        does its job, and its job is titling the entry a strength day reaches the watch
-        as. The title here carries a digit on purpose: it is the shape the athlete's own
+        does its job, and on a strength day with no movement list its job is the first
+        line of the calendar entry's description -- the only place that says what the day
+        holds. The line here carries a digit on purpose: it is the shape the athlete's own
         naming convention produces, it passes the refusal, and it survives validation,
         approval, the provider write and read-back unchanged.
         """
         plan = self._strength_plan()
-        next(
+        session = next(
             item for item in plan["week"]["sessions"]
             if item["session_id"] == "strength-upper-01"
-        )["purpose"] = "本週第 2 次上肢，維持 Zone 2 以外的刺激"
+        )
+        session["purpose"] = "本週第 2 次上肢，維持 Zone 2 以外的刺激"
+        session["plan"] = {"kind": "unstructured"}
+        rerendered(session)
         proposal = prepare_delivery_proposal(plan, "strength-upper-01", now=self.now)
         approval = approve_delivery_proposal(
             proposal, approved_by="fixture-athlete", approved_at=self.now
@@ -616,9 +617,10 @@ class DeliveryFlowTests(unittest.TestCase):
         )
 
         self.assertEqual("intervals_accepted", receipt["delivery_state"])
+        self.assertEqual("重訓", transport.bulk_calls[0]["name"])
         self.assertEqual(
-            "本週第 2 次上肢，維持 Zone 2 以外的刺激 臥推5x5",
-            transport.bulk_calls[0]["name"],
+            "本週第 2 次上肢，維持 Zone 2 以外的刺激\n不設定量化目標",
+            transport.bulk_calls[0]["description"],
         )
 
     def test_a_prescribed_pace_in_the_intent_line_never_reaches_the_calendar(self):
@@ -664,12 +666,12 @@ class DeliveryFlowTests(unittest.TestCase):
         with self.assertRaisesRegex(DeliveryError, "current PlanState is invalid"):
             prepare_delivery_proposal(plan, "strength-upper-01", now=self.now)
 
-    def test_strength_with_an_unstructured_plan_keeps_the_bare_purpose_as_title(self):
-        """The athlete's own decision to decline quantification (2026-08-14) still titles.
+    def test_strength_with_an_unstructured_plan_is_titled_by_its_word_alone(self):
+        """The athlete's own decision to decline quantification (2026-08-14) still delivers.
 
-        An unstructured strength plan has no primary movement to append, so the title
-        stays exactly the purpose -- the bare title every strength entry carried before
-        this feature, and the only shape available for a session with no movement list.
+        An unstructured strength plan has no primary movement to append, so the title is
+        the label's word, or the sport's -- and purpose, where the coach wrote the
+        movements down, opens the description instead.
         """
         plan = self._strength_plan()
         session = next(
@@ -698,9 +700,10 @@ class DeliveryFlowTests(unittest.TestCase):
         )
 
         self.assertEqual("intervals_accepted", receipt["delivery_state"])
+        self.assertEqual("重訓", transport.bulk_calls[0]["name"])
         self.assertEqual(
-            "Maintain upper-body strength with low-volume lower accessory work",
-            transport.bulk_calls[0]["name"],
+            "Maintain upper-body strength with low-volume lower accessory work\n不設定量化目標",
+            transport.bulk_calls[0]["description"],
         )
 
     def test_strength_readback_name_mismatch_fails_closed(self):
@@ -713,9 +716,8 @@ class DeliveryFlowTests(unittest.TestCase):
         transport._readback = lambda event_id, event: {
             "id": int(event_id),
             **event,
-            # The provider echoes back the bare purpose, without the primary lift and
-            # load this delivery actually approved -- the same shape a pre-existing
-            # event from before this feature would still carry.
+            # The provider echoes back a name other than the composed title this delivery
+            # approved -- the shape an event written before titles were composed carries.
             "name": "胸日",
             "workout_doc": {"steps": [], "description": event["description"]},
         }
@@ -1222,7 +1224,7 @@ class DeliveryFlowTests(unittest.TestCase):
         )
         moved_session["scheduled_date"] = "2026-08-14"
         moved_session["match_status"] = "moved"
-        moved_session["plan"]["name"] = "Moved quality run"
+        moved_session["label"] = "tempo_run"
         moved_proposal = prepare_delivery_proposal(
             moved_plan, "run-quality-01", now=self.now
         )
@@ -1247,7 +1249,7 @@ class DeliveryFlowTests(unittest.TestCase):
         self.assertEqual(1, len(transport.bulk_calls))
         self.assertEqual(1, len(transport.events))
         self.assertEqual("2026-08-14", transport.events[0]["start_date_local"][:10])
-        self.assertEqual("Moved quality run", transport.events[0]["name"])
+        self.assertEqual("節奏跑 5x1km 60分", transport.events[0]["name"])
 
     def test_verified_receipt_advances_the_same_append_only_current_state(self):
         transport = FakeTransport()
@@ -1368,8 +1370,8 @@ class StrengthTitleSuffixTests(unittest.TestCase):
 
     def test_a_time_axis_plan_has_no_suffix(self):
         # A running plan reaching this function would be a caller bug, not a strength
-        # session -- checked because `None` is exactly the fallback the caller titles
-        # bare purpose from, and a wrong branch here would silently mistitle a run.
+        # session -- checked because `None` leaves the title its first word alone, and a
+        # wrong branch here would silently mistitle a run.
         plan = {"kind": "time_axis", "name": "輕鬆跑 30分", "steps": []}
         self.assertIsNone(strength_title_suffix(plan))
 
@@ -1392,12 +1394,12 @@ class StrengthTitleSuffixTests(unittest.TestCase):
 
         entry = _calendar_entry_from_session(session)
 
-        # A session written before labels starts with its purpose, untranslated; the
-        # failure set and the bodyweight word stay in the description.
-        self.assertEqual("Upper body 臥推", entry["name"])
+        # The sport's word in the sentence's language; the failure set and the
+        # bodyweight word stay in the description, and purpose is in neither.
+        self.assertEqual("Strength 臥推", entry["name"])
         self.assertEqual(entry["description"], session["prescription"])
 
-    def test_a_chinese_session_written_before_labels_keeps_its_purpose_first(self):
+    def test_a_chinese_session_with_no_label_starts_with_the_sports_word(self):
         plan = {
             "kind": "movement_list",
             "movements": [self._movement(load_kg=65, load_basis="measured_baseline")],
@@ -1412,7 +1414,7 @@ class StrengthTitleSuffixTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            "上肢 臥推5x5 65kg", _calendar_entry_from_session(session)["name"]
+            "重訓 臥推5x5 65kg", _calendar_entry_from_session(session)["name"]
         )
 
 
@@ -1576,38 +1578,36 @@ class ComposedSessionTitleTests(unittest.TestCase):
         self.assertEqual("節奏跑 30分", session_title(session, "zh-Hant"))
         self.assertEqual("Tempo run 30 min", session_title(session, "en"))
 
-    def test_a_label_wins_over_the_name_and_purpose_an_older_session_was_titled_by(self):
+    def test_neither_a_plan_name_nor_a_purpose_is_ever_in_a_title(self):
         run = _run("recovery_run", 25, name="恢復慢跑 有氧 25分")
         self.assertEqual("恢復跑 25分", session_title(run, "zh-Hant"))
         lift = _strength_day("chest", _lifts(_lift("臥推")), purpose="胸日：臥推")
         self.assertEqual("胸 臥推5x5", session_title(lift, "zh-Hant"))
 
-    def test_a_run_written_before_labels_keeps_its_plan_name_whole(self):
-        run = _run(
-            None, 70, _repeat(4, _step(seconds=120)), name="輕鬆長跑 有氧 70分",
-        )
-        for language in LANGUAGES:
-            with self.subTest(language=language):
-                self.assertEqual("輕鬆長跑 有氧 70分", session_title(run, language))
+    def test_a_run_with_no_label_starts_with_the_sports_word(self):
+        # Including one whose stored plan.name has gone stale since it was written.
+        run = _run(None, 60, _repeat(4, _step(seconds=120)), name="輕鬆長跑 有氧 70分")
+        self.assertEqual("跑步 4x2分 60分", session_title(run, "zh-Hant"))
+        self.assertEqual("Run 4x2min 60 min", session_title(run, "en"))
+        self.assertEqual("跑步 60分", session_title(_run(None, 60), "zh-Hant"))
+        self.assertEqual("Run 60 min", session_title(_run(None, 60), "en"))
 
-    def test_a_strength_day_written_before_labels_starts_with_its_purpose(self):
+    def test_a_strength_day_with_no_label_starts_with_the_sports_word(self):
         for plan, zh, en in (
-            (_lifts(_lift("臥推", load_kg=60, basis="measured_baseline")), "胸日 臥推5x5 60kg", "胸日 臥推 5x5 60kg"),
-            (_lifts(_lift("臥推")), "胸日 臥推5x5", "胸日 臥推 5x5"),
-            (_lifts(_lift("臥推", reps=None, basis="bodyweight")), "胸日 臥推", "胸日 臥推"),
-            ({"kind": "unstructured"}, "胸日", "胸日"),
+            (_lifts(_lift("臥推", load_kg=60, basis="measured_baseline")),
+             "重訓 臥推5x5 60kg", "Strength 臥推 5x5 60kg"),
+            (_lifts(_lift("臥推")), "重訓 臥推5x5", "Strength 臥推 5x5"),
+            (_lifts(_lift("臥推", reps=None, basis="bodyweight")), "重訓 臥推", "Strength 臥推"),
+            ({"kind": "unstructured"}, "重訓", "Strength"),
         ):
             with self.subTest(plan=plan):
-                session = _strength_day(None, plan, purpose="胸日")
-                # One space instead of the colon, and no pending, bodyweight or
-                # failure-set word; the purpose itself is never translated.
+                session = _strength_day(None, plan, purpose="背日：反向划船與蹲姿單槓")
                 self.assertEqual(zh, session_title(session, "zh-Hant"))
                 self.assertEqual(en, session_title(session, "en"))
 
-    def test_a_session_with_nothing_to_title_says_so(self):
+    def test_only_a_sport_that_delivers_has_a_title(self):
         self.assertIsNone(session_title({"sport": "mobility", "plan": {"kind": "unstructured"}}))
-        self.assertIsNone(session_title(_run(None, 30)))
-        self.assertIsNone(session_title(_strength_day(None, {"kind": "unstructured"}, purpose=" ")))
+        self.assertIsNone(session_title({"sport": "cycling", "plan": {"kind": "time_axis", "name": "騎車"}}))
 
 
 class SessionLabelVocabularyTests(unittest.TestCase):
@@ -1695,13 +1695,14 @@ class LabelledSessionDeliveryTests(unittest.TestCase):
 
         self.assertEqual("Intervals 5x1km 60 min", _workout_from_session(session)["name"])
 
-    def test_a_run_written_before_labels_is_delivered_under_its_plan_name(self):
+    def test_a_run_with_no_label_is_delivered_under_its_sports_word(self):
         plan = plan_fixture()
 
         receipt, written = self._publish(plan, "run-quality-01")
 
         self.assertEqual("intervals_accepted", receipt["delivery_state"])
-        self.assertEqual("5x1000m threshold", written["name"])
+        # Never the plan.name ("5x1000m threshold") the stored session still carries.
+        self.assertEqual("跑步 5x1km 60分", written["name"])
 
     def test_a_labelled_strength_day_is_delivered_under_its_composed_title(self):
         plan = plan_fixture()
@@ -1723,8 +1724,33 @@ class LabelledSessionDeliveryTests(unittest.TestCase):
         self.assertEqual("intervals_accepted", receipt["delivery_state"])
         self.assertEqual("上肢 臥推5x5", written["name"])
         # The pending load and the bodyweight word are still on the calendar, in the
-        # description under the title.
+        # description under the title; a movement list's description carries no purpose.
         self.assertEqual("臥推 5x5 待確認\n伏地挺身 3x12 自重", written["description"])
+
+    def test_an_unstructured_strength_day_opens_its_description_with_its_purpose(self):
+        # With no movement list, purpose is the only place the movements are written
+        # down, so it is the description's first line, then the prescription and note.
+        session = {
+            "session_id": "strength-back-01",
+            "sport": "strength",
+            "scheduled_date": "2026-08-14",
+            "purpose": "背日：反向划船與蹲姿單槓",
+            "plan": {"kind": "unstructured"},
+            "prescription": render_prescription({"kind": "unstructured"}),
+            "coach_note": "最後一組留兩下",
+        }
+        for label, name in (("back", "背"), (None, "重訓")):
+            with self.subTest(label=label):
+                if label is not None:
+                    session["label"] = label
+                else:
+                    session.pop("label", None)
+                entry = _calendar_entry_from_session(session)
+                self.assertEqual(name, entry["name"])
+                self.assertEqual(
+                    "背日：反向划船與蹲姿單槓\n不設定量化目標\n\n最後一組留兩下",
+                    entry["description"],
+                )
 
 
 class PublishSupportMatchesWhatDeliveryCanBuildTests(unittest.TestCase):
@@ -1889,10 +1915,28 @@ class ProjectionWithdrawsWhateverChangesThePayloadTests(unittest.TestCase):
         },
     }
 
+    UNSTRUCTURED_STRENGTH = {
+        "sport": "strength",
+        "purpose": "背日：反向划船與蹲姿單槓",
+        "plan": {"kind": "unstructured"},
+    }
+
     CHANGES = (
         ("a run moved to another day", RUN, {"scheduled_date": "2026-08-21"}),
-        ("a run given different work", RUN, {"plan": {**RUN["plan"], "name": "節奏跑 30分"}}),
-        ("a strength day renamed", STRENGTH, {"purpose": "肩日"}),
+        (
+            "a run given different work",
+            RUN,
+            {"plan": {**RUN["plan"], "steps": [
+                {**RUN["plan"]["steps"][0], "duration": {"kind": "time", "seconds": 2400}}
+            ]}},
+        ),
+        ("a run given a label", RUN, {"label": "tempo_run"}),
+        ("a strength day given a label", STRENGTH, {"label": "back"}),
+        (
+            "an unstructured strength day's purpose reworded",
+            UNSTRUCTURED_STRENGTH,
+            {"purpose": "背日：引體向上"},
+        ),
         ("a strength day moved", STRENGTH, {"scheduled_date": "2026-08-21"}),
         (
             "a strength day given different movements",
@@ -1921,6 +1965,23 @@ class ProjectionWithdrawsWhateverChangesThePayloadTests(unittest.TestCase):
                     f"{label}: the payload has to differ for this case to mean anything",
                 )
                 self.assertNotEqual(
+                    delivery_session_content(before), delivery_session_content(after), label
+                )
+
+    def test_a_purpose_the_provider_never_sees_keeps_the_delivery(self):
+        """The relation in the other direction: purpose reaches neither a run's payload
+        nor a movement list's, so rewording it there moves neither the payload nor the
+        projection, and nothing already on the calendar is resent."""
+        for label, base in (
+            ("a run", self.RUN),
+            ("a labelled run", {**self.RUN, "label": "easy_run"}),
+            ("a strength day with movements", self.STRENGTH),
+        ):
+            with self.subTest(label):
+                before = self._session(**base)
+                after = self._session(**{**base, "purpose": "換個說法"})
+                self.assertEqual(_workout_from_session(before), _workout_from_session(after))
+                self.assertEqual(
                     delivery_session_content(before), delivery_session_content(after), label
                 )
 

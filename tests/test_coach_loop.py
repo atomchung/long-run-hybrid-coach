@@ -290,12 +290,14 @@ class CoachLoopV1Tests(unittest.TestCase):
                 reset = validate_bundle(context, before, after, event)
                 self.assertEqual("passed", reset["status"], reset)
 
-    def test_retitling_a_delivered_strength_session_must_clear_its_observation(self):
+    def test_rewording_a_delivered_unstructured_strength_day_must_clear_its_observation(self):
         before = copy.deepcopy(self.before)
         delivered = next(
             session for session in before["week"]["sessions"]
             if session["session_id"] == "strength-upper-01"
         )
+        delivered["plan"] = {"kind": "unstructured"}
+        delivered["prescription"] = render_prescription(delivered["plan"])
         delivered["execution"] = {
             "publish_supported": True,
             "external_id": "intervals-event-456",
@@ -316,9 +318,10 @@ class CoachLoopV1Tests(unittest.TestCase):
         # stands. Whatever the next assertion blocks, it is blocking the retitle itself.
         self.assertEqual("passed", validate_bundle(context, before, after, event)["status"])
 
-        # A movement_list session reaches the calendar as a titled entry whose name is
-        # purpose. Reword it and the accepted delivery is a title the plan no longer says.
-        # The rendering does not move with it -- prescription is rendered from plan alone.
+        # A strength day with no movement list reaches the calendar with purpose as its
+        # description's first line. Reword it and the accepted delivery says something the
+        # plan no longer does. The rendering does not move with it -- prescription is
+        # rendered from plan alone.
         target["purpose"] = "Hold upper-body strength while the legs recover"
 
         stale = validate_bundle(context, before, after, event)
@@ -337,12 +340,15 @@ class CoachLoopV1Tests(unittest.TestCase):
         nothing else moves -- is the case the retitle test above does not reach, because
         that one also flips match_status to replaced, which was already material on its
         own. Here purpose alone must (a) not be refused as immaterial and (b) still force
-        the same delivery-observation reset as any other delivered-content change."""
+        the same delivery-observation reset as any other delivered-content change, on the
+        one kind of session whose purpose reaches the calendar."""
         before = copy.deepcopy(self.before)
         delivered = next(
             session for session in before["week"]["sessions"]
             if session["session_id"] == "strength-upper-01"
         )
+        delivered["plan"] = {"kind": "unstructured"}
+        delivered["prescription"] = render_prescription(delivered["plan"])
         delivered["execution"] = {
             "publish_supported": True,
             "external_id": "intervals-event-789",

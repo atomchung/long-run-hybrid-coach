@@ -429,7 +429,7 @@
         "purpose": {
           "type": "string",
           "minLength": 1,
-          "description": "What the session is for, in the Coach's own words. It is not the calendar title, which is composed from `label`; only a strength session with no `label`, written before the field existed, is still titled from it. It states intent, never a prescription: a number wearing a unit -- a pace, a distance, a load, a heart rate, a percentage -- is refused here because nothing anchors it, and the same number belongs in `plan`, where the evidence gate reads it. A digit alone is intent and stays legal."
+          "description": "What the session is for, in the Coach's own words. It is never the calendar title, which is composed from `label` or the sport. For a strength session with no movement list (an `unstructured` plan) it is the first line of the calendar entry's description, ahead of the prescription. It states intent, never a prescription: a number wearing a unit -- a pace, a distance, a load, a heart rate, a percentage -- is refused here because nothing anchors it, and the same number belongs in `plan`, where the evidence gate reads it. A digit alone is intent and stays legal."
         },
         "label": {
           "enum": [
@@ -451,7 +451,7 @@
             "lower_body",
             "full_body"
           ],
-          "description": "What kind of session this is, as one fixed key. The delivered calendar title starts with this key's word in the athlete's language, followed by numbers the plan already holds. Only a running or a strength session carries one, and it must be a key of that sport: race and the *_run keys are running, the rest strength. Every running or strength session added or replaced through a coaching decision carries one; a session written before the field existed has none, and keeps the title it always had -- plan.name for a run, purpose for strength."
+          "description": "What kind of session this is, as one fixed key. Optional. The delivered calendar title starts with this key's word in the athlete's language -- or with the sport's own word when a session carries none -- followed by numbers the plan already holds. Only a running or a strength session carries one, and it must be a key of that sport: race and the *_run keys are running, the rest strength."
         },
         "coach_note": {
           "type": "string",
@@ -623,7 +623,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 80,
-          "description": "The title of a run written before sessions carried `label`. Still accepted so that history validates; nothing new needs it, and a session with a label is titled from the label instead."
+          "description": "The title a run carried before titles were composed. Still accepted so that history validates; nothing reads it, and no title is ever taken from it."
         },
         "steps": {
           "type": "array",
