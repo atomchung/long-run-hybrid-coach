@@ -31,20 +31,25 @@ def delivery_session_content(session: dict[str, Any]) -> dict[str, Any]:
     that lists a value and the thing it is derived from is one rule written twice.
     """
     execution = session.get("execution") if isinstance(session.get("execution"), dict) else {}
+    # The word every title of a labelled session starts with, so changing it changes what
+    # the calendar holds. Projected only when present: a session written before the field
+    # existed hashes exactly as it did, so no receipt or open delivery written then is
+    # read as stale for a field it could not have carried.
+    label = {"label": session["label"]} if "label" in session else {}
     return {
         field: session.get(field)
         for field in (
             "session_id",
             "sport",
             "scheduled_date",
-            # The delivered content `plan` does not carry: a movement_list session reaches
-            # Intervals as a titled calendar entry whose name is *built from* purpose (with
-            # the plan's primary movement and load, when the plan renders one), so
-            # rewording purpose alone leaves the calendar holding a title the plan no
-            # longer says. Held for every sport rather than for strength alone -- a
-            # time_axis reword pays one redelivery it did not need, which is the cheaper of
-            # the two errors; the other reports a verified delivery under a title that was
-            # never sent.
+            # The delivered content `plan` does not carry: a strength session with no
+            # `label` reaches Intervals as a titled calendar entry whose name is *built
+            # from* purpose (with the plan's primary movement and load, when the plan
+            # renders one), so rewording purpose alone leaves the calendar holding a
+            # title the plan no longer says. Held for every session rather than for
+            # those alone -- a reword that reaches no title pays one redelivery it did
+            # not need, which is the cheaper of the two errors; the other reports a
+            # verified delivery under a title that was never sent.
             "purpose",
             # The other authored field that reaches Intervals (issue #56). It is appended
             # to the delivered description for both sports, so changing or clearing it
@@ -57,4 +62,4 @@ def delivery_session_content(session: dict[str, Any]) -> dict[str, Any]:
             "hard",
             "plan",
         )
-    } | {"publish_supported": execution.get("publish_supported")}
+    } | label | {"publish_supported": execution.get("publish_supported")}

@@ -429,7 +429,29 @@
         "purpose": {
           "type": "string",
           "minLength": 1,
-          "description": "What the session is for, in the Coach's own words, and the title a strength session reaches the athlete's calendar under. It states intent, never a prescription: a number wearing a unit -- a pace, a distance, a load, a heart rate, a percentage -- is refused here because nothing anchors it, and the same number belongs in `plan`, where the evidence gate reads it. A digit alone is intent and stays legal."
+          "description": "What the session is for, in the Coach's own words. It is not the calendar title, which is composed from `label`; only a strength session with no `label`, written before the field existed, is still titled from it. It states intent, never a prescription: a number wearing a unit -- a pace, a distance, a load, a heart rate, a percentage -- is refused here because nothing anchors it, and the same number belongs in `plan`, where the evidence gate reads it. A digit alone is intent and stays legal."
+        },
+        "label": {
+          "enum": [
+            "easy_run",
+            "long_run",
+            "recovery_run",
+            "tempo_run",
+            "interval_run",
+            "hill_run",
+            "race_pace_run",
+            "test_run",
+            "race",
+            "chest",
+            "back",
+            "legs",
+            "shoulders_arms",
+            "core",
+            "upper_body",
+            "lower_body",
+            "full_body"
+          ],
+          "description": "What kind of session this is, as one fixed key. The delivered calendar title starts with this key's word in the athlete's language, followed by numbers the plan already holds. Only a running or a strength session carries one, and it must be a key of that sport: race and the *_run keys are running, the rest strength. Every running or strength session added or replaced through a coaching decision carries one; a session written before the field existed has none, and keeps the title it always had -- plan.name for a run, purpose for strength."
         },
         "coach_note": {
           "type": "string",
@@ -591,7 +613,6 @@
       "description": "Work laid out along time or distance, with one intensity target per session. This is the canonical executable content: delivery derives its preview and provider payload from it, and no separate workout request may override it.",
       "required": [
         "kind",
-        "name",
         "steps"
       ],
       "properties": {
@@ -601,7 +622,8 @@
         "name": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 80
+          "maxLength": 80,
+          "description": "The title of a run written before sessions carried `label`. Still accepted so that history validates; nothing new needs it, and a session with a label is titled from the label instead."
         },
         "steps": {
           "type": "array",

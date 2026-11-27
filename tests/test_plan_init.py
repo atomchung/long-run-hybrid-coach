@@ -31,11 +31,11 @@ EASY_RUN: dict[str, Any] = {
     "cost": "easy",
     "priority": "anchor",
     "planned_minutes": 30,
+    "label": "easy_run",
     # An open target: the athlete has no measured threshold pace, so the plan states
     # the duration and leaves the intensity to them.
     "plan": {
         "kind": "time_axis",
-        "name": "輕鬆跑 30分",
         "steps": [{
             "kind": "work", "name": "輕鬆跑",
             "duration": {"kind": "time", "seconds": 1800},

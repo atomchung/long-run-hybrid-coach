@@ -18,7 +18,11 @@ from typing import Any
 from garmin_coach_loop.plan_change import ChangeRequestError, project_change_request
 from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.store import canonical_hash
-from garmin_coach_loop.validation import validate_bundle
+from garmin_coach_loop.validation import (
+    MATERIAL_SESSION_FIELDS,
+    validate_bundle,
+    validate_plan_state,
+)
 
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "garmin-coach-loop-28-day"
@@ -157,6 +161,7 @@ class DerivedMaterialTests(PlanChangeTestCase):
             sessions=[
                 {
                     "operation": "add",
+                    "label": "easy_run",
                     "sport": "running",
                     "scheduled_date": "2026-08-12",
                     "purpose": "補一次輕鬆有氧",
@@ -208,6 +213,7 @@ class DerivedMaterialTests(PlanChangeTestCase):
             sessions=[
                 {
                     "operation": "add",
+                    "label": "upper_body",
                     "sport": "strength",
                     "scheduled_date": "2026-08-12",
                     "purpose": "補一次上肢",
@@ -371,16 +377,19 @@ class DeliveryBookkeepingTests(PlanChangeTestCase):
         self.assertEqual("passed", report["status"], report["errors"])
 
     def test_retitling_a_delivered_session_withdraws_its_delivery_observation(self):
-        # purpose is delivered content, not a coaching label: a movement_list session
-        # sends it as the calendar entry's own name. The projection holds it for every
-        # sport, so a time_axis session pays one redelivery for a reword -- the cheap
-        # side of that trade, and the side this fixture happens to sit on.
+        # purpose is delivered content: a strength session written before labels sends
+        # it as the calendar entry's own name. The projection holds it for every session,
+        # so a labelled run pays one redelivery for a reword -- the cheap side of that
+        # trade, and the side this fixture sits on. The run already carries the label the
+        # replace restates, so purpose is the only field that moves.
         before = self.delivered_plan()
         session = self.sessions(before)["run-long-01"]
+        session["label"] = "long_run"
         request = coaching_request(
             sessions=[
                 {
                     "operation": "replace",
+                    "label": "long_run",
                     "session_id": "run-long-01",
                     "purpose": "Build aerobic endurance on legs that are still tired",
                     "adaptation": session["adaptation"],
@@ -394,7 +403,8 @@ class DeliveryBookkeepingTests(PlanChangeTestCase):
         projection = self.project(request, before)
 
         retitled = self.sessions(projection["after_plan"])["run-long-01"]
-        # Nothing the watch executes moved; only the title did.
+        # Nothing the watch executes moved, and neither did the label.
+        self.assertEqual("long_run", retitled["label"])
         self.assertEqual(session["plan"], retitled["plan"])
         self.assertEqual(session["prescription"], retitled["prescription"])
         self.assertTrue(retitled["execution"]["publish_supported"])
@@ -466,6 +476,7 @@ class DeliveryBookkeepingTests(PlanChangeTestCase):
             sessions=[
                 {
                     "operation": "replace",
+                    "label": "upper_body",
                     "session_id": "strength-upper-01",
                     "purpose": "腿日",
                     "adaptation": "strength",
@@ -554,6 +565,7 @@ class CoachNoteThroughAChangeTests(PlanChangeTestCase):
             },
             {
                 "operation": "replace",
+                "label": "long_run",
                 "session_id": "run-long-01",
                 "purpose": session["purpose"],
                 "adaptation": session["adaptation"],
@@ -563,6 +575,7 @@ class CoachNoteThroughAChangeTests(PlanChangeTestCase):
             },
             {
                 "operation": "add",
+                "label": "easy_run",
                 "sport": "running",
                 "scheduled_date": "2026-08-16",
                 "purpose": "補一趟輕鬆跑",
@@ -612,6 +625,7 @@ class CoachNoteThroughAChangeTests(PlanChangeTestCase):
             sessions=[
                 {
                     "operation": "replace",
+                    "label": "long_run",
                     "session_id": "run-long-01",
                     "purpose": session["purpose"],
                     "adaptation": session["adaptation"],
@@ -892,6 +906,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
         request = coaching_request(
             sessions=[{
                 "operation": "replace",
+                "label": "upper_body",
                 "session_id": self.STRENGTH_ID,
                 "purpose": "改成上拉為主",
                 "adaptation": "strength",
@@ -930,6 +945,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
             coaching_request(
                 sessions=[{
                     "operation": "replace",
+                    "label": "upper_body",
                     "session_id": self.STRENGTH_ID,
                     "purpose": "換成徒手循環",
                     "adaptation": "strength",
@@ -955,6 +971,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
         request = coaching_request(
             sessions=[{
                 "operation": "replace",
+                "label": "upper_body",
                 "session_id": self.STRENGTH_ID,
                 "purpose": "換成徒手循環",
                 "adaptation": "strength",
@@ -986,6 +1003,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
         request = coaching_request(
             sessions=[{
                 "operation": "replace",
+                "label": "easy_run",
                 "session_id": self.STRENGTH_ID,
                 "sport": "running",
                 "purpose": "改成輕鬆有氧",
@@ -1080,6 +1098,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
         cases = {
             "add": ({
                 "operation": "add",
+                "label": "easy_run",
                 "sport": "running",
                 "scheduled_date": "2026-08-15",
                 "purpose": "補一次輕鬆有氧",
@@ -1099,6 +1118,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
             }, "run-long-01", "time_axis"),
             "replace": ({
                 "operation": "replace",
+                "label": "long_run",
                 "session_id": "run-long-01",
                 "purpose": "改成上拉為主",
                 "adaptation": "strength",
@@ -1109,6 +1129,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
             # The mirror: a lift cannot claim what a watch executes either.
             "replace-strength-with-a-time-axis": ({
                 "operation": "replace",
+                "label": "upper_body",
                 "session_id": self.STRENGTH_ID,
                 "purpose": "改成跑步結構",
                 "adaptation": "strength",
@@ -1256,6 +1277,7 @@ class WeekRollTests(PlanChangeTestCase):
             cycle={"outlook": self.before["cycle"]["outlook"][1:]},
             sessions=[{
                 "operation": "add",
+                "label": "easy_run",
                 "scheduled_date": "2026-08-18",
                 "sport": "running",
                 "purpose": "下一週的輕鬆跑",
@@ -1588,6 +1610,7 @@ class WeekAndCycleAreSeparateDecisionsTests(PlanChangeTestCase):
             sessions=[
                 {
                     "operation": "add",
+                    "label": "interval_run",
                     "scheduled_date": "2026-09-08",
                     "sport": "running",
                     "purpose": "新週期的第一次 vo2 課",
@@ -1619,6 +1642,7 @@ class ReplacementTests(PlanChangeTestCase):
             sessions=[
                 {
                     "operation": "replace",
+                    "label": "lower_body",
                     "session_id": "run-quality-01",
                     "sport": "strength",
                     "purpose": "把品質課換成下肢肌力",
@@ -1701,6 +1725,7 @@ class StrengthStructureThroughAChangeTests(PlanChangeTestCase):
     def test_replacing_the_session_replaces_the_movements_it_prescribes(self):
         revised = self._revised({
             "operation": "replace",
+            "label": "lower_body",
             "purpose": "改成下肢",
             "adaptation": "strength",
             "cost": "moderate",
@@ -1971,6 +1996,236 @@ class LiveDecisionEventInvariantsTests(PlanChangeTestCase):
                 self.assertIn(event["mode"], {"review_week", "review_cycle"})
                 self.assertIn(event["action"], {"keep", "adjust"})
                 self.assertNotIn(event["action"], {"reduce", "move", "replace", "rest"})
+
+
+RUNNING_KEYS = (
+    "easy_run, long_run, recovery_run, tempo_run, interval_run, hill_run, "
+    "race_pace_run, test_run, race"
+)
+STRENGTH_KEYS = "chest, back, legs, shoulders_arms, core, upper_body, lower_body, full_body"
+
+
+class SessionLabelTests(PlanChangeTestCase):
+    """Issue #540: `label` is required where `adaptation` is, for the two sports that deliver."""
+
+    def add(self, sport: str, plan: dict[str, Any], **fields: Any) -> dict[str, Any]:
+        return {
+            "operation": "add",
+            "sport": sport,
+            "scheduled_date": "2026-08-12",
+            "purpose": "補一次訓練",
+            "adaptation": "aerobic_base" if sport == "running" else "strength",
+            "body_stress": "lower" if sport == "running" else "upper",
+            "cost": "easy",
+            "priority": "optional",
+            "planned_minutes": 45,
+            "plan": plan,
+            "fallback": {"action": "reduce", "description": "縮短"},
+            **fields,
+        }
+
+    def replace_long_run(self, **fields: Any) -> dict[str, Any]:
+        session = self.sessions(self.before)["run-long-01"]
+        return {
+            "operation": "replace",
+            "session_id": "run-long-01",
+            "purpose": session["purpose"],
+            "adaptation": session["adaptation"],
+            "cost": session["cost"],
+            "planned_minutes": 45,
+            "plan": EASY_RUN_WORKOUT,
+            **fields,
+        }
+
+    def assertRefused(self, operation: dict[str, Any], *fragments: str, before=None) -> None:
+        with self.assertRaises(ChangeRequestError) as caught:
+            self.project(coaching_request(sessions=[operation]), before)
+        for fragment in fragments:
+            self.assertIn(fragment, str(caught.exception))
+
+    def test_an_added_session_carries_its_label(self):
+        for sport, plan, label in (
+            ("running", EASY_RUN_WORKOUT, "easy_run"),
+            ("strength", PULL_UP_MOVEMENTS, "back"),
+        ):
+            with self.subTest(sport=sport):
+                after = self.project(
+                    coaching_request(sessions=[self.add(sport, plan, label=label)])
+                )["after_plan"]
+                added = self.sessions(after)[f"{sport}-2026-08-12"]
+                self.assertEqual(label, added["label"])
+                self.assertEqual("passed", validate_plan_state(after)["status"])
+
+    def test_a_missing_label_names_the_field_and_the_keys_of_that_sport(self):
+        self.assertRefused(
+            self.add("running", EASY_RUN_WORKOUT),
+            "sessions[0].label is required for a running session", RUNNING_KEYS,
+        )
+        self.assertRefused(
+            self.add("strength", PULL_UP_MOVEMENTS),
+            "sessions[0].label is required for a strength session", STRENGTH_KEYS,
+        )
+        self.assertRefused(
+            self.replace_long_run(),
+            "sessions[0].label is required for a running session", RUNNING_KEYS,
+        )
+
+    def test_a_missing_label_is_collected_with_the_other_problems_of_an_add(self):
+        operation = self.add("running", EASY_RUN_WORKOUT)
+        del operation["fallback"]
+        self.assertRefused(operation, "2 problems", "missing fallback", "label is required")
+
+    def test_a_key_of_the_other_sport_or_no_key_at_all_is_refused(self):
+        for sport, plan, label, keys in (
+            ("running", EASY_RUN_WORKOUT, "chest", RUNNING_KEYS),
+            ("strength", PULL_UP_MOVEMENTS, "easy_run", STRENGTH_KEYS),
+            ("running", EASY_RUN_WORKOUT, "tempo", RUNNING_KEYS),
+            ("running", EASY_RUN_WORKOUT, "", RUNNING_KEYS),
+        ):
+            with self.subTest(sport=sport, label=label):
+                self.assertRefused(
+                    self.add(sport, plan, label=label),
+                    f"sessions[0].label must be one of {keys} for a {sport} session",
+                )
+
+    def test_a_sport_that_delivers_nothing_carries_no_label(self):
+        mobility = self.add("mobility", {"kind": "unstructured"}, label="core")
+        mobility["adaptation"] = "recovery"
+        self.assertRefused(
+            mobility, "sessions[0].label is only for a running or strength session"
+        )
+        # Null is the same as leaving it out.
+        mobility["label"] = None
+        added = self.sessions(
+            self.project(coaching_request(sessions=[mobility]))["after_plan"]
+        )["mobility-2026-08-12"]
+        self.assertNotIn("label", added)
+
+    def test_a_replace_into_another_sport_takes_that_sports_label_or_none(self):
+        before = copy.deepcopy(self.before)
+        self.sessions(before)["run-long-01"]["label"] = "long_run"
+        rest = {
+            "operation": "replace", "session_id": "run-long-01", "sport": "rest",
+            "purpose": "完全休息", "adaptation": "recovery", "cost": "easy",
+            "planned_minutes": 0, "plan": {"kind": "unstructured"},
+        }
+        after = self.project(coaching_request(sessions=[rest]), before)["after_plan"]
+        self.assertNotIn("label", self.sessions(after)["run-long-01"])
+
+        strength = {
+            **rest, "sport": "strength", "purpose": "改成上肢", "adaptation": "strength",
+            "planned_minutes": 40, "plan": PULL_UP_MOVEMENTS, "label": "long_run",
+        }
+        self.assertRefused(
+            strength, f"must be one of {STRENGTH_KEYS} for a strength session", before=before
+        )
+
+    def test_reducing_a_run_written_before_labels_needs_a_label_only_when_its_name_goes(self):
+        no_name = {key: value for key, value in EASY_RUN_WORKOUT.items() if key != "name"}
+        reduce = {
+            "operation": "reduce", "session_id": "run-long-01", "planned_minutes": 45,
+            "plan": no_name,
+        }
+        # The harmful case: nothing would be left to title the run it delivers as.
+        self.assertRefused(
+            reduce,
+            "sessions[0].label is required: run-long-01 was written before labels",
+            RUNNING_KEYS,
+        )
+        # The controls: a label, or a restated name, titles it.
+        labelled = self.sessions(
+            self.project(coaching_request(sessions=[{**reduce, "label": "long_run"}]))[
+                "after_plan"
+            ]
+        )["run-long-01"]
+        self.assertEqual("long_run", labelled["label"])
+        named = self.sessions(
+            self.project(coaching_request(sessions=[{**reduce, "plan": EASY_RUN_WORKOUT}]))[
+                "after_plan"
+            ]
+        )["run-long-01"]
+        self.assertNotIn("label", named)
+        # And a run that already carries a label reduces with no label in the request.
+        before = copy.deepcopy(self.before)
+        self.sessions(before)["run-long-01"]["label"] = "long_run"
+        reduced = self.sessions(
+            self.project(coaching_request(sessions=[reduce]), before)["after_plan"]
+        )["run-long-01"]
+        self.assertEqual("long_run", reduced["label"])
+
+    def test_changing_the_label_alone_redelivers_the_session(self):
+        before = copy.deepcopy(self.before)
+        session = self.sessions(before)["run-long-01"]
+        session["label"] = "long_run"
+        session["execution"] = {
+            "publish_supported": True, "external_id": "9001",
+            "delivery_state": "intervals_accepted",
+        }
+        self.assertIn("label", MATERIAL_SESSION_FIELDS)
+        for label, kept in (("long_run", True), ("easy_run", False)):
+            with self.subTest(label=label):
+                operation = {
+                    "operation": "replace", "session_id": "run-long-01", "label": label,
+                    "purpose": session["purpose"], "adaptation": session["adaptation"],
+                    "cost": session["cost"], "planned_minutes": session["planned_minutes"],
+                    "plan": session["plan"],
+                }
+                projection = self.project(coaching_request(sessions=[operation]), before)
+                after = self.sessions(projection["after_plan"])["run-long-01"]
+                if kept:
+                    # The control: the same label is the same title, so nothing is resent.
+                    self.assertEqual("intervals_accepted", after["execution"]["delivery_state"])
+                else:
+                    self.assertEqual("not_published", after["execution"]["delivery_state"])
+                    self.assertIsNone(after["execution"]["external_id"])
+                    self.assertEqual("9001", after["execution"]["superseded_external_id"])
+                report = validate_bundle(
+                    self.context, before, projection["after_plan"], projection["decision_event"]
+                )
+                self.assertEqual("passed", report["status"], report["errors"])
+
+    def test_a_preview_shows_the_title_the_session_will_carry(self):
+        projection = self.project(
+            coaching_request(sessions=[self.replace_long_run(label="long_run")])
+        )
+        entry = next(
+            item for item in projection["preview"]["sessions"]
+            if item["session_id"] == "run-long-01"
+        )
+        self.assertEqual("12km easy run", entry["before"]["workout_name"])
+        self.assertEqual("長跑 45分", entry["after"]["workout_name"])
+
+
+class SessionLabelValidationTests(PlanChangeTestCase):
+    """PlanState accepts history with no label, and checks a label only when present."""
+
+    def with_label(self, session_id: str, label: Any) -> dict[str, Any]:
+        plan = copy.deepcopy(self.before)
+        self.sessions(plan)[session_id]["label"] = label
+        return plan
+
+    def test_history_with_no_label_and_a_run_with_no_name_both_validate(self):
+        self.assertEqual("passed", validate_plan_state(self.before)["status"])
+        plan = self.with_label("run-long-01", "long_run")
+        del self.sessions(plan)["run-long-01"]["plan"]["name"]
+        self.assertEqual("passed", validate_plan_state(plan)["status"])
+
+    def test_a_label_must_be_a_key_of_its_own_sport(self):
+        for session_id, label, fragment in (
+            ("run-long-01", "chest",
+             f"label must be one of {RUNNING_KEYS} for a running session"),
+            ("strength-upper-01", "long_run",
+             f"label must be one of {STRENGTH_KEYS} for a strength session"),
+            ("run-long-01", "jog", "for a running session"),
+            ("mobility-01", "core", "label is only carried by a running or strength session"),
+            ("rest-01", "easy_run", "label is only carried by a running or strength session"),
+        ):
+            with self.subTest(session_id=session_id, label=label):
+                report = validate_plan_state(self.with_label(session_id, label))
+                self.assertEqual("blocked", report["status"])
+                self.assertTrue(
+                    any(fragment in error for error in report["errors"]), report["errors"]
+                )
 
 
 if __name__ == "__main__":

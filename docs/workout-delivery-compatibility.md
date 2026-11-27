@@ -108,7 +108,7 @@ The existing delivery boundary derives an Intervals event roughly as:
   "external_id": "gcl:...",
   "category": "WORKOUT",
   "type": "Run",
-  "name": "...",
+  "name": "title composed from the session's label, e.g. 間歇跑 4x2分 40分",
   "start_date_local": "YYYY-MM-DDT00:00:00",
   "description": "Intervals workout text"
 }

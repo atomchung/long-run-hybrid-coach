@@ -46,6 +46,7 @@ from .athlete_evidence import GOAL_OPTIONAL_FIELDS, IMPORT_RESOLUTIONS
 from .context_view import ALL as READ_ALL, ALL_GROUPS, DEFAULT_READ, FOCUS_AXES
 from .decision_scope import DECISION_SCOPE_SCHEMA
 from .evidence_import import IMPORT_FORMATS
+from .prescription import SESSION_LABELS
 from .release_identity import sha256_text
 
 
@@ -341,15 +342,9 @@ _SESSION_PLAN: dict[str, Any] = {
                 "What the watch executes for a running session. One target kind per "
                 "session -- never mix pace and heart rate."
             ),
-            "required": ["kind", "name", "steps"],
+            "required": ["kind", "steps"],
             "properties": {
                 "kind": {"type": "string", "enum": ["time_axis"]},
-                "name": {
-                    "type": "string",
-                    "description": (
-                        "At most 80 characters; the title the athlete sees on the watch."
-                    ),
-                },
                 "steps": {"type": "array", "minItems": 1, "items": _WORKOUT_BLOCK},
             },
         },
@@ -459,11 +454,20 @@ _SESSION_CHANGE: dict[str, Any] = {
         "purpose": {
             "type": "string",
             "description": (
-                "Why this session exists, and the title a strength day reaches the "
-                "athlete's watch under. Required for replace and add; optional for "
-                "reduce and keep. On keep this is the only field you may send. Intent "
-                "only, never a prescription -- a number wearing a unit (4:30/km, 5km, "
-                "80kg, 150bpm, 85%) is refused and the error names it."
+                "Why this session exists; not its calendar title. Required for replace "
+                "and add; optional for reduce and keep. On keep this is the only field "
+                "you may send. Intent only, never a prescription -- a number wearing a "
+                "unit (4:30/km, 5km, 80kg, 150bpm, 85%) is refused and the error names it."
+            ),
+        },
+        "label": {
+            "type": "string",
+            "enum": [key for keys in SESSION_LABELS.values() for key in keys],
+            "description": (
+                "What kind of session this is. Required for replace and add of a running "
+                "or strength session; no other sport carries one. race and the *_run "
+                "keys are running, the rest strength. The calendar title is composed from "
+                "this key's word in the athlete's language and numbers the plan holds."
             ),
         },
         "coach_note": {
@@ -555,7 +559,11 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
                 "effect. Afterwards this is recordAthleteAvailability, not a change."
             ),
             "properties": {
-                "days": {"type": "array", "items": {"type": "string"}},
+                "days": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Weekday names: mon, tue, wed, thu, fri, sat, sun.",
+                },
                 "equipment": {"type": "array", "items": {"type": "string"}},
             },
         },

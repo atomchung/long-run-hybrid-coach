@@ -79,6 +79,7 @@ WEEK_TWO_ROLL: dict[str, Any] = {
     "sessions": [
         {
             "operation": "add",
+            "label": "easy_run",
             "sport": "running",
             "scheduled_date": "2026-08-26",
             "time_window": "evening",

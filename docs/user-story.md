@@ -100,9 +100,11 @@ updates state only to the rung actually observed.
 Every session in the week is published to the Intervals calendar, so the whole plan
 travels together rather than only its running half. What differs is how much
 structure each sport and downstream device can carry, and that grows only as the
-path earns it through evidence. A strength session is delivered today as a titled
-calendar entry: the title states the day's purpose plus the primary lift and its
-load, and the full prescription rides along as text. It carries no executable step
+path earns it through evidence. Every delivered title is composed by the product
+from the session's fixed label and numbers the plan already holds, in the athlete's
+language — `胸 臥推5x5 60kg`, `間歇跑 4x2分 40分` — so the same kind of session reads
+the same way every week. A strength session is delivered today as a titled calendar
+entry, and the full prescription rides along as text. It carries no executable step
 structure, and a read-back that contains one fails closed — the product must not
 imply it sent a structure it never built.
 

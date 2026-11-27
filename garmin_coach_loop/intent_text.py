@@ -1,11 +1,12 @@
 """An authored line may say what a session is for; it may not prescribe (issues #99, #56).
 
 `purpose` and `coach_note` are the two fields the Coach still writes in its own words.
-`purpose` carries intent ("hold aerobic base this week") and titles the calendar entry a
-strength session reaches the watch as; `coach_note` is the sentence the coach wants beside
-the session on the day -- why this week's long run is deliberately short, when to stop a
-set. Both reach the athlete verbatim and nothing derives anything from either, which is
-why both are scanned here by one pattern rather than by two rules that could drift apart.
+`purpose` carries intent ("hold aerobic base this week"), and still titles the calendar
+entry of a strength session written before `label` existed; `coach_note` is the sentence
+the coach wants beside the session on the day -- why this week's long run is deliberately
+short, when to stop a set. Both reach the athlete verbatim and nothing derives anything
+from either, which is why both are scanned here by one pattern rather than by two rules
+that could drift apart.
 
 Issue #93 deleted the layer that did -- eleven regular expressions re-reading the plan's
 own numbers out of the sentence reporting them -- and `FreeTextLayerCannotGrowBackTests` fails the build if any
@@ -27,9 +28,10 @@ because the pace check of the day scanned `prescription` and this field was besi
 archived issue #93 removed the surface for `prescription` by generating it; `purpose` stayed
 authored, so the same incident is reachable again through the same field.
 
-**Why a warning is not enough.** The athlete reads `purpose` first and the watch shows
-it as the calendar title. A warning is addressed to the Coach, which is the party that
-wrote the number; the athlete never sees it and the watch cannot.
+**Why a warning is not enough.** The athlete reads `purpose` first, and on a strength
+session with no `label` the watch shows it as the calendar title. A warning is addressed
+to the Coach, which is the party that wrote the number; the athlete never sees it and the
+watch cannot.
 
 **Why model judgment is not enough.** SKILL.md has said "the numbers live in `plan`"
 and "check every pace against the anchor it claims" for two issues now. archived issue #93's

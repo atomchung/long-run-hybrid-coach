@@ -194,6 +194,10 @@ FIRST_PLAN_INVENTORY: dict[tuple[Any, ...], dict[str, tuple[str, str]]] = {
         "planned_minutes": _d(ACCEPTED, "carried"),
         "plan": _d(ACCEPTED, "required object; nested shape is owned by validate_plan_state"),
         "purpose": _d(ACCEPTED, "carried"),
+        "label": _d(
+            ACCEPTED,
+            "required for a running or strength session, refused on any other sport",
+        ),
         "coach_note": _d(ACCEPTED, "optional on every operation, including a first-plan add"),
         "measures": _d(
             FORBIDDEN,
@@ -209,7 +213,6 @@ FIRST_PLAN_INVENTORY: dict[tuple[Any, ...], dict[str, tuple[str, str]]] = {
     },
     ("change_request", "sessions", "[]", "plan", "oneOf:time_axis"): {
         "kind": _d(OPAQUE, _PLAN_OPAQUE),
-        "name": _d(OPAQUE, _PLAN_OPAQUE),
         "steps": _d(OPAQUE, _PLAN_OPAQUE),
     },
     ("change_request", "sessions", "[]", "plan", "oneOf:movement_list"): {

@@ -43,6 +43,7 @@ CHANGE_REQUEST = {
     "sessions": [
         {
             "operation": "add",
+            "label": "tempo_run",
             "sport": "running",
             "scheduled_date": "2026-09-15",
             "time_window": "morning",

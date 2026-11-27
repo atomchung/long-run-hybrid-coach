@@ -95,6 +95,7 @@ from garmin_coach_loop.identity import (
     token_fingerprint,
 )
 from garmin_coach_loop.plan_init import project_initialization_request
+from garmin_coach_loop.prescription import language_of, session_title
 from garmin_coach_loop.proposals import (
     PROPOSAL_TTL_SECONDS,
     binding,
@@ -282,6 +283,19 @@ def _provider_step(step: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def delivered_name(session: dict[str, Any]) -> str | None:
+    """The calendar name delivery composes for a running session, or a change op on one.
+
+    A change operation carries no prescription, so it is titled in the default language,
+    and a replace that does not restate its sport is a run here because only a run's
+    steps are registered with the fake.
+    """
+    return session_title(
+        {**session, "sport": session.get("sport") or "running"},
+        language_of(session.get("plan"), session.get("prescription")),
+    )
+
+
 def _http_error(url: str, status: int) -> urllib.error.HTTPError:
     """A synthetic upstream failure with no response body to read or close."""
     return urllib.error.HTTPError(url, status, "denied", None, None)
@@ -360,7 +374,7 @@ class FakeIntervals:
         parser, so a test that changes a plan registers the result here.
         """
         self.steps_by_name.update({
-            session["plan"]["name"]: session["plan"]["steps"]
+            delivered_name(session): session["plan"]["steps"]
             for session in plan["week"]["sessions"]
             if session.get("plan", {}).get("kind") == "time_axis"
         })
@@ -1927,10 +1941,10 @@ ONBOARDING: dict[str, Any] = {
             "cost": "easy",
             "priority": "anchor",
             "planned_minutes": 30,
+            "label": "easy_run",
             "fallback": {"action": "reduce", "description": "縮到 20 分鐘，體感不變"},
             "plan": {
                 "kind": "time_axis",
-                "name": "30 分鐘輕鬆跑",
                 "steps": [
                     {
                         "kind": "work",
@@ -1951,6 +1965,7 @@ ONBOARDING: dict[str, Any] = {
             "cost": "moderate",
             "priority": "flexible",
             "planned_minutes": 40,
+            "label": "full_body",
             "fallback": {"action": "reduce", "description": "深蹲少做一組"},
             "plan": {
                 "kind": "movement_list",
@@ -1984,10 +1999,10 @@ ONBOARDING: dict[str, Any] = {
             "cost": "easy",
             "priority": "flexible",
             "planned_minutes": 35,
+            "label": "easy_run",
             "fallback": {"action": "reduce", "description": "縮到 25 分鐘"},
             "plan": {
                 "kind": "time_axis",
-                "name": "35 分鐘輕鬆跑",
                 "steps": [
                     {
                         "kind": "work",
@@ -2029,10 +2044,10 @@ def easy_run(**overrides: Any) -> dict[str, Any]:
         "cost": "easy",
         "priority": "anchor",
         "planned_minutes": 30,
+        "label": "easy_run",
         "fallback": {"action": "reduce", "description": "縮到 20 分鐘"},
         "plan": {
             "kind": "time_axis",
-            "name": "30 分鐘輕鬆跑",
             "steps": [
                 {
                     "kind": "work",
@@ -2861,7 +2876,8 @@ class GatewayInitializationTests(GatewayTestCase):
             item for item in plan["week"]["sessions"] if item["session_id"] == "running-2026-08-19"
         )
         self.assertEqual("time_axis", delivered["plan"]["kind"])
-        self.assertEqual("30 分鐘輕鬆跑", delivered["plan"]["name"])
+        self.assertEqual("easy_run", delivered["label"])
+        self.assertNotIn("name", delivered["plan"])
         self.assertEqual(delivered["plan"], prepared["preview"]["sessions"][1]["plan"])
         # And its prescription is the rendering of that plan, not something the request
         # was allowed to write.
@@ -3542,13 +3558,13 @@ WEEKLY_CHANGE: dict[str, Any] = {
             "operation": "replace",
             "session_id": "run-quality-01",
             "purpose": "以輕鬆有氧取代今天的品質課，保護小腿",
+            "label": "easy_run",
             "adaptation": "aerobic_base",
             "cost": "easy",
             "priority": "flexible",
             "planned_minutes": 45,
             "plan": {
                 "kind": "time_axis",
-                "name": "45 分鐘輕鬆跑",
                 "steps": [
                     {
                         "kind": "work",
@@ -3608,6 +3624,7 @@ STRENGTH_CHANGE: dict[str, Any] = {
             "operation": "replace",
             "session_id": "strength-upper-01",
             "purpose": "上拉為主的上肢課",
+            "label": "upper_body",
             "adaptation": "strength",
             "cost": "moderate",
             "planned_minutes": 45,
@@ -5331,7 +5348,10 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual(45, entry["after"]["planned_minutes"])
         self.assertEqual("easy", entry["after"]["cost"])
         self.assertEqual("輕鬆跑 45分 心率上限 150 bpm", entry["after"]["prescription"])
-        self.assertEqual("45 分鐘輕鬆跑", entry["after"]["workout_name"])
+        # The title is composed from the label; the session it replaces was written
+        # before labels and shows the plan.name it was titled with.
+        self.assertEqual("輕鬆跑 45分", entry["after"]["workout_name"])
+        self.assertEqual("5x1000m threshold", entry["before"]["workout_name"])
         self.assertIn("planned_minutes", entry["changed_fields"])
         self.assertEqual({"before": 327, "after": 312}, preview["weekly_planned_minutes"])
         self.assertEqual({"before": 1, "after": 0}, preview["hard_sessions"])
@@ -5946,6 +5966,7 @@ class GatewayDecisionTests(GatewayTestCase):
                     "operation": "replace",
                     "session_id": "strength-upper-01",
                     "purpose": "維持上肢肌力",
+                    "label": "upper_body",
                     "adaptation": "strength",
                     "cost": "moderate",
                     "planned_minutes": 50,
@@ -6141,6 +6162,7 @@ class GatewayDecisionTests(GatewayTestCase):
                     "operation": "replace",
                     "session_id": "strength-upper-01",
                     "purpose": "維持刺激就好，動作到場再定",
+                    "label": "upper_body",
                     "adaptation": "strength",
                     "cost": "easy",
                     "planned_minutes": 30,
@@ -9681,7 +9703,9 @@ class NonChineseAthleteJourneyTests(GatewayTestCase):
         written = self.fake.bulk_calls[0]
         # The calendar title an athlete actually sees on the watch, and the description
         # under it -- one language, because the title is written in the sentence's own.
-        self.assertEqual("維持下肢與上拉力量: 高腳杯深蹲 3x10 16kg", written["name"])
+        # The label's word follows the athlete's language; the lift keeps the
+        # athlete's own name for it.
+        self.assertEqual("Full body 高腳杯深蹲 3x10 16kg", written["name"])
         self.assertEqual(
             "高腳杯深蹲 3x10 16 kg\n引體向上 3 sets to failure bodyweight",
             written["description"],
@@ -12648,7 +12672,7 @@ class TwoAthleteJourneyTests(GatewayTestCase):
         # session carries no workout_doc of its own the way an hr_ceiling one does, so the
         # fake reconstructs it from a name it already knows). Teach it B's new session's
         # name too, so B's own delivery can be verified the same way A's is.
-        self.fake.steps_by_name[b_session["plan"]["name"]] = b_session["plan"]["steps"]
+        self.fake.steps_by_name[delivered_name(b_session)] = b_session["plan"]["steps"]
 
         # 5. From here the two athletes interleave call for call: A reviews Thursday's
         #    quality session, then B moves her only session -- each stepping only their

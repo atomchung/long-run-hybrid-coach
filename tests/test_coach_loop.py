@@ -2361,6 +2361,7 @@ class AthleteBaselineReadsThePlanBeingAdoptedTests(unittest.TestCase):
         run_long = self._session(self.before, "run-long-01")
         return {
             "operation": "replace",
+            "label": "long_run",
             "session_id": "run-long-01",
             "purpose": run_long["purpose"],
             "adaptation": run_long["adaptation"],
@@ -2475,7 +2476,7 @@ class SessionPlanTests(unittest.TestCase):
     def test_each_kind_is_validated_as_the_model_it_declares(self):
         for plan, expected_error in (
             ({"kind": "sequence"}, "kind must be one of"),
-            ({"kind": "time_axis", "movements": []}, "name is required"),
+            ({"kind": "time_axis", "movements": []}, "steps is required"),
             ({"kind": "movement_list", "steps": []}, "movements is required"),
             ({"kind": "unstructured", "movements": []}, "movements is not allowed"),
         ):
