@@ -146,6 +146,15 @@ than editing this one out from under the run it names. Those files are in
 [`suites/`](suites), one per question, each naming its own arms, `overlay_fields` and
 dimensions; the arms they were captured against sit under `arms/` beside this suite's.
 
+A packet carries the two served texts and the tool result, and no tool schema. Field
+descriptions reach a real client through the tool catalogue instead -- the only description
+of `resting_hr_bpm` the product serves is inside `startCoachSession`'s input schema -- so a
+packet built from the two texts alone cannot show what a description does to an answer. A
+suite asking that names the tools in a top-level `served_tools` list, and its packets then
+carry those tools' `tools/list` descriptors under `materials.tools`, read off
+`mcp_transport` so an edited description is a changed packet. A suite silent on it builds
+the packets it always built.
+
 Answer each packet as the coach, out of process, then:
 
 ```bash
@@ -722,3 +731,85 @@ Four of four pass with the tool and two of two fail without it, one sample per t
 model, about $0.67 in all. That is the before-and-after the tool needed and nothing more:
 it says nothing about ChatGPT, Grok or Gemini, nor about a run with several turns before
 the code. The answers are retained outside the repository with the other runs.
+
+### The 2026-11-27 run
+
+`resting-hr-without-sleep` v1, runs `2026-11-27-rhr-without-sleep` and
+`2026-11-27-rhr-without-sleep-described`. The question: when a day carries a resting heart
+rate and no sleep reading, does the coach read that number as fatigue and change today's
+session? A day the watch was not worn overnight still reports `resting_hr_bpm`, but as a
+waking value. On the owner's account, unslept days from 2026-09-01 to 11-27 averaged
+53.5 bpm against 42.2 on slept nights, under the same field name.
+
+**The read.** `05_sparse_recovery__values_mostly_absent` with its Intervals wellness feed
+replaced by ten synthetic days, passed through the product's own reader. Three slept
+nights show a resting heart rate of 42-44. The other seven show a resting heart rate
+alone, 52-58, and today and the two days before it are among them. The question is
+今天練什麼？ on Thursday 2026-08-13. Today's session is the week's threshold session,
+5x1000 m at 6:00/km. Its stored fallback reads "Replace with 30 minutes easy when
+multi-signal recovery is down". The brief asked for a moderate session, and no committed
+today read has one, so this is the stricter version of the question. The deterministic
+`recovery_trends.resting_hr` reads `within_baseline` here, as it did on the owner's
+account. Its baseline contains the waking values too, so only the model's own reading of
+the daily rows could turn them into a reason to cut the session.
+
+| arm | is |
+| --- | --- |
+| A `mixed-nights` | the shape the product hands back today |
+| B `slept-nights-only` | the same feed with every unslept day's resting heart rate removed; recovery reads stale |
+| C | A's tool result in the `-described` run, built with one served string replaced in memory: `resting_hr_bpm`'s description in `startCoachSession`'s input schema reads "Resting heart rate in beats per minute. On a day with no sleep recorded, it was not measured during sleep." |
+
+Packets differ in exactly that. A and C are byte-identical apart from that one sentence,
+the packet id and the binding. A and B differ in `recovery_signals`, `recovery_trends`,
+`coverage`, `freshness` and `unknowns`, all built through the reader. B leaves out one
+thing the product would add, because `validation` is beside the context and no overlay
+moves it: the warning *recovery freshness is stale; do not infer missing data*. Its
+`context.freshness.recovery` does read `stale`.
+
+**How it was answered.** Fifteen answers, all from one model (anthropic/claude-sonnet-5-5),
+each from its own `claude -p` (Claude Code 2.1.326). Each run started from a scratch
+directory outside every repository, with `--tools "" --strict-mcp-config`, and received
+the packet as its prompt. An in-repository subagent would have loaded this repository's
+`AGENTS.md` and memory. Invariant 3 there says a read must never become *evidence of
+recovery*, which would prime exactly the behaviour being measured. Every answer echoed its
+packet's binding, `record-response` checked it, and no run made a tool call. Cost about
+$1.40.
+
+| arm | n | (a) resting HR read as fatigue | (b) today's session changed for it | (c) unslept values named as not comparable | waking values cited as the reason today is fine |
+| --- | --- | --- | --- | --- | --- |
+| A | 6 | 0 | 0 | 1 | 5 |
+| B | 3 | 0 | 0 | — (no unslept value in its read) | 0; 3/3 say the last three days are unknown |
+| C | 6 | 0 | 0 | 3 | 3 |
+
+**Verdict: A does not misread.** No answer in any arm treats the higher resting heart
+rate as fatigue. Every answer runs today's session as planned, with the same back-off to
+6:10/km, and none invokes the recovery fallback on the heart rate. The failure this suite
+was built to find did not occur on this model and this read.
+
+**What A gets wrong instead runs the other way, and it costs no decision here.** Five of
+six A answers call the mixed values the athlete's baseline and give them as a reason the
+session is fine. Sample 1, under 為什麼可以跑: *"靜止心率 56，落在你的基線範圍內（近 7 天
+53–58）"*. That range leaves out the two slept nights inside the same seven days. Sample 3
+says *"沒有明顯的恢復警訊"*. The wording follows the deterministic `within_baseline`
+label, whose baseline mixes both kinds of value. B, which has no waking values, reaches
+the same session and says the last three nights are unknown, so on this read the cost is
+a miscalibrated reason, not a different plan. The one A sample that separates the two
+kinds of value does it on its own: *"有睡眠資料的日子是 42–44，其他日子是 52–58，落差大，
+我不把它當作恢復訊號"*. Recorded as deferred. A read that would reopen it: a slept night
+whose resting heart rate is high against the slept nights but inside the mixed baseline,
+answered as normal. This run does not contain one.
+
+**C moves the wording, not the decision, and not reliably.** Three of six C answers say
+the unslept values were not measured during sleep and cannot be compared, against one of
+six in A. Sample 5: *"今天的靜止心率 56 不是睡眠中量到的值，不能跟 8/10 的 44 比較"*. The
+other three still give the mixed baseline as a reason. Six samples per arm cannot separate
+a two-sample difference from noise. C has no reproducible failure to fix, which AGENTS.md
+12 asks a model-facing change to name. Shipping it costs client acceptance, Scan Tools
+and a new plugin version (`change_gates.py --base origin/main`), whether the sentence goes
+into `mcp_transport.py` or into `contracts/coach-context.schema.json`, which nothing serves
+at runtime. This run does not justify it on its own.
+
+**What this does not settle.** One model, one read, one question. Opus and other client
+families were not run. The packet carries one tool's schema where a real client sees the
+whole catalogue. No sample was asked twice in one conversation, and no sample saw a
+symptom or a subjective complaint beside the heart rate.

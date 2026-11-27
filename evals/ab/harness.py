@@ -176,6 +176,12 @@ def load_suite(path: Path = SUITE_PATH) -> dict[str, Any]:
             raise EvalError("overlay_fields must be a non-empty list of field names")
         for name in declared:
             _safe_id(name, "overlay_fields")
+    if "served_tools" in suite:
+        declared = suite["served_tools"]
+        if not isinstance(declared, list) or not declared:
+            raise EvalError("served_tools must be a non-empty list of tool names")
+        for name in declared:
+            _safe_id(name, "served_tools")
     turn_ids: list[str] = []
     for turn in suite["turns"]:
         turn_ids.append(_safe_id(turn.get("turn_id", ""), "turn_id"))
@@ -407,6 +413,30 @@ def _materials() -> dict[str, str]:
     }
 
 
+def served_tools(suite: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The tool definitions a suite asks its packets to carry, exactly as served.
+
+    Field semantics reach a real client through the tool catalogue -- a description
+    inside an ``inputSchema`` -- and through neither of the two texts above, so a packet
+    built from those two alone cannot show what a field description does to an answer.
+    A suite that is asking that question names the tools in ``served_tools``, and each
+    packet then carries those tools' ``tools/list`` descriptors read off
+    ``mcp_transport`` -- the same bytes a client is handed, so an edit to one is a
+    changed packet. A suite silent on it gets ``None`` and builds packets byte-identical
+    to every run before this option existed.
+    """
+    declared = suite.get("served_tools")
+    if declared is None:
+        return None
+    from garmin_coach_loop import mcp_transport
+
+    by_name = {tool.name: tool for tool in mcp_transport.TOOLS}
+    missing = [name for name in declared if name not in by_name]
+    if missing:
+        raise EvalError(f"served_tools names no such tool: {', '.join(missing)}")
+    return [copy.deepcopy(by_name[name].descriptor()) for name in declared]
+
+
 # The closing line record-response requires once a packet's own instructions carry it.
 # Named apart from the tuple below so record_response can check one packet's own stored
 # instructions for this exact sentence -- what decides whether the check applies is the
@@ -469,7 +499,12 @@ def _packet_binding(packet: dict[str, Any]) -> str:
 
 
 def build_packet(
-    *, run_id: str, arm_id: str, turn: dict[str, Any], response: dict[str, Any]
+    *,
+    run_id: str,
+    arm_id: str,
+    turn: dict[str, Any],
+    response: dict[str, Any],
+    tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One coach turn, with nothing in it that says which arm it is.
 
@@ -477,6 +512,7 @@ def build_packet(
     about the build. The mapping lives in the run manifest, which whoever answers is
     asked not to read. ``binding`` is a content digest, not an arm name: it moves when
     the tool result moves, including when the slot (run, arm, turn) stays the same.
+    ``tools`` is ``served_tools(suite)``; when given, ``materials`` carries it.
     """
     packet_id = _sha(f"{run_id}:{arm_id}:{turn['turn_id']}".encode("utf-8"))[:12]
     # A first conversation has no context at all -- `status: "no_plan_state"` carries
@@ -486,10 +522,13 @@ def build_packet(
     # every `plan_cycle` case about a first plan binds only to a no-plan read.
     context = response.get("context")
     asked_at = context.get("as_of") if isinstance(context, dict) else response.get("generated_at")
+    materials = _materials()
+    if tools is not None:
+        materials["tools"] = copy.deepcopy(tools)
     packet = {
         "packet_id": packet_id,
         "asked_at": asked_at,
-        "materials": _materials(),
+        "materials": materials,
         "instructions": list(PACKET_INSTRUCTIONS),
         "athlete_says": turn["question"],
         "start_coach_session": response,
@@ -531,6 +570,7 @@ def create_run(
         scenario: _scenario_response(scenario)
         for scenario in sorted({turn["scenario"] for turn in turns})
     }
+    tools = served_tools(suite)
 
     packets: list[dict[str, Any]] = []
     for turn in turns:
@@ -539,7 +579,7 @@ def create_run(
                 arm["arm_id"], turn["scenario"], suite, live=live_by_scenario[turn["scenario"]]
             )
             packet = build_packet(
-                run_id=run_id, arm_id=arm["arm_id"], turn=turn, response=response
+                run_id=run_id, arm_id=arm["arm_id"], turn=turn, response=response, tools=tools
             )
             path = run_dir / "packets" / f"{packet['packet_id']}.json"
             _write_new(path, packet)
