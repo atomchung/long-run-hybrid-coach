@@ -1,15 +1,16 @@
 # Publishing the watch companion on the Connect IQ Store — plan
 
-Status as of 2026-11-08: approved by the owner as recommended below. Nothing has been
+Status as of 2026-11-28: approved by the owner as recommended below. Nothing has been
 submitted to Garmin or accepted there.
 
 Order of work:
 
 1. Device pairing storage in the identity registry (`identity.py`): PR #534, merged.
 2. Pairing routes, the `connectWatch` tool, per-owner device credentials in place of the
-   environment variables, and the watch field's pairing screen: built after PR #533
-   merged; not yet deployed.
+   environment variables, and the watch field's pairing screen: PR #535, in production
+   since 1.4.11.
 3. Store build, listing and privacy page; submission from the owner's developer account.
+   The steps are under [Submitting](#submitting).
 4. Next milestone: own account (Intervals.icu plus Google), the Coach without Intervals.icu,
    and the device app.
 
@@ -116,6 +117,40 @@ Only the Forerunner 570 has run the field on a real device.
 - Privacy page: add the watch field — what it sends, the 24 h hold, how to stop. Add the sentence
   Garmin requires: data from the field goes to this service, not Garmin, and Garmin is not
   responsible for it.
+
+## Submitting
+
+The dashboard is apps-developer.garmin.com, signed in with the owner's Garmin account.
+
+1. **Display name.** Asked for on the first visit to the upload page and shown on every app
+   and review. Spaces are refused although the form's list of forbidden characters does not
+   name them.
+2. **Signing key.** The store key is not the sideload key. It lives outside every checkout,
+   readable by the owner only, and the owner keeps a copy in a password manager. Every update
+   of an app id must be signed with the key its first upload used.
+3. **Beta first.** `build.py --beta` builds the beta app id, named "… Beta", for the
+   Forerunner 570 in minutes. Sign it with the store key and upload it with the beta box
+   ticked: it is not listed and only the developer account can install it. The Store refuses
+   an upload whose version is not higher than the last one, so raise `--version` before every
+   later beta upload. A first upload
+   on SDK 9.2 and 9.3 can show "signature check failed", and some developers report that
+   every later submit of that app id then fails with HTTP 400 (Garmin forum, CIQQA-4716 and
+   CIQQA-4837, acknowledged and open as of 2026-11-28). Uploading the beta first means a
+   stuck record is the beta's, not the store app id's.
+4. **Install the beta the way an athlete would.** The website no longer installs apps
+   (since 2025-11-20). Open the beta's dashboard link on the phone so the Connect IQ Store app
+   takes over, install, sync, then pair and run. Remove the sideloaded field first. The beta
+   is another app id, so it goes on the data screen again and pairs again.
+5. **Every submit accepts the Connect IQ Developer Agreement** — the upload page says so —
+   so the first one waits for the owner. The agreement (updated 2024-08-06) has no AI
+   clause. Exhibit A asks for the privacy sentence above, no retention beyond need, express
+   consent before collecting data from Garmin, and no selling, renting or transferring
+   data about a user's activities received from Garmin.
+6. **Listing.** Text in [`entrypoints/garmin-live/store-listing.md`](../../entrypoints/garmin-live/store-listing.md).
+   Image sizes appear only after an `.iq` validates. Privacy URL:
+   `https://paceandstaystrong.com/privacy.html#watch-field`.
+7. **Store package.** `build.py --package` for every listed watch takes about 2.5 hours;
+   run it in the background. Upload without the beta box.
 
 ## Gateway changes on top of PR #533
 
