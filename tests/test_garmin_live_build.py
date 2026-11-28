@@ -3,6 +3,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1] / "entrypoints" / "garmin-live"
 _SPEC = importlib.util.spec_from_file_location("garmin_live_build", ROOT / "build.py")
@@ -30,6 +31,27 @@ class BetaBuildTest(unittest.TestCase):
         for strings in ROOT.glob("resources*/strings/strings.xml"):
             renamed = build.beta_name(strings.read_text(encoding="utf-8"))
             self.assertIn("Long Run Hybrid Coach Beta</string>", renamed)
+
+    def test_a_package_version_replaces_the_manifest_version_only(self):
+        text = (ROOT / "manifest.xml").read_text(encoding="utf-8")
+        versioned = build.with_version(text, "1.0.7")
+        self.assertIn('version="1.0.7">', versioned)
+        self.assertEqual(versioned.count('version="1.0.7"'), 1)
+        self.assertIn('version="3"', versioned)  # the manifest schema version is untouched
+        with self.assertRaises(ValueError):
+            build.with_version(text, "1.0")
+
+    def test_beta_refuses_a_watch_the_manifest_does_not_list(self):
+        with self.assertRaises(SystemExit):
+            with unittest.mock.patch("sys.argv", ["build.py", "--beta", "--device", "fr570", "--output-dir", "/tmp/x"]):
+                with unittest.mock.patch("sys.stderr"):
+                    build.main()
+
+    def test_beta_cannot_be_combined_with_the_store_package(self):
+        with self.assertRaises(SystemExit):
+            with unittest.mock.patch("sys.argv", ["build.py", "--beta", "--package", "--output-dir", "/tmp/x"]):
+                with unittest.mock.patch("sys.stderr"):
+                    build.main()
 
     def test_a_manifest_without_the_store_id_is_refused(self):
         with self.assertRaises(ValueError):
