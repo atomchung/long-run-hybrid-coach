@@ -1,19 +1,30 @@
 # Connect IQ Store listing
 
-The text and choices the developer dashboard asks for once an `.iq` validates. The beta and
-the store app use the same listing. The upload form shows image sizes only after an `.iq`
-validates, so the images below the text are added then. The
-icons, and `resources/drawables/launcher.png` (70 x 70, the largest launcher size among the
-listed watches; the resource compiler scales it down for the rest), come from
-`store_assets.py` beside the sprite generator.
+The text and choices the developer dashboard asks for once an `.iq` validates (form read on
+2026-11-28). The beta and the store app use the same listing. The icons, and
+`resources/drawables/launcher.png` (70 x 70, the largest launcher size among the listed
+watches; the resource compiler scales it down for the rest), come from `store_assets.py`
+beside the sprite generator.
 
-- **Developer display name:** chosen in the dashboard; it may not contain spaces.
-- **App name:** Long Run Hybrid Coach
-- **Activity types:** Running.
-- **Requires payment:** no.
-- **Privacy policy:** https://paceandstaystrong.com/privacy.html#watch-field
-- **Support email (public):** the address on https://paceandstaystrong.com/support.html
-- **Website:** https://paceandstaystrong.com
+- **Developer display name:** paceandstaystrong.com. It may not contain spaces; it can be
+  changed later under the dashboard's Settings tab, and must stay unique.
+- **Title:** Long Run Hybrid Coach (at most 50 characters per language; the beta adds " Beta").
+- **Languages:** English and 繁體中文, each with its own title and description (at most 4000
+  characters).
+- **Category:** 跑步 (Running); it has no subcategories.
+- **Collects user data:** yes, with the privacy URL
+  https://paceandstaystrong.com/privacy.html#watch-field
+- **ANT+ profiles:** no. **Region restrictions:** no. **Requires payment:** no.
+- **Cover image:** required, 500 x 500, JPG, GIF or PNG under 300 KB: `store_icon_1024.png`
+  scaled to 500.
+- **Screenshots:** at least one, each under 150 KB. Take them from the simulator with
+  `build.py --demo`. The beta carries the cover image in their place.
+- **Hero image:** optional, 1440 x 720, under 2048 KB. **On-device store icons:** optional,
+  128 x 128 with a reduced palette. **Preview video:** optional, YouTube or Vimeo.
+- **Activity types:** the whole running group (run, treadmill, street, trail, track, indoor,
+  virtual, obstacle, ultra).
+- **Public contact email:** the address on https://paceandstaystrong.com/support.html
+- **Review notifications:** yes. **Add support for new compatible devices:** no for the beta.
 
 ## Description (English)
 
