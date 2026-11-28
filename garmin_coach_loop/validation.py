@@ -67,10 +67,10 @@ SUPERSEDE_KINDS = {"corrected", "new_evidence", "policy_changed"}
 # (`_check_change_is_material`); whether a delivered workout is stale is
 # delivery_content.delivery_session_content's rule, not this one. `purpose` sits in the
 # second half, not the first: it never changes a number the watch executes, but a strength
-# session with no movement list reaches Intervals with purpose as the first line of its
-# calendar description. Rewording it is a change to what the athlete is told, so it belongs
-# here beside the fields that move training itself -- unlike `fallback` wording, which
-# names no delivered artifact and stays outside this set.
+# session with no movement list reaches Intervals titled with its purpose. Rewording it is
+# a change to what the athlete is told, so it belongs here beside the fields that move
+# training itself -- unlike `fallback` wording, which names no delivered artifact and stays
+# outside this set.
 # `coach_note` is here on exactly that argument (issue #56): it is delivered content, it
 # reaches the athlete's calendar, and attaching one to a session that is otherwise kept is
 # the case the field exists for -- so a revision that only adds a note is a real change to

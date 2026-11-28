@@ -468,12 +468,9 @@ def _calendar_entry_from_session(session: dict[str, Any]) -> dict[str, Any]:
     The athlete effectively sees only this title on the watch, so it is composed
     (`prescription.session_title`): the label's word, or the sport's for a session with
     none, then the primary lift and its measured load from the plan's first movement --
-    the model writes none of it. A plan with nothing to render (`unstructured`) leaves the
-    word alone.
-
-    That leaves an unstructured day with nothing on the calendar saying what it holds, and
-    its `purpose` is where the coach wrote the movements down ("反向划船與蹲姿單槓"). So
-    that day's description opens with its purpose, ahead of the prescription and the note.
+    the model writes none of it. A plan with nothing to render (`unstructured`) has no
+    lift to name, so its title is the coach's `purpose` ("背日：反向划船與蹲姿單槓"),
+    which is where that day's movements are written down.
 
     The title is written in whichever language the session's own prescription was, which
     is read off that sentence rather than passed in: the description below it *is* that
@@ -481,24 +478,17 @@ def _calendar_entry_from_session(session: dict[str, Any]) -> dict[str, Any]:
     would be this product's own doing.
     """
     prescription = session.get("prescription")
-    plan = session.get("plan")
-    text = prescription.strip() if isinstance(prescription, str) else ""
-    purpose = session.get("purpose")
-    if (
-        isinstance(plan, dict)
-        and plan.get("kind") == "unstructured"
-        and isinstance(purpose, str)
-        and purpose.strip()
-    ):
-        text = f"{purpose.strip()}\n{text}" if text else purpose.strip()
     return {
         "sport": "strength",
-        "name": _session_title(session, _language_of(plan, prescription)),
+        "name": _session_title(session, _language_of(session.get("plan"), prescription)),
         "scheduled_date": session["scheduled_date"],
         # The coach's sentence rides at the end of the prose the athlete already reads
         # here. Nothing parses a strength description, so there is no grammar to collide
         # with and no guard to run -- the note is simply the last paragraph of it.
-        "description": _with_coach_note(text, _session_coach_note(session)),
+        "description": _with_coach_note(
+            prescription.strip() if isinstance(prescription, str) else "",
+            _session_coach_note(session),
+        ),
     }
 
 

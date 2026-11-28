@@ -454,12 +454,12 @@ _SESSION_CHANGE: dict[str, Any] = {
         "purpose": {
             "type": "string",
             "description": (
-                "Why this session exists; never its calendar title. For a strength "
-                "session with no movement list it is the first line of the calendar "
-                "entry's description. Required for replace and add; optional for reduce "
-                "and keep. On keep this is the only field you may send. Intent only, "
-                "never a prescription -- a number wearing a unit (4:30/km, 5km, 80kg, "
-                "150bpm, 85%) is refused and the error names it."
+                "Why this session exists. For a strength session with no movement list "
+                "it is the calendar title, so name what the day trains and its "
+                "movements; otherwise it is not the title. Required for replace and add; "
+                "optional for reduce and keep. On keep this is the only field you may "
+                "send. Intent only, never a prescription -- a number wearing a unit "
+                "(4:30/km, 5km, 80kg, 150bpm, 85%) is refused and the error names it."
             ),
         },
         "label": {

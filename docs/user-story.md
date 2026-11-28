@@ -104,9 +104,10 @@ path earns it through evidence. Every delivered title is composed by the product
 from the session's fixed label (or, without one, its sport) and numbers the plan
 already holds, in the athlete's language — `胸 臥推5x5 60kg`, `間歇跑 4x2分 40分`,
 `跑步 60分` — so the same kind of session reads the same way every week. A strength
+day with no movement list keeps the coach's own sentence as its title
+(`背日：反向划船與蹲姿單槓`), because that is where its movements are named. A strength
 session is delivered today as a titled calendar entry, and the full prescription rides
-along as text, opened by the day's purpose when no movements were listed. It carries no
-executable step structure, and a read-back that contains one fails closed — the product
+along as text. It carries no executable step structure, and a read-back that contains one fails closed — the product
 must not imply it sent a structure it never built.
 
 ## Delivery honesty

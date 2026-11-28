@@ -394,9 +394,13 @@ def session_title(session: Any, language: str = DEFAULT_LANGUAGE) -> str | None:
     word when the session carries no label. Then come numbers the plan already holds, one
     space between each: for a run, the first repeat's count and rep duration and the
     session's ``planned_minutes``; for strength, the first movement and its measured load
-    (``strength_title_suffix``). The model writes none of the title, so the same kind of
-    session reads the same way every week, and nothing it once wrote -- a purpose, a run's
-    ``plan.name`` -- can go stale on the calendar.
+    (``strength_title_suffix``). The same kind of session reads the same way every week,
+    and a run's stored ``plan.name`` never reaches the calendar.
+
+    The one exception is a strength session with no movement list. Its plan holds nothing
+    to compose, so its ``purpose`` -- the coach's own sentence naming what the day trains
+    and its movements -- is the whole title, whatever its label; the label's or sport's
+    word stands in only when that sentence is blank.
 
     ``None`` for a sport that does not deliver.
     """
@@ -410,6 +414,14 @@ def session_title(session: Any, language: str = DEFAULT_LANGUAGE) -> str | None:
     label, plan = session.get("label"), session.get("plan")
     first_word = words[label] if label in labels else words[sport]
     if sport == "strength":
+        purpose = session.get("purpose")
+        if (
+            isinstance(plan, dict)
+            and plan.get("kind") == "unstructured"
+            and isinstance(purpose, str)
+            and purpose.strip()
+        ):
+            return purpose.strip()
         return strength_title(first_word, plan, language)
     return " ".join(
         part

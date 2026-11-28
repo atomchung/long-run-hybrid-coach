@@ -409,9 +409,10 @@ class DeliveryBookkeepingTests(PlanChangeTestCase):
         return projection, self.sessions(projection["after_plan"])[session_id]
 
     def test_rewording_purpose_keeps_a_delivery_whose_calendar_entry_it_never_reached(self):
-        # Every title comes from a label or the sport, and only an unstructured strength
-        # day's description carries purpose. So for these the event already on the
-        # calendar is still exactly what the plan says, and nothing is resent.
+        # These are titled from a label or the sport, and their descriptions come from the
+        # plan; only an unstructured strength day is titled by its purpose. So for these
+        # the event already on the calendar is still what the plan says, and nothing is
+        # resent.
         for session_id, label in (
             ("run-long-01", "long_run"),
             ("run-long-01", None),
@@ -437,10 +438,10 @@ class DeliveryBookkeepingTests(PlanChangeTestCase):
         self.assertEqual("9001", kept["execution"]["external_id"])
 
     def test_rewording_purpose_redelivers_an_unstructured_strength_day(self):
-        """A strength day with no movement list reaches the calendar with its purpose as
-        the description's first line, so a reword leaves the event saying something the
-        plan no longer does -- labelled or not. Nothing else moves -- match_status stays
-        planned -- so purpose alone carries both the materiality and the reset."""
+        """A strength day with no movement list reaches the calendar titled with its
+        purpose, so a reword leaves the event holding a title the plan no longer says --
+        labelled or not. Nothing else moves -- match_status stays planned -- so purpose
+        alone carries both the materiality and the reset."""
         for label in ("back", None):
             with self.subTest(label=label):
                 self._assert_unstructured_reword_redelivers(label)

@@ -35,17 +35,17 @@ def delivery_session_content(session: dict[str, Any]) -> dict[str, Any]:
     # calendar holds. Projected only when present, so a session with none carries no key.
     label = {"label": session["label"]} if "label" in session else {}
     # Delivered content `plan` does not carry, but only where it is still delivered: a
-    # strength session with an unstructured plan reaches Intervals with purpose as the
-    # first line of its description, so rewording it leaves the calendar saying something
-    # the plan no longer does. Every other session's title comes from its label or sport
-    # and its description from the plan, so purpose reaches nothing there, and projecting
-    # it would make a reword re-deliver an unchanged event the athlete then has to confirm.
+    # strength session with an unstructured plan reaches Intervals titled with its purpose,
+    # so rewording it leaves the calendar holding a title the plan no longer says. Every
+    # other session's title comes from its label or sport and its description from the
+    # plan, so purpose reaches nothing there, and projecting it would make a reword
+    # re-deliver an unchanged event the athlete then has to confirm.
     plan = session.get("plan") if isinstance(session.get("plan"), dict) else {}
     purpose: dict[str, Any] = {}
     if session.get("sport") == "strength" and plan.get("kind") == "unstructured":
         stored = session.get("purpose")
-        # The value delivery writes, which is the stored one without its outer whitespace
-        # (`delivery._calendar_entry_from_session`): a difference the calendar never shows
+        # The value delivery writes as the title, which is the stored one without its outer
+        # whitespace (`prescription.session_title`): a difference the calendar never shows
         # is not a reason to send the entry again.
         purpose["purpose"] = stored.strip() if isinstance(stored, str) else stored
     # A run's stored `plan.name` titled its calendar entry before titles were composed, and

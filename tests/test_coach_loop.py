@@ -318,10 +318,9 @@ class CoachLoopV1Tests(unittest.TestCase):
         # stands. Whatever the next assertion blocks, it is blocking the retitle itself.
         self.assertEqual("passed", validate_bundle(context, before, after, event)["status"])
 
-        # A strength day with no movement list reaches the calendar with purpose as its
-        # description's first line. Reword it and the accepted delivery says something the
-        # plan no longer does. The rendering does not move with it -- prescription is
-        # rendered from plan alone.
+        # A strength day with no movement list reaches the calendar titled with its
+        # purpose. Reword it and the accepted delivery is a title the plan no longer says.
+        # The rendering does not move with it -- prescription is rendered from plan alone.
         target["purpose"] = "Hold upper-body strength while the legs recover"
 
         stale = validate_bundle(context, before, after, event)
