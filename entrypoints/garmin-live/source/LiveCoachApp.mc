@@ -73,6 +73,7 @@ class LiveCoachField extends WatchUi.DataField {
     private var walking = false;
     private var moving = false;
     private var passed = 0;
+    private var counting = false;
     private var cheerUntil = 0;
     private var stampUntil = 0;
     private var doneUntil = 0;
@@ -80,6 +81,10 @@ class LiveCoachField extends WatchUi.DataField {
     private var code = null;
     private var retrySince = null;
     private var sprites as Lang.Dictionary = {};
+    // The empty eye of the sprite spriteFor last chose ([x, y] from SpriteEyes), or null when
+    // that sprite has its own pupil; and where its pupil rests when nothing is happening.
+    private var eye = null;
+    private var rest = :scenery;
 
     function initialize() {
         DataField.initialize();
@@ -143,9 +148,15 @@ class LiveCoachField extends WatchUi.DataField {
         }
         walking = moving && cadence.walking(info.currentCadence);
         var whole = RunMath.marksPassed(metres, unit);
-        if (timer != Activity.TIMER_STATE_OFF && whole > passed) {
-            passed = whole;
-            cheerUntil = ticks + 5000;
+        if (timer != Activity.TIMER_STATE_OFF) {
+            if (!counting) {
+                // A field that starts mid-run takes the distance already run as passed.
+                passed = whole;
+                counting = true;
+            } else if (whole > passed) {
+                passed = whole;
+                cheerUntil = ticks + 5000;
+            }
         }
         send(info, ticks);
     }
@@ -270,6 +281,9 @@ class LiveCoachField extends WatchUi.DataField {
         var sprite = spriteFor(zone, ticks);
         var surge = (moving && !walking && frame % 2 == 1) ? 3 : (moving && !walking ? -3 : 0);
         dc.drawBitmap(p.x(Face.SPRITE_X + surge), p.y(Face.SPRITE_Y), bitmap(sprite));
+        if (eye != null) {
+            Face.pupil(dc, p.x(Face.SPRITE_X + surge), p.y(Face.SPRITE_Y), p.k, eye, look(ticks));
+        }
         if (ticks < doneUntil) {
             Face.done(p);
         } else if (ticks < stampUntil) {
@@ -319,7 +333,11 @@ class LiveCoachField extends WatchUi.DataField {
         var spriteH = (spriteW * 136 / 159).toNumber();
         var left = 0;
         if (h >= spriteH && w >= spriteW * 2) {
-            dc.drawBitmap(w / 2 - spriteW - 4, (h - spriteH) / 2, bitmap(spriteFor(zone, System.getTimer())));
+            var ticks = System.getTimer();
+            dc.drawBitmap(w / 2 - spriteW - 4, (h - spriteH) / 2, bitmap(spriteFor(zone, ticks)));
+            if (eye != null) {
+                Face.pupil(dc, w / 2 - spriteW - 4, (h - spriteH) / 2, screen / 454.0, eye, look(ticks));
+            }
             left = w / 2;
         }
         var value = (hr == null) ? "--" : hr.format("%d");
@@ -348,6 +366,7 @@ class LiveCoachField extends WatchUi.DataField {
 
     private function spriteFor(zone, ticks) {
         var z = (zone == null) ? 1 : zone;
+        eye = null;
         if (timer == Activity.TIMER_STATE_PAUSED || timer == Activity.TIMER_STATE_STOPPED) {
             return Rez.Drawables.Sit;
         }
@@ -359,6 +378,8 @@ class LiveCoachField extends WatchUi.DataField {
             return Rez.Drawables.Stand;
         }
         if (walking) {
+            eye = SpriteEyes.WALK[frame % 2];
+            rest = :scenery;
             return (frame % 2 == 0) ? Rez.Drawables.Walk0 : Rez.Drawables.Walk1;
         }
         var run = [
@@ -368,7 +389,22 @@ class LiveCoachField extends WatchUi.DataField {
             [Rez.Drawables.RunZ4P0, Rez.Drawables.RunZ4P1, Rez.Drawables.RunZ4P2, Rez.Drawables.RunZ4P3],
             [Rez.Drawables.RunZ5P0, Rez.Drawables.RunZ5P1, Rez.Drawables.RunZ5P2, Rez.Drawables.RunZ5P3]
         ];
+        if (z <= 2) {
+            eye = SpriteEyes.RUN[z - 1][frame % 4];
+            rest = (z == 1) ? :scenery : :level;
+        }
         return run[z - 1][frame % 4];
+    }
+
+    // Where the drawn pupil looks this second (RunMath.gaze), with :rest resolved.
+    private function look(ticks) {
+        var ahead = null;
+        if (timer != Activity.TIMER_STATE_OFF) {
+            ahead = ((passed + 1) * unit - metres) * Face.PX_PER_M;
+        }
+        var cheerEnd = (cheerUntil > doneUntil) ? cheerUntil : doneUntil;
+        var g = RunMath.gaze(ticks, cheerEnd, stampUntil, ahead);
+        return (g == :rest) ? rest : g;
     }
 
     // Bitmaps load into the graphics pool on first use and stay referenced here.
@@ -433,6 +469,7 @@ class LiveCoachField extends WatchUi.DataField {
         completedSteps = 0;
         plannedSteps = null;
         passed = 0;
+        counting = false;
         frame = 0;
         cheerUntil = 0;
         stampUntil = 0;

@@ -51,3 +51,18 @@ function walkingNeedsAMedianFirst(logger) {
     Test.assert(median.median() == null);
     return true;
 }
+
+(:test)
+function theEyeMovesOnlyWhenSomethingHappens(logger) {
+    // Nothing happening: the usual gaze, also once the next flag is still off screen.
+    Test.assert(RunMath.gaze(100000, 0, 0, null) == :rest);
+    Test.assert(RunMath.gaze(100000, 0, 0, 300.0) == :rest);
+    // The next km flag on screen: ahead while far, down as it comes close.
+    Test.assert(RunMath.gaze(100000, 0, 0, 200.0) == :ahead);
+    Test.assert(RunMath.gaze(100000, 0, 0, 60.0) == :down);
+    // A finished step and the moment after a cheer look at the athlete, flag or not.
+    Test.assert(RunMath.gaze(100000, 0, 103000, 60.0) == :you);
+    Test.assert(RunMath.gaze(100000, 99000, 0, null) == :you);
+    Test.assert(RunMath.gaze(102000, 99000, 0, null) == :rest);
+    return true;
+}

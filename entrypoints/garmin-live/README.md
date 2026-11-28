@@ -21,8 +21,14 @@ There are no words on the field, so nothing needs translating.
   - **Mascot:** one form per zone, heating up from dark hatching to solid coral. It walks
     below 80% of the run's median moving cadence (the `live_run.py` rule), stands when not
     moving, and sits while the timer is paused.
+  - **Eye:** in zones 1 and 2 and while walking the field draws the pupil itself, so it moves
+    only when something happens. It rests looking up at the scenery (straight ahead in zone
+    2), turns to the next km flag once the flag is on screen and lower as it nears, and looks
+    at the athlete during a step stamp and for two seconds after a cheer. Zones 3 to 5 keep a
+    fixed stare.
   - **Kilometre flags:** a flag for each whole kilometre (mile on an imperial watch) scrolls
-    in and turns gold as it passes. The mascot cheers for five seconds.
+    in and turns gold as it passes. The mascot cheers for five seconds. A field that starts
+    mid-run counts the distance already run as passed, so it does not cheer for it.
   - **Workout steps:** each completed step shows a cream stamp. When the step count reaches
     the `planned_steps` an upload receipt reported, a gold check with confetti shows instead.
 - **Unreadable heart rate:** "--", a dark arc, and the zone-1 mascot.
@@ -35,7 +41,8 @@ There are no words on the field, so nothing needs translating.
 The data field redraws once a second (`View.onUpdate`); `WatchUi.animate`, layers and timers
 are not available to data fields, so every animation runs at one frame a second. The
 mascot sprites in `resources/drawables/sprites/` are drawn for a 454-pixel screen and scaled
-per device by the resource compiler (`scaleRelativeTo="screen"`).
+per device by the resource compiler (`scaleRelativeTo="screen"`). `source/SpriteEyes.mc`, where
+each sprite with a drawn pupil has its eye, comes from the same generator.
 
 ## Pairing
 

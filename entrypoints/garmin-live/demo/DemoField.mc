@@ -53,8 +53,9 @@ class DemoField extends LiveCoachField {
         return new DemoUpload();
     }
 
-    // A fixed set, so the scripted heart rates land in zones 1 to 5; the profile's own
-    // zones are printed to show whether a data field can read them.
+    // A fixed set, so the scripted heart rates land in zones 1, 5 and 2: the drawn eye moves in
+    // zones 1 and 2, so the km flag at 5000 m is passed in zone 2. The profile's own zones are
+    // printed to show whether a data field can read them.
     function heartRateZones() {
         System.println("heart-rate zones from the profile: " + LiveCoachField.heartRateZones());
         return [95, 114, 133, 152, 171, 190];
@@ -68,21 +69,21 @@ class DemoField extends LiveCoachField {
             finish();
         }
         demoPairing.paired = s >= 5;
-        var hr = 136;
-        var speed = 2.70;
-        var cadence = 82;
+        var hr = 108;
+        var speed = 2.50;
+        var cadence = 80;
         var state = Activity.TIMER_STATE_ON;
         if (s < 10) {
             state = Activity.TIMER_STATE_OFF;
             speed = 0.0;
         } else if (s < 20) {
-            hr = 136 + s % 3;
+            hr = 108 + s % 3;
         } else if (s < 30) {
             hr = 178 + s % 3;
             speed = 3.83;
             cadence = 92;
         } else if (s < 50) {
-            hr = 151 + s % 2;
+            hr = 125 + s % 2;
             speed = 2.99;
             cadence = 86;
             if (s == 30) {

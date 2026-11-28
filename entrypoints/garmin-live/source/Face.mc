@@ -105,6 +105,35 @@ module Face {
     const SPRITE_X = 72;
     const SPRITE_Y = 285;
 
+    // The pupil for a sprite drawn with an empty eye (SpriteEyes). left and top: the sprite's
+    // top-left corner on screen; k: screen pixels per design pixel; eye: [x, y] from
+    // SpriteEyes; look: :scenery (up and ahead), :level, :ahead, :down or :you. Offsets are the
+    // design's, in the sprite's 0.68 scale, and keep the pupil inside the 15-pixel eye.
+    function pupil(dc as Graphics.Dc, left, top, k, eye as Lang.Array, look) as Void {
+        var dx = 6.8;
+        var dy = -4.8;
+        if (look == :level) {
+            dx = 5.4;
+            dy = 0.7;
+        } else if (look == :ahead) {
+            dx = 7.5;
+            dy = 0.0;
+        } else if (look == :down) {
+            dx = 6.8;
+            dy = 4.8;
+        } else if (look == :you) {
+            dx = 0.0;
+            dy = 1.4;
+        }
+        var cx = left + (eye[0] + dx) * k;
+        var cy = top + (eye[1] + dy) * k;
+        dc.setColor(Ink.BLACK, Graphics.COLOR_TRANSPARENT);
+        dc.fillCircle(cx.toNumber(), cy.toNumber(), (7.1 * k + 0.5).toNumber());
+        var shine = (1.8 * k + 0.5).toNumber();
+        dc.setColor(Ink.CREAM, Graphics.COLOR_TRANSPARENT);
+        dc.fillCircle((cx + 2.0 * k).toNumber(), (cy - 2.7 * k).toNumber(), shine < 1 ? 1 : shine);
+    }
+
     // The heart-rate zone across the top of the dial: five segments, the current one lit
     // and thicker. No zone (no heart rate, or zones unavailable) leaves all five dim.
     function arc(p as Painter, zone) as Void {

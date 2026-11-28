@@ -65,6 +65,25 @@ module RunMath {
         return (metres / unitMetres).toNumber();
     }
 
+    // Where the jogging or walking mascot looks, so the eye moves only when something happens:
+    // at the athlete during a step stamp and for a moment after a cheer ends; at the next km
+    // flag once it is on screen, lower as it comes closer; otherwise :rest, its usual gaze.
+    // cheerEnd and stampEnd are the System.getTimer ticks those events end at (0 for none);
+    // flagAhead is how far ahead of the runner the next flag stands, in design pixels, or null.
+    const LOOK_BACK_MS = 2000;
+    const FLAG_SEEN = 230;
+    const FLAG_NEAR = 110;
+
+    function gaze(ticks, cheerEnd, stampEnd, flagAhead) {
+        if (ticks < stampEnd || (cheerEnd > 0 && ticks >= cheerEnd && ticks < cheerEnd + LOOK_BACK_MS)) {
+            return :you;
+        }
+        if (flagAhead != null && flagAhead > 0 && flagAhead < FLAG_SEEN) {
+            return (flagAhead > FLAG_NEAR) ? :ahead : :down;
+        }
+        return :rest;
+    }
+
     // Largest whole number not above value, for scroll positions that can be negative.
     function floorDiv(value, divisor) {
         var q = (value / divisor).toNumber();
