@@ -234,6 +234,12 @@ class SourceDomain:
     # from a local file or a client upload keeps doing so; this is what a hosted athlete
     # with neither has instead of nothing.
     recovery_days: list[dict[str, Any]] | None = None
+    # Activities this source holds whose type the product does not plan -- a generic
+    # workout, a walk -- as date, type, name, minutes and average heart rate, or ``None``
+    # when there are none or this source cannot tell. Kept out of ``recent_actuals`` so
+    # nothing matches them to a planned session or counts them as a sport's volume, and
+    # carried at all so a week that held one does not read as a week of nothing.
+    other_activities: list[dict[str, Any]] | None = None
 
 
 # --------------------------------------------------------------------------------------
@@ -3286,6 +3292,15 @@ def assemble_context(
             if not isinstance(actual.get("date"), str)
             or actual["date"] >= review_frame["detail_horizon_start"]
         ],
+        # The same horizon as `recent_actuals` just above, for the same reason: what
+        # predates the cycle is history, not a session a review reads one by one. Null,
+        # not an empty list, when nothing is left -- the shape `training_breaks` takes.
+        "other_activities": [
+            row
+            for row in domain.other_activities or []
+            if row["date"] >= review_frame["detail_horizon_start"]
+        ]
+        or None,
         "recovery_trends": domain.recovery_trends,
         "current_calendar": current_calendar,
         "cycle_sessions": cycle_session_records,

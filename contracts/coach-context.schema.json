@@ -457,6 +457,21 @@
         "$ref": "#/$defs/actual"
       }
     },
+    "other_activities": {
+      "description": "Activities the provider holds whose type this product does not plan or reconcile -- a generic workout, a walk, a ski day -- from review_frame.detail_horizon_start onward, one row each, or null when there are none. Training that happened: never matched to a planned session and never counted toward any sport's volume, so a day holding one is not a day without training. The row states what was recorded and nothing it does not know: no sport, no intensity, no cost.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/other_activity"
+          }
+        }
+      ]
+    },
     "recovery_trends": {
       "type": "object",
       "additionalProperties": false,
@@ -3614,6 +3629,52 @@
           "items": {
             "$ref": "#/$defs/reported_recovery_day"
           }
+        }
+      }
+    },
+    "other_activity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "date",
+        "provider_type",
+        "name",
+        "duration_minutes",
+        "average_hr"
+      ],
+      "properties": {
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "provider_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "The provider's own type for the activity, verbatim, e.g. Workout or Walk."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "The athlete's or the device's name for the activity, verbatim, or null when it has none."
+        },
+        "duration_minutes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "average_hr": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
         }
       }
     }

@@ -358,6 +358,7 @@
       "long_term_goals": null,
       "measurement_evidence": null,
       "movement_history": null,
+      "other_activities": null,
       "privacy": {
         "contains_connection_state": false,
         "contains_credentials": false,

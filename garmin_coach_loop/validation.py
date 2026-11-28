@@ -1887,6 +1887,49 @@ def _validate_training_breaks(value: Any, field: str, errors: list[str]) -> None
         _validate_training_break(raw, f"{field}[{index}]", errors)
 
 
+OTHER_ACTIVITY_FIELDS = ("date", "provider_type", "name", "duration_minutes", "average_hr")
+
+
+def _validate_other_activities(value: Any, field: str, errors: list[str]) -> None:
+    """Activities of a type the product does not plan, or ``null`` when there are none
+    (issue #558).
+
+    Structure only, and the row shape is the guarantee: there is no sport, intensity or
+    cost on a row, so nothing here can be matched to a planned session, counted toward
+    a sport's volume, or turned into a verdict about the day. Nothing deterministic
+    reads it.
+    """
+    if value is None:
+        return
+    rows = _list(value, field, errors)
+    if not rows:
+        # Null already says there were none. An empty list is a second spelling of one
+        # fact, and two spellings drift.
+        errors.append(f"{field} must be null rather than an empty list")
+    for index, raw in enumerate(rows):
+        row_field = f"{field}[{index}]"
+        row = _mapping(raw, row_field, errors)
+        _keys(row, row_field, OTHER_ACTIVITY_FIELDS, errors)
+        _date(row.get("date"), f"{row_field}.date", errors)
+        provider_type = row.get("provider_type")
+        _nonempty(provider_type, f"{row_field}.provider_type", errors)
+        if isinstance(provider_type, str) and len(provider_type) > 40:
+            errors.append(f"{row_field}.provider_type must be at most 40 characters")
+        name = row.get("name")
+        _string_or_null(name, f"{row_field}.name", errors)
+        if isinstance(name, str) and len(name) > 80:
+            errors.append(f"{row_field}.name must be at most 80 characters")
+        _integer_or_null(row.get("duration_minutes"), f"{row_field}.duration_minutes", errors, minimum=1)
+        average_hr = row.get("average_hr")
+        _number_or_null(average_hr, f"{row_field}.average_hr", errors)
+        if (
+            isinstance(average_hr, (int, float))
+            and not isinstance(average_hr, bool)
+            and average_hr <= 0
+        ):
+            errors.append(f"{row_field}.average_hr must be > 0 or null")
+
+
 def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     """Validate sanitized context shape without interpreting unknown as recovery."""
 
@@ -1948,6 +1991,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             "training_history",
             "training_breaks",
             "evidence_expectations",
+            "other_activities",
         ),
     )
     if context.get("schema_version") != COACH_CONTEXT_SCHEMA_VERSION:
@@ -2464,6 +2508,9 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     )
     _validate_training_breaks(
         context.get("training_breaks"), "context.training_breaks", errors
+    )
+    _validate_other_activities(
+        context.get("other_activities"), "context.other_activities", errors
     )
     _validate_evidence_expectations(
         context.get("evidence_expectations"), "context.evidence_expectations", errors
