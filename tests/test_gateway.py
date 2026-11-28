@@ -48,6 +48,7 @@ from garmin_coach_loop.gateway import (
     RELEASE_INSTRUCTIONS_SHA_ENV_VAR,
     RELEASE_SKILL_SHA_ENV_VAR,
     RELEASE_TOOL_CATALOGUE_SHA_ENV_VAR,
+    STATE_READ_UNKNOWNS,
     CoachGateway,
     PRODUCT_VERSION,
     CoachGatewayHandler,
@@ -1594,6 +1595,43 @@ class GatewayStateTests(GatewayTestCase):
         self.assertEqual([], self.fake.calls)
         # Reading an account with no plan must not be the thing that creates one.
         self.assertFalse(self.owner_dir(owner_id).exists())
+
+    def test_a_status_read_with_no_plan_says_the_training_history_is_unread(self):
+        # The harmful case: a status check on a new account answered only "no plan", and
+        # the coach asked the athlete how far they run each week -- a figure Intervals
+        # already held and this read never looked at. The answer has to say which read
+        # holds it, so the first plan is authored from that history rather than from a
+        # questionnaire about it.
+        self.seed_owner(TOKEN_B, athlete_id="i2")
+
+        _, payload = self.route("state", token=TOKEN_B)
+
+        history = [entry for entry in payload["unknowns"] if "training history" in entry]
+        self.assertEqual(1, len(history), payload["unknowns"])
+        self.assertIn("made no Intervals request", history[0])
+        self.assertIn("startCoachSession reads it", history[0])
+        self.assertIn("first plan", history[0])
+        # There is no stored evidence on this branch whose freshness could be in doubt.
+        self.assertFalse(
+            [entry for entry in payload["unknowns"] if entry.startswith("freshness")],
+            payload["unknowns"],
+        )
+        # Today's status is still the session's to take.
+        self.assertIn(STATE_READ_UNKNOWNS[1], payload["unknowns"])
+        self.assertEqual([], self.fake.calls)
+
+    def test_a_status_read_with_a_plan_keeps_its_freshness_unknown(self):
+        # The false-positive control: a plan's summary still says its evidence may be
+        # stale, and does not claim the athlete's training history is unread. TOKEN_A's
+        # account holds a plan from setUp.
+        _, payload = self.route("state", token=TOKEN_A)
+
+        self.assertEqual("passed", payload["status"])
+        self.assertEqual(list(STATE_READ_UNKNOWNS), payload["unknowns"])
+        self.assertFalse(
+            [entry for entry in payload["unknowns"] if "training history" in entry],
+            payload["unknowns"],
+        )
 
     def test_a_request_body_is_refused_rather_than_silently_ignored(self):
         status, payload = self.route(

@@ -1984,6 +1984,19 @@ STATE_READ_UNKNOWNS: tuple[str, ...] = (
     "startCoachSession to report it",
 )
 
+# The same read on an account with no plan. There is no stored evidence whose freshness
+# could be in doubt, so the first entry above says nothing; what this read does not hold
+# is the training Intervals already has, which is what a first plan is built from. Without
+# saying so, a status check on a new account answered "no plan" and the coach went on to
+# ask the athlete how far they run each week -- a figure their watch had already sent
+# (issue #553).
+NO_PLAN_STATE_READ_UNKNOWNS: tuple[str, ...] = (
+    "the athlete's training history -- this call made no Intervals request, so it holds "
+    "none of what their device has already recorded there; startCoachSession reads it, "
+    "and a first plan starts from that read",
+    STATE_READ_UNKNOWNS[1],
+)
+
 
 # The two confirmations whose proposal is refused outright when the build moves under
 # it. Both write something no later call can undo -- an erasure, and the first plan of an
@@ -5444,7 +5457,9 @@ class CoachGateway:
                 "pending_delivery_attempt_id": None,
                 "unknowns": [
                     "no PlanState exists for this account",
-                    *product_scope.state_read_unknowns(self.config.health_data, STATE_READ_UNKNOWNS),
+                    *product_scope.state_read_unknowns(
+                        self.config.health_data, NO_PLAN_STATE_READ_UNKNOWNS
+                    ),
                 ],
             }
         current = read_current_plan(state_dir)
