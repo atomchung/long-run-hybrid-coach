@@ -140,7 +140,11 @@ class LiveCoachField extends WatchUi.DataField {
         speed = info.currentSpeed;
         timerMs = (info.timerTime == null) ? 0 : info.timerTime;
         metres = (info.elapsedDistance == null) ? 0.0 : info.elapsedDistance.toFloat();
-        timer = (info.timerState == null) ? Activity.TIMER_STATE_OFF : info.timerState;
+        // A missing timer state keeps the last one: reading it as stopped would end the upload
+        // session mid-run and split the recap in two.
+        if (info.timerState != null) {
+            timer = info.timerState;
+        }
         moving = timer == Activity.TIMER_STATE_ON && speed != null && speed >= 0.3;
         if (moving) {
             cadence.add(info.currentCadence);
@@ -199,9 +203,10 @@ class LiveCoachField extends WatchUi.DataField {
             unpaired(false, ticks);
             return;
         }
-        var planned = up.plannedSteps();
-        if (planned != null) {
-            plannedSteps = planned;
+        // The count belongs to the running session: it follows the upload's answer, null
+        // included, and is not copied back after finish() cleared it for the next run.
+        if (timer == Activity.TIMER_STATE_ON) {
+            plannedSteps = up.plannedSteps();
         }
         var status = up.status(ticks);
         if (status.equals("Ready")) {
