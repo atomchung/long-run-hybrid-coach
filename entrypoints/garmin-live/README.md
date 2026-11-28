@@ -82,13 +82,23 @@ python3 -B build.py --output-dir "$HOME/Library/Caches/CoachFieldBuilds"
 python3 -B build.py --server https://staging.example.com --output-dir "$HOME/Library/Caches/CoachFieldBuilds"
 # The Connect IQ Store package for every listed watch
 python3 -B build.py --package --output-dir "$HOME/Library/Caches/CoachFieldBuilds"
+# A beta package for the Forerunner 570 only (--device picks others)
+python3 -B build.py --beta --output-dir "$HOME/Library/Caches/CoachFieldBuilds"
 # Check the manifest's watches against the installed device profiles
 python3 -B build.py --output-dir "$HOME/Library/Caches/CoachFieldBuilds" \
   --check-devices "$HOME/Library/Application Support/Garmin/ConnectIQ/Devices"
 ```
 
 A sideload build writes `Coach.prg` per device; copy the one for your watch into
-`GARMIN/APPS` over USB. `--device` (repeatable) picks other watches.
+`GARMIN/APPS` over USB. `--device` (repeatable) picks other watches. Resending the same
+file replaces the app and keeps it in the data screen it was placed on.
+
+A beta (`--beta`) is a Connect IQ Store entry only the developer's account sees: no review,
+updated as often as needed, and installed and updated from the phone instead of over USB.
+Garmin keeps it apart from the released app, so it has its own fixed app id (`BETA_APP_ID`
+in `build.py`) and its name ends in "Beta"; the watch treats it as a different field, so it
+is placed on a data screen once. Upload `CoachBeta.iq` with "Beta App" checked, signed with
+the same key every time. The released app keeps the store app id and goes through review.
 
 The manifest lists every watch whose profiles run data fields at API level 5.0 or later
 (the first level that lets a data field send from the foreground): 76 profiles in SDK
