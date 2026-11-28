@@ -27,6 +27,7 @@ from garmin_coach_loop import (
 )
 from garmin_coach_loop.gateway import (
     INTERVALS_OAUTH_SCOPES,
+    NO_PLAN_STATE_READ_UNKNOWNS,
     STATE_READ_UNKNOWNS,
     CoachGateway,
     GatewayConfig,
@@ -203,6 +204,11 @@ class TrainingSurfaceTests(unittest.TestCase):
         without = product_scope.state_read_unknowns(False, STATE_READ_UNKNOWNS)
         self.assertFalse(any("red flags" in entry for entry in without))
         self.assertEqual(STATE_READ_UNKNOWNS, product_scope.state_read_unknowns(True, STATE_READ_UNKNOWNS))
+
+    def test_the_no_plan_status_read_stops_asking_for_red_flags_and_keeps_the_history_unknown(self):
+        without = product_scope.state_read_unknowns(False, NO_PLAN_STATE_READ_UNKNOWNS)
+        self.assertFalse(any("red flags" in entry for entry in without))
+        self.assertEqual(NO_PLAN_STATE_READ_UNKNOWNS[0], without[0])
 
 
 class RefusalTests(unittest.TestCase):
