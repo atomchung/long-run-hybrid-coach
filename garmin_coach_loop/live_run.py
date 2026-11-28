@@ -35,6 +35,9 @@ METRICS = ("heart_rate_bpm", "cadence_rpm", "speed_mps")
 FIELDS = {"session_id", "seq", "observed_at", "state", *METRICS}
 # A watch build older than these simply has no summary.
 OPTIONAL_METRICS = ("timer_ms", "distance_m", "altitude_m", "ascent_m", "descent_m", "power_w", "steps_done")
+# A watch's timer is a 32-bit millisecond count; anything past two weeks is not a run, and a
+# start derived from it could leave the datetime range and fail every read of the recap.
+MAX_TIMER_MS = 14 * 24 * 3600 * 1000
 # A day of samples at the watch's pace. A session past it is thinned, never cut, so the
 # summary still spans the whole run.
 MAX_RUN_SAMPLES = RETENTION_SECONDS // SAMPLE_INTERVAL_SECONDS
@@ -116,6 +119,8 @@ def _validate(sample: dict[str, Any]) -> None:
             continue
         if type(value) not in (int, float) or not math.isfinite(value) or (value < 0 and key != "altitude_m"):
             raise ValueError(f"{key} must be a finite number or null")
+        if key == "timer_ms" and value > MAX_TIMER_MS:
+            raise ValueError("timer_ms is longer than any run")
 
 
 def _mean(values: list[float]) -> float | None:
@@ -258,18 +263,27 @@ def _stretches(samples: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], flo
     return stretches, stopped_seconds
 
 
-def summarize_run(samples: list[dict[str, Any]]) -> dict[str, Any] | None:
+def summarize_run(samples: list[dict[str, Any]],
+                  closing: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """The whole run, from every running sample kept of it.
 
-    Compact, because a client carries every read. Totals are the watch's own: distance, timer, ascent and descent at the last sample.
+    Compact, because a client carries every read. Totals are the watch's own: distance, timer,
+    ascent, descent and completed steps at the last sample, or at ``closing`` -- the pause or
+    end that followed it, which carries the totals at the stop -- when it is not earlier.
     Moving time leaves out the timer seconds spent standing, and average pace is over
     moving time.
     """
     if not samples:
         return None
     first, last = samples[0], samples[-1]
+    stop = closing if closing is not None and (closing.get("timer_ms") or 0) >= last["timer_ms"] else None
+
+    def total(key: str) -> Any:
+        value = None if stop is None else stop.get(key)
+        return last.get(key) if value is None else value
+
     stretches, stopped_seconds = _stretches(samples)
-    timer_seconds = last["timer_ms"] / 1000
+    timer_seconds = total("timer_ms") / 1000
     moving_seconds = max(timer_seconds - stopped_seconds, 0.0)
     rates = [s["heart_rate_bpm"] for s in samples if s["heart_rate_bpm"]]
     cadence = [_steps_per_minute(s["cadence_rpm"]) for s in samples if s["cadence_rpm"] and _moving(s)]
@@ -282,13 +296,13 @@ def summarize_run(samples: list[dict[str, Any]]) -> dict[str, Any] | None:
         "started_at": _iso(first["observed_at"] - first["timer_ms"] / 1000),
         "timer_minutes": round(timer_seconds / 60, 1),
         "moving_minutes": round(moving_seconds / 60, 1),
-        "distance_km": None if last.get("distance_m") is None else round(last["distance_m"] / 1000, 2),
-        "average_pace_sec_per_km": _pace(moving_seconds, last.get("distance_m")),
+        "distance_km": None if total("distance_m") is None else round(total("distance_m") / 1000, 2),
+        "average_pace_sec_per_km": _pace(moving_seconds, total("distance_m")),
         "average_hr": _rounded(_mean(rates)),
         "max_hr": max(rates, default=None),
         "average_steps_per_minute": _rounded(_mean(cadence)),
-        "ascent_m": _rounded(last.get("ascent_m")),
-        "descent_m": _rounded(last.get("descent_m")),
+        "ascent_m": _rounded(total("ascent_m")),
+        "descent_m": _rounded(total("descent_m")),
         "first_third": None if thirds is None else thirds[0],
         "last_third": None if thirds is None else thirds[1],
         "stopped_or_walking": stretches,
@@ -297,8 +311,8 @@ def summarize_run(samples: list[dict[str, Any]]) -> dict[str, Any] | None:
         ],
     }
     # The watch counts completed workout steps and sends 0 on a run with no workout.
-    if last.get("steps_done"):
-        summary["workout_steps_done"] = round(last["steps_done"])
+    if total("steps_done"):
+        summary["workout_steps_done"] = round(total("steps_done"))
     return summary
 
 
@@ -363,7 +377,12 @@ class LiveRunStore:
                 previous = current.sample
                 if session == previous["session_id"]:
                     if seq == previous["seq"]:
-                        return {**receipt, "status": "duplicate"} if sample == previous else receipt
+                        if sample != previous:
+                            return receipt
+                        # A retransmitted first sample answers what the lost receipt did.
+                        if sample["state"] == "running":
+                            return {**receipt, "status": "duplicate", "planned_steps": current.planned_steps}
+                        return {**receipt, "status": "duplicate"}
                     if seq < previous["seq"] or observed < previous["observed_at"] or previous["state"] == "ended":
                         return receipt
                 elif observed <= previous["observed_at"] or retired.get(session, -math.inf) > arrival:
@@ -410,13 +429,21 @@ class LiveRunStore:
             # Count travel time and elapsed time even if the server wall clock moves back.
             elapsed = arrival - current.arrival
             current.age_at_arrival = max(current.age_at_arrival, now - current.sample["observed_at"] - elapsed)
+            latest = current.sample
+            closing = latest if latest["state"] != "running" and latest.get("timer_ms") is not None else None
+            try:
+                summary = summarize_run(current.samples, closing) or {}
+            except (ValueError, OverflowError, OSError):
+                # A run the summary cannot be built from is still reported, without totals,
+                # rather than failing the whole Coach read it rides on.
+                summary = {}
             return {
                 "source": "garmin_watch",
                 "note": NOTE,
-                "state": current.sample["state"],
-                "last_sample_at": _iso(current.sample["observed_at"]),
+                "state": latest["state"],
+                "last_sample_at": _iso(latest["observed_at"]),
                 "age_seconds": round(current.age_at_arrival + elapsed),
-                **(summarize_run(current.samples) or {}),
+                **summary,
             }
 
     def discard(self, owner_id: str) -> None:

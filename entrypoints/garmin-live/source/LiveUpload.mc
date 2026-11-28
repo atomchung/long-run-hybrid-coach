@@ -47,7 +47,8 @@ class LiveUpload {
             "state" => phase, "heart_rate_bpm" => hr, "cadence_rpm" => cadence,
             "speed_mps" => speed
         };
-        if (phase.equals("running") && extra != null) {
+        // A pause or end carries the totals the field set last, which is where they stopped.
+        if (extra != null) {
             var keys = extra.keys();
             for (var i = 0; i < keys.size(); i += 1) {
                 result[keys[i]] = extra[keys[i]];

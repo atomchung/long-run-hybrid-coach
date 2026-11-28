@@ -210,7 +210,9 @@ class PlannedStepsReceiptTests(WatchGatewayTestCase):
         # Warm-up, five repetitions of two steps, cool-down.
         self.assertEqual(("accepted", 12), (first["status"], first["planned_steps"]))
         self.assertEqual(12, self.post(running(2, 10000, now + 5))["planned_steps"])
-        self.assertEqual({"session_id", "seq", "status"}, set(self.post(running(2, 10000, now + 5))))
+        # A retransmission answers what the lost receipt did.
+        again = self.post(running(2, 10000, now + 5))
+        self.assertEqual(("duplicate", 12), (again["status"], again["planned_steps"]))
         paused = self.post({**running(3, 15000, now + 10), "state": "paused"})
         self.assertEqual({"session_id", "seq", "status"}, set(paused))
 
