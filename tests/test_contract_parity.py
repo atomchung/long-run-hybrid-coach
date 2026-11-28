@@ -160,9 +160,10 @@ def _build_cases() -> list[Case]:
     ):
         add(
             f"SESSION_PLAN_FIELDS[{kind!r}]",
-            validation.SESSION_PLAN_FIELDS[kind], (),
+            validation.SESSION_PLAN_FIELDS[kind],
+            validation.SESSION_PLAN_OPTIONAL_FIELDS[kind],
             PD[def_name],
-            {"SESSION_PLAN_FIELDS"},
+            {"SESSION_PLAN_FIELDS", "SESSION_PLAN_OPTIONAL_FIELDS"},
         )
 
     add(

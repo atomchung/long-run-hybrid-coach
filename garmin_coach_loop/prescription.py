@@ -46,14 +46,42 @@ from typing import Any
 DEFAULT_LANGUAGE = "zh-Hant"
 LANGUAGES = ("zh-Hant", "en")
 
+# What kind of session this is, as one fixed key per sport. A delivered calendar title
+# starts with this key's word from the table below -- or with the sport's own word when a
+# session carries none -- so the same kind of session carries the same title every week
+# and in the athlete's own language. Only the two sports that deliver carry one; the order
+# is the order an error lists them in.
+SESSION_LABELS: dict[str, tuple[str, ...]] = {
+    "running": (
+        "easy_run",
+        "long_run",
+        "recovery_run",
+        "tempo_run",
+        "interval_run",
+        "hill_run",
+        "race_pace_run",
+        "test_run",
+        "race",
+    ),
+    "strength": (
+        "chest",
+        "back",
+        "legs",
+        "shoulders_arms",
+        "core",
+        "upper_body",
+        "lower_body",
+        "full_body",
+    ),
+}
+
 # The two vocabularies. Every entry is either a plain word or a format string over values
 # the plan already holds -- there is no per-field translation layer, and adding a third
 # language would be adding a third entry here and nothing else.
 #
 # The English side is written for the two places it actually lands: an Intervals event
-# description and a strength day's calendar title, both of which reach the athlete's watch
-# through the sync chain. So it stays short and unpunctuated, the same shape the Chinese
-# side has.
+# description and a calendar title, both of which reach the athlete's watch through the
+# sync chain. So it stays short and unpunctuated, the same shape the Chinese side has.
 _WORDS: dict[str, dict[str, str]] = {
     "zh-Hant": {
         # What an unstructured session says, in full. It is a constant on purpose: the
@@ -77,11 +105,40 @@ _WORDS: dict[str, dict[str, str]] = {
         "failure_sets": "{sets}組力竭",
         "load_kg": "{value}公斤",
         "assist_kg": "輔助{value}公斤",
-        # A watch title has less room than the full prescription's sentence, so load is
-        # spelled in the short unit there. Only the unit differs between the two.
+        # A watch title has less room than the full prescription's sentence, so its
+        # numbers are spelled compactly: the short load unit, and a repeat's duration with
+        # no space inside it.
         "title_load_kg": "{value}kg",
         "title_assist_kg": "輔助{value}kg",
-        "title_separator": "：",
+        "title_movement": "{name}{scheme}",
+        "title_repeat": "{count}x{duration}",
+        "title_duration_min": "{minutes}分",
+        "title_duration_sec": "{seconds}秒",
+        "title_distance_km": "{value}km",
+        "title_distance_m": "{value}m",
+        "title_planned_minutes": "{minutes}分",
+        # The first word of a title whose session carries no label, one per SESSION_LABELS
+        # sport.
+        "running": "跑步",
+        "strength": "重訓",
+        # One word per SESSION_LABELS key.
+        "easy_run": "輕鬆跑",
+        "long_run": "長跑",
+        "recovery_run": "恢復跑",
+        "tempo_run": "節奏跑",
+        "interval_run": "間歇跑",
+        "hill_run": "爬坡跑",
+        "race_pace_run": "配速跑",
+        "test_run": "校準跑",
+        "race": "比賽",
+        "chest": "胸",
+        "back": "背",
+        "legs": "腿",
+        "shoulders_arms": "肩臂",
+        "core": "核心",
+        "upper_body": "上肢",
+        "lower_body": "下肢",
+        "full_body": "全身",
     },
     "en": {
         "unstructured": "No quantified target",
@@ -102,7 +159,32 @@ _WORDS: dict[str, dict[str, str]] = {
         "assist_kg": "assist {value} kg",
         "title_load_kg": "{value}kg",
         "title_assist_kg": "assist {value}kg",
-        "title_separator": ": ",
+        "title_movement": "{name} {scheme}",
+        "title_repeat": "{count}x{duration}",
+        "title_duration_min": "{minutes}min",
+        "title_duration_sec": "{seconds}s",
+        "title_distance_km": "{value}km",
+        "title_distance_m": "{value}m",
+        "title_planned_minutes": "{minutes} min",
+        "running": "Run",
+        "strength": "Strength",
+        "easy_run": "Easy run",
+        "long_run": "Long run",
+        "recovery_run": "Recovery run",
+        "tempo_run": "Tempo run",
+        "interval_run": "Intervals",
+        "hill_run": "Hills",
+        "race_pace_run": "Race pace run",
+        "test_run": "Test run",
+        "race": "Race",
+        "chest": "Chest",
+        "back": "Back",
+        "legs": "Legs",
+        "shoulders_arms": "Shoulders and arms",
+        "core": "Core",
+        "upper_body": "Upper body",
+        "lower_body": "Lower body",
+        "full_body": "Full body",
     },
 }
 
@@ -222,26 +304,29 @@ def _time_axis_text(plan: dict[str, Any], words: dict[str, str]) -> str:
 
 
 def _scheme_text(sets: Any, reps: Any, words: dict[str, str]) -> str:
-    """`5x5`, or the words for a set with no rep count -- one taken to failure by design.
-
-    Shared with the delivered title (`strength_title_suffix`): a failure set reads the
-    same way whether the athlete is looking at the full prescription or the watch title,
-    and only the load's unit differs between those two renderings.
-    """
+    """`5x5`, or the words for a set with no rep count -- one taken to failure by design."""
     return f"{sets}x{reps}" if reps is not None else words["failure_sets"].format(sets=sets)
+
+
+def _measured_load_text(
+    movement: dict[str, Any], words: dict[str, str], *, load_key: str, assist_key: str
+) -> str:
+    """The kg figures a movement carries, or nothing when it carries none."""
+    loads: list[str] = []
+    if movement.get("load_kg") is not None:
+        loads.append(words[load_key].format(value=_number_text(movement["load_kg"])))
+    if movement.get("assist_kg") is not None:
+        loads.append(words[assist_key].format(value=_number_text(movement["assist_kg"])))
+    return " ".join(loads)
 
 
 def _load_text(
     movement: dict[str, Any], words: dict[str, str], *, load_key: str, assist_key: str
 ) -> str:
     """The load a movement carries, or what stands in its place when it carries none."""
-    loads: list[str] = []
-    if movement.get("load_kg") is not None:
-        loads.append(words[load_key].format(value=_number_text(movement["load_kg"])))
-    if movement.get("assist_kg") is not None:
-        loads.append(words[assist_key].format(value=_number_text(movement["assist_kg"])))
+    loads = _measured_load_text(movement, words, load_key=load_key, assist_key=assist_key)
     if loads:
-        return " ".join(loads)
+        return loads
     basis = str(movement.get("load_basis"))
     return words[basis] if basis in _LOAD_BASIS_KEYS else ""
 
@@ -302,34 +387,121 @@ def language_of(plan: Any, prescription: Any) -> str:
     return DEFAULT_LANGUAGE
 
 
-def strength_title(purpose: str, plan: Any, language: str = DEFAULT_LANGUAGE) -> str:
-    """The whole name a delivered strength calendar entry carries.
+def session_title(session: Any, language: str = DEFAULT_LANGUAGE) -> str | None:
+    """The name a delivered calendar entry carries, composed from the session.
 
-    ``purpose`` is the athlete's own sentence about the day and is never translated;
-    only the separator and the suffix behind it come from the language table.
+    The first word is the ``label``'s word in the athlete's language, or the sport's own
+    word when the session carries no label. Then come numbers the plan already holds, one
+    space between each: for a run, the first repeat's count and rep duration and the
+    session's ``planned_minutes``; for strength, the first movement and its measured load
+    (``strength_title_suffix``). The same kind of session reads the same way every week,
+    and a run's stored ``plan.name`` never reaches the calendar.
+
+    The one exception is a strength session with no movement list. Its plan holds nothing
+    to compose, so its ``purpose`` -- the coach's own sentence naming what the day trains
+    and its movements -- is the whole title, whatever its label; the label's or sport's
+    word stands in only when that sentence is blank.
+
+    ``None`` for a sport that does not deliver.
+    """
+    if not isinstance(session, dict):
+        return None
+    sport = session.get("sport")
+    labels = SESSION_LABELS.get(sport) if isinstance(sport, str) else None
+    if labels is None:
+        return None
+    words = _WORDS[normalize_language(language)]
+    label, plan = session.get("label"), session.get("plan")
+    first_word = words[label] if label in labels else words[sport]
+    if sport == "strength":
+        purpose = session.get("purpose")
+        if (
+            isinstance(plan, dict)
+            and plan.get("kind") == "unstructured"
+            and isinstance(purpose, str)
+            and purpose.strip()
+        ):
+            return purpose.strip()
+        return strength_title(first_word, plan, language)
+    return " ".join(
+        part
+        for part in (
+            first_word,
+            _repeat_title_text(plan, words),
+            _planned_minutes_text(session.get("planned_minutes"), words),
+        )
+        if part
+    )
+
+
+def _title_duration_text(duration: Any, words: dict[str, str]) -> str:
+    """A rep's duration as a title spells it: ``2分``, ``90秒``, ``800m``, ``1km``.
+
+    Whole minutes read as minutes and anything else as seconds, so a rep is always one
+    number and one unit.
+    """
+    if not isinstance(duration, dict):
+        return ""
+    if duration.get("kind") == "distance":
+        meters = int(duration.get("meters", 0))
+        if meters % 1000 == 0:
+            return words["title_distance_km"].format(value=meters // 1000)
+        return words["title_distance_m"].format(value=meters)
+    seconds = int(duration.get("seconds", 0))
+    if seconds % 60 == 0:
+        return words["title_duration_min"].format(minutes=seconds // 60)
+    return words["title_duration_sec"].format(seconds=seconds)
+
+
+def _repeat_title_text(plan: Any, words: dict[str, str]) -> str:
+    """``4x2分``: the first top-level repeat's count and its first step's duration."""
+    steps = plan.get("steps") if isinstance(plan, dict) else None
+    for step in steps if isinstance(steps, list) else []:
+        if not isinstance(step, dict) or step.get("kind") != "repeat":
+            continue
+        children = step.get("steps")
+        first = children[0] if isinstance(children, list) and children else None
+        duration = _title_duration_text(
+            first.get("duration") if isinstance(first, dict) else None, words
+        )
+        if not duration:
+            return ""
+        return words["title_repeat"].format(count=step.get("repetitions"), duration=duration)
+    return ""
+
+
+def _planned_minutes_text(minutes: Any, words: dict[str, str]) -> str:
+    if isinstance(minutes, bool) or not isinstance(minutes, int):
+        return ""
+    return words["title_planned_minutes"].format(minutes=minutes)
+
+
+def strength_title(first_word: str, plan: Any, language: str = DEFAULT_LANGUAGE) -> str:
+    """A strength calendar entry's whole name: its first word, a space, then the suffix.
+
+    ``first_word`` is the label's word, or the sport's own word for a day with no label.
     """
     suffix = strength_title_suffix(plan, language)
-    if not suffix:
-        return purpose
-    return f"{purpose}{_WORDS[normalize_language(language)]['title_separator']}{suffix}"
+    return f"{first_word} {suffix}" if suffix else first_word
 
 
 def strength_title_suffix(plan: Any, language: str = DEFAULT_LANGUAGE) -> str | None:
-    """The primary lift and its load, the way a delivered strength title states them.
+    """The primary lift and its measured load, the way a delivered title states them.
 
     ``None`` for anything that is not a movement list -- ``unstructured`` (movements
-    declined) or a malformed plan -- so the caller falls back to the bare purpose that
-    already titled the entry, the same fallback ``render_prescription`` takes to the
-    unstructured sentence.
+    declined) or a malformed plan -- so the title is its first word alone, the same
+    fallback ``render_prescription`` takes to the unstructured sentence.
 
     The primary lift is the first entry in ``plan.movements``: plan order is the only
     ranking a movement list carries, so there is no separate field to add and nothing
     left for the model to guess at. The load figure it renders already passed the same
     baseline-anchor validation the full prescription reads it from.
 
-    A watch title has less room than the full prescription's sentence, so this spells
-    load in the short unit -- only the number formatting (``_number_text``) is shared
-    with the full rendering, not the unit word; see module docstring.
+    A watch title has less room than the full prescription's sentence, so it carries
+    only numbers: the scheme when the movement has a rep count, and a kg figure when one
+    was measured. A set taken to failure, a bodyweight load and a load still pending
+    confirmation are words, and they stay in the description, which carries the full
+    prescription.
     """
     if not isinstance(plan, dict) or plan.get("kind") != "movement_list":
         return None
@@ -342,6 +514,17 @@ def strength_title_suffix(plan: Any, language: str = DEFAULT_LANGUAGE) -> str | 
 
     words = _WORDS[normalize_language(language)]
     exercise = str(primary.get("display_name") or "").strip()
-    scheme = _scheme_text(primary.get("sets"), primary.get("reps"), words)
-    loads = _load_text(primary, words, load_key="title_load_kg", assist_key="title_assist_kg")
-    return " ".join(part for part in (exercise, scheme, loads) if part) or None
+    scheme = (
+        f"{primary.get('sets')}x{primary.get('reps')}"
+        if primary.get("reps") is not None
+        else ""
+    )
+    lift = (
+        words["title_movement"].format(name=exercise, scheme=scheme)
+        if exercise and scheme
+        else exercise or scheme
+    )
+    loads = _measured_load_text(
+        primary, words, load_key="title_load_kg", assist_key="title_assist_kg"
+    )
+    return " ".join(part for part in (lift, loads) if part) or None

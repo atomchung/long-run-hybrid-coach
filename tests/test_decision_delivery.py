@@ -11,7 +11,7 @@ from garmin_coach_loop.gateway import CoachGateway
 from garmin_coach_loop import gateway as gateway_module
 from garmin_coach_loop.proposals import open_proposal
 from garmin_coach_loop.store import StateStoreError, canonical_hash, read_current_plan, pending_delivery_attempt, read_confirmed_delivery
-from test_gateway import TOKEN_A, HMAC_KEY, ONBOARDING, RUN_SPORT_SETTINGS, WEEKLY_CHANGE, as_change_request, coaching_request, publishable_plan
+from test_gateway import TOKEN_A, HMAC_KEY, ONBOARDING, RUN_SPORT_SETTINGS, WEEKLY_CHANGE, as_change_request, coaching_request, delivered_name, publishable_plan
 from test_mcp_gateway import McpTestCase
 
 
@@ -33,7 +33,7 @@ class CombinedDecisionJourneyTests(McpTestCase):
         for operation in change.get("sessions", []):
             plan = operation.get("plan") or {}
             if plan.get("kind") == "time_axis":
-                self.fake.steps_by_name[plan["name"]] = plan["steps"]
+                self.fake.steps_by_name[delivered_name(operation)] = plan["steps"]
         return self.tool("prepareCoachDecision", {
             "plan_id": session["plan_state"]["plan_id"],
             "plan_version": session["plan_state"]["plan_version"],

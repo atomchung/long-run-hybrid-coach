@@ -31,11 +31,11 @@ EASY_RUN: dict[str, Any] = {
     "cost": "easy",
     "priority": "anchor",
     "planned_minutes": 30,
+    "label": "easy_run",
     # An open target: the athlete has no measured threshold pace, so the plan states
     # the duration and leaves the intensity to them.
     "plan": {
         "kind": "time_axis",
-        "name": "輕鬆跑 30分",
         "steps": [{
             "kind": "work", "name": "輕鬆跑",
             "duration": {"kind": "time", "seconds": 1800},
@@ -482,3 +482,24 @@ class NoAuthoredProseTests(PlanInitTestCase):
         self.assertEqual("輕鬆跑 30分", sessions["running-2026-08-19"]["prescription"])
         self.assertEqual("不設定量化目標", sessions["rest-2026-08-18"]["prescription"])
         self.assertEqual("passed", validate_plan_state(plan)["status"])
+
+
+class FirstPlanLabelTests(PlanInitTestCase):
+    """Issue #540: a first plan's sessions may carry a label and need not."""
+
+    def test_a_first_plan_session_needs_no_label(self):
+        run = copy.deepcopy(EASY_RUN)
+        del run["label"]
+        plan = self.project(
+            initialization_request(sessions=[run, copy.deepcopy(REST_DAY)])
+        )["plan"]
+
+        self.assertNotIn("label", self.sessions(plan)["running-2026-08-19"])
+        self.assertEqual("passed", validate_plan_state(plan)["status"])
+
+    def test_a_label_of_another_sport_is_refused(self):
+        run = {**copy.deepcopy(EASY_RUN), "label": "chest"}
+        with self.assertRaises(ChangeRequestError) as caught:
+            self.project(initialization_request(sessions=[run]))
+        self.assertIn("label must be one of easy_run", str(caught.exception))
+        self.assertIn("for a running session", str(caught.exception))

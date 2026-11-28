@@ -463,7 +463,7 @@ class TrainingProductBoundaryTests(unittest.TestCase):
                 served = product_scope.surface(health_data, product="training")
                 self.assertNotIn("connectWatch", served.tools_by_name)
         self.assertEqual(
-            "da469a84bfa7d3bddaacf7cb52f5911cadc03406cb192019b1a2655a793b0c93",
+            "17bf23893bb519c0e85be9894b1a5007532c63527930a9c567070202bc99fb37",
             product_scope.surface(False, product="training").tool_catalogue_sha256(),
         )
 

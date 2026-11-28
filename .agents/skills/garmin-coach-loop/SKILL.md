@@ -84,8 +84,7 @@ file exists to prevent. Nothing below applies until a connection exists.
    own account, and the rest of the cycle. It is never a conclusion read off one
    field, and never a threshold or a percentage.
 5. Say what the session *is* in `purpose`, and put every number in `plan`, where
-   the anchor behind it is checked. `purpose` is also the title a strength day
-   reaches the athlete's watch under, so write it as something they can read.
+   the anchor behind it is checked.
 6. Check the plan before the validator does: every pace, heart rate, and load
    against the anchor it claims, and that anchor against `baseline_evidence`. A
    baseline the evidence has moved past is updated as an ordinary decision

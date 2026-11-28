@@ -16,7 +16,7 @@ from typing import Any, Iterable
 
 from .delivery_content import delivery_session_content
 from .intent_text import prescribed_token_in_coach_note, prescribed_token_in_intent
-from .prescription import LANGUAGES as PRESCRIPTION_LANGUAGES, render_prescription
+from .prescription import LANGUAGES as PRESCRIPTION_LANGUAGES, SESSION_LABELS, render_prescription
 
 
 COACH_CONTEXT_SCHEMA_VERSION = "1.2"
@@ -63,20 +63,24 @@ PRIORITIES = {"anchor", "flexible", "optional"}
 # product changing its mind underneath a training block that was going fine.
 SUPERSEDE_KINDS = {"corrected", "new_evidence", "policy_changed"}
 # Fields whose movement changes what the athlete actually does, or what the athlete is
-# told. `purpose` sits in the second half, not the first: it never changes a number the
-# watch executes, but delivery_content.delivery_session_content already carries it,
-# because a movement_list session reaches Intervals as a calendar entry whose name is
-# built from purpose. Rewording it is a deliverable change to what the athlete sees, so
-# it belongs here beside the fields that move training itself -- unlike `fallback`
-# wording, which names no delivered artifact and stays outside this set. `coach_note` is
-# here on exactly that argument (issue #56): it is delivered content, it reaches the
-# athlete's calendar, and attaching one to a session that is otherwise kept is the case
-# the field exists for -- so a revision that only adds a note is a real change to what the
-# athlete is told, not prose the plan could have skipped a version over.
+# told. This set decides only whether a decision claiming a change moved anything
+# (`_check_change_is_material`); whether a delivered workout is stale is
+# delivery_content.delivery_session_content's rule, not this one. `purpose` sits in the
+# second half, not the first: it never changes a number the watch executes, but a strength
+# session with no movement list reaches Intervals titled with its purpose. Rewording it is
+# a change to what the athlete is told, so it belongs here beside the fields that move
+# training itself -- unlike `fallback` wording, which names no delivered artifact and stays
+# outside this set.
+# `coach_note` is here on exactly that argument (issue #56): it is delivered content, it
+# reaches the athlete's calendar, and attaching one to a session that is otherwise kept is
+# the case the field exists for -- so a revision that only adds a note is a real change to
+# what the athlete is told, not prose the plan could have skipped a version over. `label`
+# is the first word of the title a session is delivered under, so it is here for the same
+# reason.
 MATERIAL_SESSION_FIELDS = frozenset({
     "scheduled_date", "sport", "adaptation", "planned_minutes", "priority",
     "cost", "body_stress", "hard", "plan", "time_window", "execution",
-    "match_status", "purpose", "coach_note",
+    "match_status", "purpose", "coach_note", "label",
 })
 INITIATIVES = {"proactive", "reactive"}
 # Historical revisit_today action set. Nothing emits that mode (issue #315); the
@@ -159,12 +163,19 @@ STRENGTH_LOAD_OPTIONAL_FIELDS = ("display_name",)
 # sport later is one `sport` value reusing one of these and no branch here.
 SESSION_PLAN_KINDS = {"time_axis", "movement_list", "unstructured"}
 SESSION_PLAN_FIELDS = {
-    "time_axis": ("kind", "name", "steps"),
+    "time_axis": ("kind", "steps"),
     "movement_list": ("kind", "movements"),
     # Nothing beyond its own kind: an unstructured session declares no numbers, so there
     # is nothing for an evidence check to read -- and equally nothing a pace or a load
     # could be smuggled in through.
     "unstructured": ("kind",),
+}
+# `name` titled a run's calendar entry before titles were composed. Every plan stored
+# before that has one, so it stays accepted; nothing reads it.
+SESSION_PLAN_OPTIONAL_FIELDS = {
+    "time_axis": ("name",),
+    "movement_list": (),
+    "unstructured": (),
 }
 
 # One movement of a movement_list plan: the plan-side counterpart of a strength_load,
@@ -2576,9 +2587,10 @@ def _iter_step_targets(steps: Any) -> Iterable[dict[str, Any]]:
 
 
 def _validate_time_axis_plan(plan: dict[str, Any], field: str, errors: list[str]) -> None:
-    _nonempty(plan.get("name"), f"{field}.name", errors)
-    if isinstance(plan.get("name"), str) and len(plan["name"]) > 80:
-        errors.append(f"{field}.name must be at most 80 characters")
+    if "name" in plan:
+        _nonempty(plan.get("name"), f"{field}.name", errors)
+        if isinstance(plan.get("name"), str) and len(plan["name"]) > 80:
+            errors.append(f"{field}.name must be at most 80 characters")
     steps = _list(plan.get("steps"), f"{field}.steps", errors)
     if not steps:
         errors.append(f"{field}.steps must contain at least one step")
@@ -2653,7 +2665,7 @@ def _validate_session_plan(raw: Any, field: str, errors: list[str]) -> None:
     if kind not in SESSION_PLAN_KINDS:
         errors.append(f"{field}.kind must be one of {', '.join(sorted(SESSION_PLAN_KINDS))}")
         return
-    _keys(plan, field, SESSION_PLAN_FIELDS[kind], errors)
+    _keys(plan, field, SESSION_PLAN_FIELDS[kind], errors, optional=SESSION_PLAN_OPTIONAL_FIELDS[kind])
     if kind == "time_axis":
         _validate_time_axis_plan(plan, field, errors)
     elif kind == "movement_list":
@@ -2694,11 +2706,27 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
     # session, which travels to Intervals inside the delivered description. Optional for
     # the same reason -- most sessions carry none, and requiring an empty string on every
     # one of them is how a field stops being read.
-    _keys(session, field, fields, errors, optional=("measures", "coach_note"))
+    #
+    # `label` is the third: what kind of session this is, which the calendar title starts
+    # with. Optional everywhere -- a session without one is titled with its sport's own
+    # word -- and checked only when present.
+    _keys(session, field, fields, errors, optional=("measures", "coach_note", "label"))
     _nonempty(session.get("session_id"), f"{field}.session_id", errors)
     if "measures" in session:
         _nonempty(session.get("measures"), f"{field}.measures", errors)
     _enum(session.get("sport"), f"{field}.sport", SPORTS, errors)
+    if "label" in session:
+        sport = session.get("sport")
+        labels = SESSION_LABELS.get(sport) if isinstance(sport, str) else None
+        if labels is None:
+            errors.append(
+                f"{field}.label is only carried by a running or strength session"
+            )
+        elif session.get("label") not in labels:
+            errors.append(
+                f"{field}.label must be one of {', '.join(labels)} for a "
+                f"{session.get('sport')} session"
+            )
     _date(session.get("scheduled_date"), f"{field}.scheduled_date", errors)
     if session.get("time_window") is not None:
         _nonempty(session.get("time_window"), f"{field}.time_window", errors)

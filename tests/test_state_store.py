@@ -280,6 +280,7 @@ class CoachLoopStateStoreTests(unittest.TestCase):
                     "cycle": {"outlook": self.before["cycle"]["outlook"][1:]},
                     "sessions": [{
                         "operation": "add",
+                        "label": "easy_run",
                         "scheduled_date": "2026-08-18",
                         "sport": "running",
                         "purpose": "下一週的輕鬆跑",

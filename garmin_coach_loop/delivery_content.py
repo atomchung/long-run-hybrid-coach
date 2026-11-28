@@ -31,30 +31,43 @@ def delivery_session_content(session: dict[str, Any]) -> dict[str, Any]:
     that lists a value and the thing it is derived from is one rule written twice.
     """
     execution = session.get("execution") if isinstance(session.get("execution"), dict) else {}
+    # The word a labelled session's title starts with, so changing it changes what the
+    # calendar holds. Projected only when present, so a session with none carries no key.
+    label = {"label": session["label"]} if "label" in session else {}
+    # Delivered content `plan` does not carry, but only where it is still delivered: a
+    # strength session with an unstructured plan reaches Intervals titled with its purpose,
+    # so rewording it leaves the calendar holding a title the plan no longer says. Every
+    # other session's title comes from its label or sport and its description from the
+    # plan, so purpose reaches nothing there, and projecting it would make a reword
+    # re-deliver an unchanged event the athlete then has to confirm.
+    plan = session.get("plan") if isinstance(session.get("plan"), dict) else {}
+    purpose: dict[str, Any] = {}
+    if session.get("sport") == "strength" and plan.get("kind") == "unstructured":
+        stored = session.get("purpose")
+        # The value delivery writes as the title, which is the stored one without its outer
+        # whitespace (`prescription.session_title`): a difference the calendar never shows
+        # is not a reason to send the entry again.
+        purpose["purpose"] = stored.strip() if isinstance(stored, str) else stored
+    # A run's stored `plan.name` titled its calendar entry before titles were composed, and
+    # reaches nothing now, so a restatement that only drops it is the same workout.
+    projected_plan = session.get("plan")
+    if session.get("sport") == "running" and plan.get("kind") == "time_axis":
+        projected_plan = {key: value for key, value in plan.items() if key != "name"}
     return {
         field: session.get(field)
         for field in (
             "session_id",
             "sport",
             "scheduled_date",
-            # The delivered content `plan` does not carry: a movement_list session reaches
-            # Intervals as a titled calendar entry whose name is *built from* purpose (with
-            # the plan's primary movement and load, when the plan renders one), so
-            # rewording purpose alone leaves the calendar holding a title the plan no
-            # longer says. Held for every sport rather than for strength alone -- a
-            # time_axis reword pays one redelivery it did not need, which is the cheaper of
-            # the two errors; the other reports a verified delivery under a title that was
-            # never sent.
-            "purpose",
             # The other authored field that reaches Intervals (issue #56). It is appended
             # to the delivered description for both sports, so changing or clearing it
-            # changes what the calendar holds exactly as rewording purpose does -- and a
-            # delivery reported verified under a note that was since edited would be this
-            # projection's one job left undone.
+            # changes what the calendar holds -- and a delivery reported verified under a
+            # note that was since edited would be this projection's one job left undone.
             "coach_note",
             "adaptation",
             "planned_minutes",
             "hard",
-            "plan",
         )
-    } | {"publish_supported": execution.get("publish_supported")}
+    } | {"plan": projected_plan} | purpose | label | {
+        "publish_supported": execution.get("publish_supported")
+    }

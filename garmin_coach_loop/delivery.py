@@ -21,7 +21,7 @@ from typing import Any, Callable, Iterator, Protocol, Sequence
 from .prescription import duration_text as _duration_text
 from .prescription import pace_text as _pace_text
 from .prescription import language_of as _language_of
-from .prescription import strength_title as _strength_title
+from .prescription import session_title as _session_title
 from .source_intervals import (
     BASE_URL,
     REQUEST_TIMEOUT_SECONDS,
@@ -465,30 +465,22 @@ def _calendar_entry_from_session(session: dict[str, Any]) -> dict[str, Any]:
     the day on the calendar so planned and actual line up on one surface, while the
     prescription rides along as text the athlete reads rather than the device follows.
 
-    The athlete effectively sees only this title on the watch, so purpose alone is not
-    enough to know what today asks for: the title appends the primary lift and its load,
-    rendered from the plan's first movement exactly as `render_prescription` renders the
-    full text -- the model writes no second copy of either. A plan with nothing to render
-    (`unstructured`) leaves the bare purpose, which is what titled every strength entry
-    before this.
+    The athlete effectively sees only this title on the watch, so it is composed
+    (`prescription.session_title`): the label's word, or the sport's for a session with
+    none, then the primary lift and its measured load from the plan's first movement --
+    the model writes none of it. A plan with nothing to render (`unstructured`) has no
+    lift to name, so its title is the coach's `purpose` ("背日：反向划船與蹲姿單槓"),
+    which is where that day's movements are written down.
 
     The title is written in whichever language the session's own prescription was, which
     is read off that sentence rather than passed in: the description below it *is* that
     sentence, and one calendar entry carrying a title and a description in two languages
     would be this product's own doing.
     """
-    purpose = session.get("purpose")
-    if not isinstance(purpose, str) or not purpose.strip():
-        raise DeliveryError("strength delivery requires a purpose to title the calendar entry")
     prescription = session.get("prescription")
-    name = _strength_title(
-        purpose.strip(),
-        session.get("plan"),
-        _language_of(session.get("plan"), prescription),
-    )
     return {
         "sport": "strength",
-        "name": name,
+        "name": _session_title(session, _language_of(session.get("plan"), prescription)),
         "scheduled_date": session["scheduled_date"],
         # The coach's sentence rides at the end of the prose the athlete already reads
         # here. Nothing parses a strength description, so there is no grammar to collide
@@ -526,9 +518,14 @@ def _workout_from_session(
     # confirmation either.
     _reject_ambiguous_step_names(steps)
     _reject_ambiguous_coach_note(session)
-    # `kind` is how the plan says which model it is; the provider payload is built from
-    # the name and the steps, exactly as before it had a discriminator to drop.
-    canonical = {key: copy.deepcopy(value) for key, value in plan.items() if key != "kind"}
+    # `kind` is how the plan says which model it is, and a stored `name` is never the
+    # title: the calendar name is composed from the session's label (or its sport) and
+    # the plan's own numbers (`prescription.session_title`), in the language its
+    # prescription was rendered in.
+    canonical = {
+        key: copy.deepcopy(value) for key, value in plan.items() if key not in {"kind", "name"}
+    }
+    canonical["name"] = _session_title(session, _language_of(plan, session.get("prescription")))
     canonical["sport"] = "running"
     canonical["scheduled_date"] = session["scheduled_date"]
     canonical["description"] = _with_coach_note(

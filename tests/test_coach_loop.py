@@ -290,12 +290,14 @@ class CoachLoopV1Tests(unittest.TestCase):
                 reset = validate_bundle(context, before, after, event)
                 self.assertEqual("passed", reset["status"], reset)
 
-    def test_retitling_a_delivered_strength_session_must_clear_its_observation(self):
+    def test_rewording_a_delivered_unstructured_strength_day_must_clear_its_observation(self):
         before = copy.deepcopy(self.before)
         delivered = next(
             session for session in before["week"]["sessions"]
             if session["session_id"] == "strength-upper-01"
         )
+        delivered["plan"] = {"kind": "unstructured"}
+        delivered["prescription"] = render_prescription(delivered["plan"])
         delivered["execution"] = {
             "publish_supported": True,
             "external_id": "intervals-event-456",
@@ -316,7 +318,7 @@ class CoachLoopV1Tests(unittest.TestCase):
         # stands. Whatever the next assertion blocks, it is blocking the retitle itself.
         self.assertEqual("passed", validate_bundle(context, before, after, event)["status"])
 
-        # A movement_list session reaches the calendar as a titled entry whose name is
+        # A strength day with no movement list reaches the calendar titled with its
         # purpose. Reword it and the accepted delivery is a title the plan no longer says.
         # The rendering does not move with it -- prescription is rendered from plan alone.
         target["purpose"] = "Hold upper-body strength while the legs recover"
@@ -337,12 +339,15 @@ class CoachLoopV1Tests(unittest.TestCase):
         nothing else moves -- is the case the retitle test above does not reach, because
         that one also flips match_status to replaced, which was already material on its
         own. Here purpose alone must (a) not be refused as immaterial and (b) still force
-        the same delivery-observation reset as any other delivered-content change."""
+        the same delivery-observation reset as any other delivered-content change, on the
+        one kind of session whose purpose reaches the calendar."""
         before = copy.deepcopy(self.before)
         delivered = next(
             session for session in before["week"]["sessions"]
             if session["session_id"] == "strength-upper-01"
         )
+        delivered["plan"] = {"kind": "unstructured"}
+        delivered["prescription"] = render_prescription(delivered["plan"])
         delivered["execution"] = {
             "publish_supported": True,
             "external_id": "intervals-event-789",
@@ -2361,6 +2366,7 @@ class AthleteBaselineReadsThePlanBeingAdoptedTests(unittest.TestCase):
         run_long = self._session(self.before, "run-long-01")
         return {
             "operation": "replace",
+            "label": "long_run",
             "session_id": "run-long-01",
             "purpose": run_long["purpose"],
             "adaptation": run_long["adaptation"],
@@ -2475,7 +2481,7 @@ class SessionPlanTests(unittest.TestCase):
     def test_each_kind_is_validated_as_the_model_it_declares(self):
         for plan, expected_error in (
             ({"kind": "sequence"}, "kind must be one of"),
-            ({"kind": "time_axis", "movements": []}, "name is required"),
+            ({"kind": "time_axis", "movements": []}, "steps is required"),
             ({"kind": "movement_list", "steps": []}, "movements is required"),
             ({"kind": "unstructured", "movements": []}, "movements is not allowed"),
         ):
@@ -3769,9 +3775,10 @@ class FreeTextLayerCannotGrowBackTests(unittest.TestCase):
             for child in ast.iter_child_nodes(parent)
         }
 
+        reads = [*self._reads(), *self._iterated_reads()]
         stored = [
             node
-            for node in [*self._reads(), *self._iterated_reads()]
+            for node in reads
             if not isinstance(self.parents[node], (ast.Assign, ast.Tuple, ast.List, ast.Set))
         ]
         self.assertEqual(
@@ -3779,6 +3786,44 @@ class FreeTextLayerCannotGrowBackTests(unittest.TestCase):
             [f"line {node.lineno}" for node in stored],
             "delivery_content.py may store a free-text value into the projection and do "
             "nothing else with it",
+        )
+        # A name bound from a read is the same value under another name, so it is held to
+        # the same rule, with one shape added: `.strip()` with no arguments, because
+        # delivery writes the value without its outer whitespace and the projection has to
+        # compare what was sent. A type check and passing the value on unchanged are the
+        # only other uses.
+        aliases = {
+            target.id
+            for node in reads
+            if isinstance(self.parents[node], ast.Assign)
+            for target in self.parents[node].targets
+            if isinstance(target, ast.Name)
+        }
+        misused = []
+        for node in ast.walk(self.tree):
+            if not (
+                isinstance(node, ast.Name)
+                and node.id in aliases
+                and isinstance(node.ctx, ast.Load)
+            ):
+                continue
+            parent = self.parents[node]
+            stripped = (
+                isinstance(parent, ast.Attribute)
+                and parent.attr == "strip"
+                and isinstance(self.parents[parent], ast.Call)
+                and not self.parents[parent].args
+            )
+            type_checked = (
+                isinstance(parent, ast.Call)
+                and isinstance(parent.func, ast.Name)
+                and parent.func.id == "isinstance"
+            )
+            passed_on = isinstance(parent, (ast.Assign, ast.IfExp))
+            if not (stripped or type_checked or passed_on):
+                misused.append(f"line {node.lineno}")
+        self.assertEqual(
+            [], misused, "a free-text value under another name may only be stripped or stored"
         )
         self.assertNotIn("import re", source, "the projection parses nothing")
 

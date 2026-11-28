@@ -55,6 +55,7 @@ from test_gateway import (
     GatewayTestCase,
     as_change_request,
     coaching_request,
+    delivered_name,
     load,
     publishable_plan,
 )
@@ -836,7 +837,7 @@ class PublishFalseAlreadyDeliveredTests(IsolatedHomeMixin, GatewayTestCase):
         quality_id = self.fake.events[0]["id"]
         writes_before = len(self.fake.bulk_calls)
         change = copy.deepcopy(WEEKLY_CHANGE)
-        self.fake.steps_by_name[change["sessions"][0]["plan"]["name"]] = (
+        self.fake.steps_by_name[delivered_name(change["sessions"][0])] = (
             change["sessions"][0]["plan"]["steps"]
         )
         prepared = self._prepare(change)

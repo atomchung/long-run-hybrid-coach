@@ -623,7 +623,7 @@ class DeliveryPublicFlowTests(PublicFlowCase):
             "plan_id": current["plan_id"], "plan_version": current["current_version"],
             "session_ids": ["run-quality-01"], "withdraw": True,
         })
-        self.assertEqual("5x1000m threshold", prepared["preview"][0]["event_name"])
+        self.assertEqual("跑步 5x1km 60分", prepared["preview"][0]["event_name"])
         with mock.patch.object(gateway_module, "prepare_withdrawal_set", side_effect=AssertionError("apply reprojected")):
             result = self.tool(
                 "applyWorkoutDelivery",
