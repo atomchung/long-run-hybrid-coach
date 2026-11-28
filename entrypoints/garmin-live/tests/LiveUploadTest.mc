@@ -1,4 +1,5 @@
 import Toybox.Lang;
+import Toybox.System;
 import Toybox.Test;
 
 class CapturingUpload extends LiveUpload {
@@ -106,15 +107,30 @@ function eachPauseNeedsItsOwnReceipt(logger) {
 function countWorkoutEventsAcrossPauseAndReset(logger) {
     var field = new LiveCoachField();
     field.onWorkoutStarted();
-    Test.assert(field.label.equals("Done 0"));
+    Test.assert(field.completedStepCount() == 0);
     field.onWorkoutStepComplete();
     field.onTimerPause();
     field.onTimerResume();
-    Test.assert(field.label.equals("Done 1"));
+    Test.assert(field.completedStepCount() == 1);
     field.onWorkoutStepComplete();
-    Test.assert(field.label.equals("Done 2"));
+    Test.assert(field.completedStepCount() == 2);
     field.onTimerReset();
-    Test.assert(field.label.equals("Coach"));
+    Test.assert(field.completedStepCount() == 0);
+    return true;
+}
+
+(:test)
+function theLastPlannedStepShowsTheCheckOthersAStamp(logger) {
+    var field = new LiveCoachField();
+    field.onWorkoutStarted();
+    field.onWorkoutStepComplete();
+    Test.assert(field.celebration(System.getTimer()).equals("stamp"));
+    field.setPlannedSteps(3);
+    field.onWorkoutStepComplete();
+    Test.assert(field.celebration(System.getTimer()).equals("stamp"));
+    field.onWorkoutStepComplete();
+    Test.assert(field.celebration(System.getTimer()).equals("done"));
+    Test.assert(field.celebration(System.getTimer() + 11000) == null);
     return true;
 }
 
@@ -132,19 +148,9 @@ function aRefusedCredentialIsReported(logger) {
 }
 
 (:test)
-function theFieldTranslatesUploadCodesAndShowsPairing(logger) {
-    var field = new LiveCoachField();
-    Test.assert(field.describe("Sent 3s").equals("Sent 3s"));
-    Test.assert(field.describe("Pause sent").equals("Pause sent"));
-    Test.assert(field.describe("Ready").equals("Ready"));
-    return true;
-}
-
-(:test)
 function anUnpairedFieldShowsNoCodeOnceTheRunStarts(logger) {
     var field = new LiveCoachField();
-    Test.assert(field.unpaired(false, 1000).equals("Not connected"));
-    Test.assert(field.label.equals("Coach"));
+    field.unpaired(false, 1000);
+    Test.assert(field.linkState() == LiveCoachField.LINK_NONE);
     return true;
 }
-

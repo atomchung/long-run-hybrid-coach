@@ -24,6 +24,7 @@ class LiveUpload {
     private var ackAt = null;
     private var ackPhase = "";
     private var extra as Lang.Dictionary or Null = null;
+    private var planned = null;
 
     function initialize(url, deviceToken) {
         endpoint = url;
@@ -61,6 +62,7 @@ class LiveUpload {
         if (phase.equals("idle") || phase.equals("ended")) {
             sessionId = "run-" + when.toString() + "-" + Math.rand().toString();
             seq = 0;
+            planned = null;
             ackAt = null;
             lastSampleAt = null;
         } else if (phase.equals("paused")) {
@@ -173,6 +175,10 @@ class LiveUpload {
             if (sessionId.equals(context[0])) {
                 ackAt = ticks;
                 ackPhase = sent["state"];
+                var steps = data["planned_steps"];
+                if (steps instanceof Lang.Number && steps > 0) {
+                    planned = steps;
+                }
             }
             if (control == sent) { control = null; }
         } else {
@@ -180,6 +186,12 @@ class LiveUpload {
             backOff(ticks);
         }
         pump(ticks);
+    }
+
+    // How many steps today's Coach workout has, as the server counted them for this run, or
+    // null until a receipt has said. The watch compares it with its own step count.
+    function plannedSteps() {
+        return planned;
     }
 
     // The server refused this watch's credential: it was replaced or its account is gone.
