@@ -89,8 +89,10 @@ NOT_REMOVED: tuple[str, ...] = (
     "Your Intervals.icu authorization. Revoke it in Intervals.icu Settings under the "
     "applications you have authorized -- deleting data here does not withdraw a grant "
     "you gave there.",
-    "Operational logs, which carry request paths and refusal reasons and no plan, "
-    "health, or identity content at all (docs/ops/security-events.md).",
+    "Operational logs, and the full product's 90-day record of each tool call (time, "
+    "tool, outcome, the field a refusal named, the client). Both carry request paths and "
+    "refusal reasons and no plan, health, or identity content at all "
+    "(docs/ops/security-events.md); the record expires on its own after 90 days.",
 )
 
 

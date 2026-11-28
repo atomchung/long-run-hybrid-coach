@@ -33,6 +33,8 @@ from garmin_coach_loop import (
     mcp_transport,
     orchestration,
     owner_data,
+    product_identity,
+    request_events,
     security_log,
     token_envelope,
 )
@@ -59,6 +61,7 @@ from garmin_coach_loop.identity import (
     lookup_or_create_owner,
     owner_for_fingerprint,
     owner_for_provider_athlete,
+    record_token_fingerprint,
     token_fingerprint,
 )
 from garmin_coach_loop.mcp_transport import (
@@ -102,6 +105,9 @@ from test_gateway import (
     UNKNOWN_TOKEN,
     WEEKLY_CHANGE,
     GatewayTestCase,
+    as_change_request,
+    athlete_profile,
+    onboarding,
     load,
     publishable_plan,
     recovery_signals_upload,
@@ -5537,6 +5543,110 @@ class OversizedReadRefusalMcpTests(McpTestCase):
         )
         self.assertIn("tool=readCoachEvidence", line)
         self.assertIn("outcome=blocked:result_too_large", line)
+
+
+class RequestEventRecordMcpTests(McpTestCase):
+    """The full product's 90-day tool-call record (issue #556), written by the transport."""
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.events_path = self.gateway.config.request_events_path
+
+    def call_and_wait(self, name: str, arguments: dict[str, Any] | None = None, **kwargs) -> Any:
+        before = self.log_handler.emitted
+        result = self.tool_result(name, arguments, **kwargs)
+        self.log_handler.wait_for_last("POST /mcp -> 200", after=before)
+        return result
+
+    def test_a_tool_call_is_recorded_under_the_handle_its_access_line_prints(self):
+        self.call_and_wait("getCoachState")
+
+        (row,) = request_events.read_rows(self.events_path)
+        handle = self.gateway.owner_log_handle(self.owner_id)
+        self.assertEqual(handle, row["account"])
+        self.assertEqual("getCoachState", row["tool"])
+        self.assertEqual("passed", row["outcome"])
+        self.assertIsNone(row["field"])
+        # These requests carry no `MCP-Protocol-Version`, which the line prints as absent.
+        self.assertEqual("absent", row["protocol"])
+        self.assertIsInstance(row["duration_ms"], int)
+        line = self.log_handler.records[-1]
+        self.assertIn(f"owner={handle}", line)
+        self.assertIn("tool=getCoachState", line)
+
+    def test_a_refusal_records_the_field_path_and_never_its_sentence(self):
+        # Issue #543's shape: a first plan carrying the athlete's own words in
+        # `availability.note`, which a first plan does not accept. The record has to say
+        # which field, and must not carry the words.
+        self.seed_owner(TOKEN_B, athlete_id="i2")
+        change = as_change_request(onboarding())
+        change["availability"] = {**change["availability"], "note": "週二晚上跟同事跑"}
+
+        result = self.call_and_wait("prepareCoachDecision", {"change_request": change}, token=TOKEN_B)
+
+        self.assertTrue(result.get("isError"), result)
+        (row,) = request_events.read_rows(self.events_path)
+        self.assertEqual("blocked:invalid_request", row["outcome"])
+        self.assertEqual("initialization_request.availability", row["field"])
+        self.assertNotIn("週二", json.dumps(row, ensure_ascii=False))
+        self.assertRegex(row["field"], r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*|\[\d+\])+$")
+        detail = self.tool_payload(result)["detail"]
+        self.assertNotEqual(detail, row["field"])
+        self.assertIn(row["field"], detail)
+
+    def test_a_request_that_calls_no_tool_records_nothing(self):
+        before = self.log_handler.emitted
+        self.rpc("tools/list", {})
+        self.log_handler.wait_for_last("POST /mcp -> 200", after=before)
+
+        self.assertEqual([], request_events.read_rows(self.events_path))
+
+    def test_an_unauthenticated_request_records_nothing(self):
+        status, _, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+             "params": {"name": "getCoachState", "arguments": {}}},
+            token=None,
+        )
+
+        self.assertEqual(401, status)
+        self.assertFalse(self.events_path.exists())
+
+    def test_the_plugin_product_records_nothing(self):
+        # The false-positive control for #408's boundary: the entry held to a reviewer's
+        # read-only reading of its tools never opens the file, on any call.
+        config = replace(self.config, product="training", health_data=False)
+        plugin = CoachGateway(config, fetch=self.fake, now=lambda: self.now)
+        self.server.gateway = plugin
+        owner = lookup_or_create_owner(config.identity_db_path, "intervals", "i9")
+        record_token_fingerprint(
+            config.identity_db_path, token_fingerprint(TOKEN_B, hmac_key=HMAC_KEY), owner, "intervals"
+        )
+        self.fake.profile_by_token[TOKEN_B] = athlete_profile("i9")
+        bearer = token_envelope.seal(
+            product_identity.product_claims(
+                {
+                    "intervals_token": TOKEN_B,
+                    "aud": self.base_url + "/mcp",
+                    "scope": ",".join(config.intervals_oauth_scopes),
+                    "iat": int(self.now.timestamp()),
+                },
+                "training",
+            ),
+            kind=token_envelope.ACCESS_TOKEN,
+            key=HMAC_KEY,
+        )
+
+        answered = self.call_and_wait("getCoachState", bearer=bearer)
+        refused = self.call_and_wait("prepareCoachDecision", {}, bearer=bearer)
+
+        self.assertNotEqual(True, answered.get("isError"), answered)
+        self.assertTrue(refused.get("isError"), refused)
+
+        self.assertIsNone(plugin.request_events)
+        self.assertFalse(config.request_events_path.exists())
+        self.assertFalse(self.events_path.exists())
+
 
 
 if __name__ == "__main__":  # pragma: no cover

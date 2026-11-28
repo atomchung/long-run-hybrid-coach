@@ -136,8 +136,9 @@ support page and says so.
   want them gone too.
 - **Your Intervals.icu authorization.** Deleting data here does not withdraw a grant you
   gave there; revoke it in Intervals.icu Settings.
-- **Operational logs**, which carry request paths and refusal reasons and no plan, health,
-  or identity content at all.
+- **Operational logs, and the full product's 90-day tool-call record**, which carry request
+  paths, tool names, outcomes and refusal reasons and no plan, health, or identity content
+  at all. The record expires on its own after 90 days.
 - **An email thread, if you used the email route.** It holds your address, your athlete id,
   anything you attached, and — for an export — the archive that was sent back. It is in a
   mailbox, not in the store, so deleting your data here does not reach it. Ask and it will
@@ -172,6 +173,10 @@ delivery first is the fix.
   none has been measured.
 - **Logs** rotate with the platform that collects them and hold no plan, health, or
   identity content (`docs/ops/security-events.md`).
+- **The tool-call record** (full product only) keeps one row per tool call for 90 days on
+  the deployment's own volume, then deletes it: time, your opaque log reference, tool,
+  outcome, the field a refusal named, the client and how long the call took. Never an
+  argument, a result or anything you said (`docs/ops/read-usage-stats.md`).
 
 ## The difference in one line each
 

@@ -4,13 +4,17 @@
 `security-events.md` answers what happened at its trust boundary. This one answers the
 question that comes before either: **how many people use this, and how often.**
 
-There is no analytics service behind it, and since 1.4.3 there is no counter either.
+There is no analytics service behind it. Since 1.4.3 there is no counter written by any
+tool; since issue #556 the full product keeps a 90-day tool-call record written by the
+transport ([below](#the-tool-call-record)).
 
 **The counters stopped on 1.4.3.** Every dispatched call used to write one row per account
 per UTC day per tool, plus one per outcome. Those writes are why a plain read could not be
 annotated `readOnlyHint: true`, and a client that cannot tell a read from a write asks the
 athlete to approve both — so the owner dropped the report rather than the permission
-(issue #408). Nothing replaced them: no queue, no deferred flush, no second telemetry path.
+(issue #408). Nothing replaced them inside a tool: no queue, no deferred flush. The
+tool-call record below is the separate reconsideration #408 left open, for the full product
+only.
 
 What that leaves is this page, honestly narrower than it was:
 
@@ -62,6 +66,43 @@ in this repository. Whatever runs it keeps these rules:
   apart, and the operator's handles are computed in the container rather than copied out
   of a log. A rotated key makes every handle new; it shows up as accounts writing to their
   store with no tool call of theirs in the log, and is reported rather than counted as zero.
+
+## The tool-call record
+
+The access log answers "what did this account do" for about seven days, and only for the
+current deployment unless the previous one's id is passed. Past that, the first use of an
+account that joined three weeks ago could not be reconstructed. So the full product keeps
+the same facts on its own volume, in `request-events.db` beside `identity.db`, for 90 days
+(`request_events.RETENTION_DAYS`; issue #556):
+
+| column | holds |
+| --- | --- |
+| `at` | when the call was answered, UTC, seconds |
+| `account` | the same 16-character keyed handle the access line prints as `owner=` |
+| `tool`, `outcome` | the tool name and the gateway's outcome vocabulary (`passed`, `no_plan_state`, `blocked:<code>`) |
+| `field` | the field path a refusal named, lowercase identifiers and indices only (`initialization_request.availability`), else null |
+| `client` | the origin the token was issued to (`https://claude.ai`, `https://chatgpt.com`, `local`, ...) |
+| `protocol`, `intervals_calls`, `duration_ms` | the revision the request was served on, Intervals calls spent, time to answer |
+
+Never an argument, a result, a detail sentence, or anything an athlete said.
+
+Why this does not reopen #408: the transport writes the row after the response has gone
+out; no tool writes it, nothing a tool reads reads it, and the registry and owner store stay
+byte-identical across a read (the #408 tests). The Plugin entry keeps none
+(`RETENTION_DAYS` names only `hybrid`) and never opens the file, so the entry held to a
+reviewer's read-only reading of its tools records nothing. Deleting an account does not
+remove its rows; they expire after 90 days, and once the registry rows are gone the handle
+resolves to no one. The privacy page states the record and its 90 days.
+
+Read it on the volume, read-only:
+
+```bash
+railway ssh --service long-run-hybrid-coach \
+  "python3 -c \"from garmin_coach_loop import request_events as r; import json; print(json.dumps(r.read_rows('/data/request-events.db')))\""
+```
+
+Operator tooling that reads it maps `account` to an account on the volume with the
+deployment's key, the same way the weekly counter does, and prints no owner id.
 
 ## The report
 

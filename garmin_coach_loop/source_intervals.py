@@ -134,6 +134,9 @@ class ProviderQuotaScope:
     rate_remaining: int | None = None
     tool: str | None = None
     outcome: str | None = None
+    # The field path a refusal named, for the operator's tool-call record only
+    # (`request_events`, issue #556); the access line does not print it.
+    field: str | None = None
 
 
 _QUOTA_SCOPE: contextvars.ContextVar[ProviderQuotaScope | None] = contextvars.ContextVar(
@@ -235,6 +238,17 @@ def note_tool_outcome(outcome: str) -> None:
     scope = _QUOTA_SCOPE.get()
     if scope is not None:
         scope.outcome = outcome
+
+
+def note_tool_refusal_field(field: str | None) -> None:
+    """Say which field path a refused tool call was refused on, when it named one.
+
+    Only ``request_events.refused_field``'s output reaches this: lowercase identifiers
+    and indices, never the sentence around them.
+    """
+    scope = _QUOTA_SCOPE.get()
+    if scope is not None:
+        scope.field = field
 
 
 # --------------------------------------------------------------------------------------

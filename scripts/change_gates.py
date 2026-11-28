@@ -51,6 +51,9 @@ LIVE_SMOKE_PATHS = frozenset(
         # which protocol era a request is answered on, so a change here is exactly the
         # kind only a real client proves.
         "garmin_coach_loop/mcp_sdk_transport.py",
+        # Written on the request path of the full product's `/mcp` (issue #556). Nothing
+        # a client reads, but only a deployed run shows rows landing on the volume.
+        "garmin_coach_loop/request_events.py",
     }
 )
 
