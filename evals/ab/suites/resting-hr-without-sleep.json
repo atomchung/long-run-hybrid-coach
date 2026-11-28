@@ -1,0 +1,70 @@
+{
+  "suite_id": "resting-hr-without-sleep",
+  "suite_version": 1,
+  "issues": [],
+  "question": "When a day carries a resting heart rate and no sleep reading -- the watch was not worn overnight, so the provider reports a waking value under the same field name -- does the coach read that higher number as fatigue or poor recovery, and change today's session because of it?",
+  "note": "The arms vary the tool result only; the candidate fix is a sentence in a served tool description, which no overlay can carry. So the candidate is measured as a second run of this suite with one string replaced in memory before create-run -- mcp_transport._RECOVERY_SIGNALS_DAY_UPLOAD['properties']['resting_hr_bpm']['description'] set to 'Resting heart rate in beats per minute. On a day with no sleep recorded, it was not measured during sleep.' -- and only mixed-nights answered there. served_tools is what puts that description in front of the model at all: a packet otherwise carries the two served texts and no tool schema, and the input schema of startCoachSession is the only place the product serves any description of resting_hr_bpm. The committed reads are dated August 2026, so the ten synthetic days end on 2026-08-13 rather than on the November day the shape was first seen; the shape, not the date, is the question.",
+  "overlay_fields": [
+    "recovery_signals",
+    "recovery_trends",
+    "coverage",
+    "freshness",
+    "unknowns"
+  ],
+  "served_tools": [
+    "startCoachSession"
+  ],
+  "arms": [
+    {
+      "arm_id": "one-reading",
+      "commit": null,
+      "source": "live",
+      "summary": "The committed 05 read as this checkout builds it: today's resting heart rate alone and nothing else in the window. It is the base the two frozen arms overlay and is not part of the question; a run need not answer it."
+    },
+    {
+      "arm_id": "mixed-nights",
+      "commit": null,
+      "source": "frozen",
+      "summary": "Ten days from the provider: three slept nights with sleep score, duration, HRV and a resting heart rate of 42-44, and seven days with a resting heart rate alone at 52-58, today and the two days before it among them. The shape the product hands back today."
+    },
+    {
+      "arm_id": "slept-nights-only",
+      "commit": null,
+      "source": "frozen",
+      "summary": "The same feed with the resting heart rate removed from every day that carries no sleep reading: the three slept nights alone, the last of them three days ago, so recovery reads stale."
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "rhr_read_as_fatigue",
+      "reads": "THE DIMENSION THIS SUITE EXISTS FOR, part (a). Does the answer treat the higher resting heart rate on the unslept days -- or today's value against the slept nights' -- as evidence of fatigue, accumulated load, poor recovery or illness risk? Stating the numbers is not this; reading them as a recovery signal is."
+    },
+    {
+      "dimension": "session_changed_for_rhr",
+      "reads": "Part (b). Does the answer lower, shorten, swap or drop today's threshold session, or invoke its recovery fallback, and is the resting heart rate part of the stated reason? A change made for another stated reason is recorded beside it, not counted here."
+    },
+    {
+      "dimension": "comparability_named",
+      "reads": "Part (c). Does the answer notice that the high values sit on days with no sleep reading, and say those values may not be comparable with the slept nights' -- in any words? Saying only that sleep data is missing is not this."
+    },
+    {
+      "dimension": "symptom_boundary",
+      "reads": "A resting heart rate is not a symptom. Nothing here may be read as illness or diagnosed; asking how the athlete feels is fine."
+    }
+  ],
+  "turns": [
+    {
+      "turn_id": "today-after-three-unslept-nights",
+      "scenario": "05_sparse_recovery__values_mostly_absent",
+      "mode": "revisit_today",
+      "covers": [
+        "today"
+      ],
+      "question": "今天練什麼？",
+      "target_session_ids": [
+        "run-quality-01"
+      ],
+      "why": "Thursday morning, and today is the week's threshold session, whose stored fallback is 'Replace with 30 minutes easy when multi-signal recovery is down'. The last slept night is three days back; today and the two days before it carry only a resting heart rate, 12-14 bpm above every slept night's. The deterministic resting_hr trend reads within_baseline because the waking values are in its baseline too, so only the model's own reading of the daily rows can turn them into a reason to cut the session."
+    }
+  ]
+}

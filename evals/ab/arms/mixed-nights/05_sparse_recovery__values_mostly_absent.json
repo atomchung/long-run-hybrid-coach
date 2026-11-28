@@ -1,0 +1,116 @@
+{
+  "arm": "mixed-nights",
+  "captured_at_head": "ed137426a90c1b7cbe84cb2d40b81dda780e5a9b",
+  "commit": null,
+  "note": "hand-built hypothetical, produced through the product's own Intervals wellness reader rather than typed: this checkout's 05 read with its wellness feed replaced by ten synthetic days (2026-08-04 to 2026-08-13). Three nights carry a sleep score, sleep duration, last-night HRV and a resting heart rate of 42-44; the other seven carry a resting heart rate alone, 52-58, the shape a provider returns for a day the watch was not worn overnight. Today and the two days before it are unslept. The five overlaid fields are exactly the ones that feed changes; validation is identical to the committed read's. The numbers are the fixture; no athlete history travels with them.",
+  "overlay": {
+    "coverage": {
+      "hrv": {
+        "expected_days": 7,
+        "last_observed": "2026-08-10",
+        "observed_days": 2,
+        "status": "partial"
+      },
+      "resting_hr": {
+        "expected_days": 7,
+        "last_observed": "2026-08-13",
+        "observed_days": 7,
+        "status": "complete"
+      },
+      "sleep": {
+        "expected_days": 7,
+        "last_observed": "2026-08-10",
+        "observed_days": 2,
+        "status": "partial"
+      }
+    },
+    "freshness": {
+      "activities": "fresh",
+      "calendar": "fresh",
+      "recovery": "fresh"
+    },
+    "recovery_signals": {
+      "days": [
+        {
+          "date": "2026-08-13",
+          "resting_hr_bpm": 56.0
+        },
+        {
+          "date": "2026-08-12",
+          "resting_hr_bpm": 58.0
+        },
+        {
+          "date": "2026-08-11",
+          "resting_hr_bpm": 53.0
+        },
+        {
+          "date": "2026-08-10",
+          "hrv_last_night_ms": 79.0,
+          "resting_hr_bpm": 44.0,
+          "sleep_duration_sec": 29700.0,
+          "sleep_score": 83.0
+        },
+        {
+          "date": "2026-08-09",
+          "resting_hr_bpm": 55.0
+        },
+        {
+          "date": "2026-08-08",
+          "resting_hr_bpm": 52.0
+        },
+        {
+          "date": "2026-08-07",
+          "hrv_last_night_ms": 82.0,
+          "resting_hr_bpm": 42.0,
+          "sleep_duration_sec": 30600.0,
+          "sleep_score": 85.0
+        },
+        {
+          "date": "2026-08-06",
+          "resting_hr_bpm": 57.0
+        },
+        {
+          "date": "2026-08-05",
+          "resting_hr_bpm": 54.0
+        },
+        {
+          "date": "2026-08-04",
+          "hrv_last_night_ms": 75.0,
+          "resting_hr_bpm": 43.0,
+          "sleep_duration_sec": 28200.0,
+          "sleep_score": 80.0
+        }
+      ],
+      "source": "intervals-icu-api",
+      "window_end": "2026-08-13",
+      "window_start": "2026-07-17"
+    },
+    "recovery_trends": {
+      "hrv": {
+        "expected_days": 7,
+        "observed_days": 2,
+        "status": "unknown"
+      },
+      "resting_hr": {
+        "expected_days": 7,
+        "observed_days": 7,
+        "status": "within_baseline"
+      },
+      "sleep": {
+        "expected_days": 7,
+        "observed_days": 2,
+        "status": "unknown"
+      }
+    },
+    "unknowns": [
+      "available_days_not_confirmed",
+      "session_minutes_not_confirmed",
+      "red_flags_not_confirmed",
+      "strength_execution: no local strength log configured; recent lift execution unverified",
+      "training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone",
+      "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
+    ]
+  },
+  "scenario": "05_sparse_recovery__values_mostly_absent",
+  "untouched_sha256": "5c950106d7d66749e0f3615cfc91df082b228968f23616ee77a3a384dc9115fd"
+}

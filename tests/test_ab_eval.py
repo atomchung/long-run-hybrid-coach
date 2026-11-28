@@ -974,6 +974,74 @@ class RunStoreTests(unittest.TestCase):
         return manifest["packets"][0]["packet_id"]
 
 
+class ServedToolsTests(unittest.TestCase):
+    """A suite may put tool definitions in front of the model; a suite silent on it may not.
+
+    Field descriptions reach a real client only through the tool catalogue, so a suite
+    asking what a description does has to carry it -- and every suite that is not asking
+    has to keep building the packets it always built.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.suite = harness.load_suite()
+
+    def _suite_file(self, tmp: str, **extra: object) -> Path:
+        suite = copy.deepcopy(self.suite)
+        suite.update(extra)
+        path = Path(tmp) / "suite.json"
+        path.write_text(json.dumps(suite), encoding="utf-8")
+        return path
+
+    def _first_packet(self, tmp: str, suite_path: Path, run_id: str = "tools") -> dict:
+        run_dir = harness.create_run(
+            run_id=run_id,
+            run_root=Path(tmp) / "runs",
+            suite_path=suite_path,
+            turn_ids=["today"],
+        )
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        return json.loads((run_dir / manifest["packets"][0]["path"]).read_text(encoding="utf-8"))
+
+    def test_a_suite_silent_on_tools_carries_the_two_served_texts_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            packet = self._first_packet(tmp, harness.SUITE_PATH)
+        self.assertEqual({"orchestration", "training_judgment"}, set(packet["materials"]))
+
+    def test_a_named_tool_is_carried_exactly_as_it_is_served(self):
+        from garmin_coach_loop import mcp_transport
+
+        served = next(t for t in mcp_transport.TOOLS if t.name == "startCoachSession")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._suite_file(tmp, served_tools=["startCoachSession"])
+            packet = self._first_packet(tmp, path)
+        self.assertEqual([served.descriptor()], packet["materials"]["tools"])
+
+    def test_a_changed_description_is_a_changed_packet(self):
+        from garmin_coach_loop import mcp_transport
+
+        day = mcp_transport._RECOVERY_SIGNALS_DAY_UPLOAD["properties"]["resting_hr_bpm"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._suite_file(tmp, served_tools=["startCoachSession"])
+            before = self._first_packet(tmp, path, "before")
+            with mock.patch.dict(day, {"description": "a different sentence"}):
+                after = self._first_packet(tmp, path, "after")
+        self.assertNotEqual(before["binding"], after["binding"])
+        self.assertIn("a different sentence", json.dumps(after["materials"]["tools"]))
+
+    def test_a_tool_the_catalogue_does_not_serve_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._suite_file(tmp, served_tools=["noSuchTool"])
+            with self.assertRaises(harness.EvalError):
+                self._first_packet(tmp, path)
+
+    def test_an_empty_tool_list_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._suite_file(tmp, served_tools=[])
+            with self.assertRaises(harness.EvalError):
+                harness.load_suite(path)
+
+
 class PacketEchoTests(unittest.TestCase):
     """The answer must prove which packet it was actually produced from -- issue #322.
 

@@ -1,0 +1,88 @@
+{
+  "arm": "slept-nights-only",
+  "captured_at_head": "ed137426a90c1b7cbe84cb2d40b81dda780e5a9b",
+  "commit": null,
+  "note": "hand-built hypothetical, produced through the product's own Intervals wellness reader: mixed-nights' feed with the resting heart rate removed from every day that carries no sleep reading, so only the three slept nights remain. One difference from what the product would hand back for this feed is not carried, because validation is beside the context and no overlay may move it: the product adds the warning 'recovery freshness is stale; do not infer missing data', and this arm's validation lacks it. context.freshness.recovery does read stale here, as the product reports it. The numbers are the fixture; no athlete history travels with them.",
+  "overlay": {
+    "coverage": {
+      "hrv": {
+        "expected_days": 7,
+        "last_observed": "2026-08-10",
+        "observed_days": 2,
+        "status": "partial"
+      },
+      "resting_hr": {
+        "expected_days": 7,
+        "last_observed": "2026-08-10",
+        "observed_days": 2,
+        "status": "partial"
+      },
+      "sleep": {
+        "expected_days": 7,
+        "last_observed": "2026-08-10",
+        "observed_days": 2,
+        "status": "partial"
+      }
+    },
+    "freshness": {
+      "activities": "fresh",
+      "calendar": "fresh",
+      "recovery": "stale"
+    },
+    "recovery_signals": {
+      "days": [
+        {
+          "date": "2026-08-10",
+          "hrv_last_night_ms": 79.0,
+          "resting_hr_bpm": 44.0,
+          "sleep_duration_sec": 29700.0,
+          "sleep_score": 83.0
+        },
+        {
+          "date": "2026-08-07",
+          "hrv_last_night_ms": 82.0,
+          "resting_hr_bpm": 42.0,
+          "sleep_duration_sec": 30600.0,
+          "sleep_score": 85.0
+        },
+        {
+          "date": "2026-08-04",
+          "hrv_last_night_ms": 75.0,
+          "resting_hr_bpm": 43.0,
+          "sleep_duration_sec": 28200.0,
+          "sleep_score": 80.0
+        }
+      ],
+      "source": "intervals-icu-api",
+      "window_end": "2026-08-13",
+      "window_start": "2026-07-17"
+    },
+    "recovery_trends": {
+      "hrv": {
+        "expected_days": 7,
+        "observed_days": 2,
+        "status": "unknown"
+      },
+      "resting_hr": {
+        "expected_days": 7,
+        "observed_days": 2,
+        "status": "unknown"
+      },
+      "sleep": {
+        "expected_days": 7,
+        "observed_days": 2,
+        "status": "unknown"
+      }
+    },
+    "unknowns": [
+      "available_days_not_confirmed",
+      "session_minutes_not_confirmed",
+      "red_flags_not_confirmed",
+      "strength_execution: no local strength log configured; recent lift execution unverified",
+      "training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone",
+      "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
+    ]
+  },
+  "scenario": "05_sparse_recovery__values_mostly_absent",
+  "untouched_sha256": "5c950106d7d66749e0f3615cfc91df082b228968f23616ee77a3a384dc9115fd"
+}
