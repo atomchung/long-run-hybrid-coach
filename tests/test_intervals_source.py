@@ -425,7 +425,9 @@ class IntervalsSourceHappyPathTests(unittest.TestCase):
             # No elevation concept on a strength session at all, so the key is
             # omitted rather than null (issue #240 §3) -- and never a fabricated 0.
             self.assertNotIn("elevation_gain_m", strength)
-            self.assertEqual(4, strength["subjective_feel"])
+            # intervals.icu's feel 4 is the watch's second-weakest answer, so it reads
+            # back in the watch's own order, where 5 is the strongest.
+            self.assertEqual(2, strength["subjective_feel"])
             self.assertEqual("unmatched", strength["match_confidence"])
             self.assertIsNone(strength["planned_session_id"])
 
@@ -518,6 +520,31 @@ class IntervalsSourceHappyPathTests(unittest.TestCase):
             self.assertIn("red_flags_not_confirmed", context["unknowns"])
             self.assertIn("fixture-manual-note", context["unknowns"])
             self.assertNotIn("intervals_source_failed", context["unknowns"])
+
+
+class FeelInWatchOrderTests(unittest.TestCase):
+    """intervals.icu stores the watch's how-did-you-feel answer upside down; the
+    product reads it back in the watch's order, the one an athlete reports in."""
+
+    def test_the_provider_scale_is_reversed_into_the_watch_order(self):
+        # workout_feel 100/75/50/25/0 on the watch arrives as feel 1/2/3/4/5.
+        cases = {1: 5, 2: 4, 3: 3, 4: 2, 5: 1}
+        for provider_feel, watch_order in cases.items():
+            with self.subTest(provider_feel=provider_feel):
+                self.assertEqual(watch_order, source_intervals._feel_in_watch_order(provider_feel))
+
+    def test_a_whole_float_is_read_like_the_integer(self):
+        self.assertEqual(4, source_intervals._feel_in_watch_order(2.0))
+
+    def test_no_answer_stays_no_answer(self):
+        for value in (None, True, "2", 2.5):
+            with self.subTest(value=value):
+                self.assertIsNone(source_intervals._feel_in_watch_order(value))
+
+    def test_an_out_of_range_value_is_left_for_validation_to_reject(self):
+        # Flipping 7 would produce -1 and hide what the provider actually sent.
+        self.assertEqual(7, source_intervals._feel_in_watch_order(7))
+        self.assertEqual(0, source_intervals._feel_in_watch_order(0))
 
 
 class RecoveryFreshnessGradingTests(unittest.TestCase):

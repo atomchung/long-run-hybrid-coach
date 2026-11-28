@@ -813,6 +813,29 @@ def _safe_feel(value: Any) -> int | None:
     return None
 
 
+def _feel_in_watch_order(value: Any) -> int | None:
+    """intervals.icu's ``feel`` turned back into the order the watch asked it in.
+
+    The watch's own question -- how did you feel, saved in the FIT session as
+    ``workout_feel``, 0-100 in steps of 25 -- runs from weakest to strongest.
+    intervals.icu stores the same answer as 1-5 the other way round: its own developer
+    says so (forum.intervals.icu/t/26588), and an account's files agree -- a session the
+    watch saved as ``workout_feel`` 75 reads back as ``feel`` 2, one saved as 25 reads
+    back as 4.
+
+    This product's 1-5 is the watch's order, 1 the weakest and 5 the strongest, because
+    that is also the scale an athlete answers in when they report a session themselves
+    (``recordActivitySummary``). Passing the provider's number through unchanged put two
+    scales running opposite ways under one field name, and a coach read a good session
+    as the worst of the week. An out-of-range value passes through unflipped, for
+    validation to reject rather than for this mapper to disguise.
+    """
+    feel = _safe_feel(value)
+    if feel is None or not 1 <= feel <= 5:
+        return feel
+    return 6 - feel
+
+
 def _paired_event_id(value: Any) -> str | None:
     """Normalize Intervals' event identity to the PlanState external-id type."""
     if value is None or isinstance(value, bool):
@@ -1075,7 +1098,7 @@ def _build_recent_actuals(
                 "recorded_indoors": _recorded_indoors(row) if sport == "running" else None,
                 "completion": "completed",
                 "elevation_gain_m": _safe_float(row.get("total_elevation_gain")),
-                "subjective_feel": _safe_feel(row.get("feel")),
+                "subjective_feel": _feel_in_watch_order(row.get("feel")),
             }
         )
     for label in sorted(excluded_types):

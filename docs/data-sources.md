@@ -28,7 +28,11 @@ Read through the direct read-only REST adapter (`--source intervals`).
 
 Carries, and is the only source that carries:
 
-- **Subjective feel** on an activity. `health.db` has no column for it.
+- **Subjective feel** on an activity. `health.db` has no column for it. It is the
+  watch's own how-did-you-feel question, saved in the FIT file as `workout_feel`
+  (0–100 in steps of 25, weakest to strongest). intervals.icu stores it as `feel`
+  1–5 the other way round, 1 the strongest; the product turns it back into the
+  watch's order, 1 the weakest, which is also the scale an athlete reports in.
 - **Trustworthy elevation gain.** The same 2026-08-10 activity reads 145 m here
   and 8 m in `health.db` — an order of magnitude apart, so the local value is not
   read at all.
