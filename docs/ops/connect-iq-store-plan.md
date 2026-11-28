@@ -130,14 +130,17 @@ The dashboard is apps-developer.garmin.com, signed in with the owner's Garmin ac
    of an app id must be signed with the key its first upload used.
 3. **Beta first.** `build.py --beta` builds the beta app id, named "… Beta", for the
    Forerunner 570 in minutes. Sign it with the store key and upload it with the beta box
-   ticked: it is not listed and only the developer account can install it. A first upload
+   ticked: it is not listed and only the developer account can install it. The Store refuses
+   an upload whose version is not higher than the last one, so raise `--version` before every
+   later beta upload. A first upload
    on SDK 9.2 and 9.3 can show "signature check failed", and some developers report that
    every later submit of that app id then fails with HTTP 400 (Garmin forum, CIQQA-4716 and
    CIQQA-4837, acknowledged and open as of 2026-11-28). Uploading the beta first means a
    stuck record is the beta's, not the store app id's.
 4. **Install the beta the way an athlete would.** The website no longer installs apps
    (since 2025-11-20). Open the beta's dashboard link on the phone so the Connect IQ Store app
-   takes over, install, sync, then pair and run. Remove the sideloaded field first.
+   takes over, install, sync, then pair and run. Remove the sideloaded field first. The beta
+   is another app id, so it goes on the data screen again and pairs again.
 5. **Every submit accepts the Connect IQ Developer Agreement** — the upload page says so —
    so the first one waits for the owner. The agreement (updated 2024-08-06) has no AI
    clause. Exhibit A asks for the privacy sentence above, no retention beyond need, express
