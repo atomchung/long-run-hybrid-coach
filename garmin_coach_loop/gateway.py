@@ -72,6 +72,7 @@ from . import (
     product_identity,
     product_profiles,
     product_scope,
+    request_events,
     security_log,
     token_envelope,
 )
@@ -173,6 +174,7 @@ from .source_intervals import (
     note_provider_quota,
     note_provider_quota_values,
     note_tool_outcome,
+    note_tool_refusal_field,
     provider_quota_scope,
 )
 from .store import (
@@ -532,6 +534,15 @@ class GatewayConfig:
     def watch_pairing(self) -> bool:
         """Whether watches pair here: the full product with health data on, nothing else."""
         return product_scope.watch_pairing(self.product, bool(self.health_data))
+
+    @property
+    def request_event_days(self) -> int:
+        """Days of tool-call records kept here (issue #556): 90 on the full product, else 0."""
+        return request_events.retention_days(self.product)
+
+    @property
+    def request_events_path(self) -> Path:
+        return self.product_state_root / request_events.FILE_NAME
 
     @property
     def identity_db_path(self) -> Path:
@@ -2409,6 +2420,15 @@ class CoachGateway:
         self._transport_factory = workout_transport_factory
         self._now = now or (lambda: dt.datetime.now(dt.timezone.utc))
         self.live_runs = LiveRunStore()
+        # The operator's tool-call record (issue #556): opened only by a product that
+        # keeps one, and written only by the transport after a response has gone out.
+        self.request_events = (
+            request_events.RequestEvents(
+                config.request_events_path, retention_days=config.request_event_days
+            )
+            if config.request_event_days > 0
+            else None
+        )
         self._watch_address_limits = {
             kind: RateLimiter(limit, window) for kind, (limit, window) in _WATCH_ADDRESS_LIMITS.items()
         }
@@ -8093,8 +8113,10 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             self._serve(method)
 
     def _serve(self, method: str) -> None:
+        started = time.monotonic()
         owner_id: str | None = None
         owner_handle: str | None = None
+        client_origin: str | None = None
         browser: BrowserResponse | None = None
         text_body: str | None = None
         payload: dict[str, Any] | None = None
@@ -8327,6 +8349,24 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                     request_spend += f" intervals_remaining={quota.rate_remaining}"
                 if quota.rate_limit is not None:
                     request_spend += f" intervals_limit={quota.rate_limit}"
+        # The same facts, kept past the platform's log retention on a product that keeps
+        # them (issue #556). After the response and before the access line, so a reader
+        # that has seen the line can rely on the row; a failed write is logged and the
+        # request is unaffected. Issue #408's boundary holds: no tool writes this, the
+        # registry and the owner store are untouched, and the Plugin product keeps none.
+        events = getattr(getattr(self.server, "gateway", None), "request_events", None)
+        if events is not None and owner_handle and quota is not None and quota.tool:
+            events.record(
+                at=dt.datetime.now(dt.timezone.utc),
+                account=owner_handle,
+                tool=quota.tool,
+                outcome=quota.outcome,
+                field=quota.field,
+                client=client_origin,
+                protocol=protocol.strip().removeprefix("protocol=") or None,
+                intervals_calls=quota.calls or None,
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
         # Which account, so a refusal can be read as one athlete's run of them rather
         # than a daily total (issue #408 removed the counters that used to answer this,
         # and a counter was dropped because it *wrote* -- this line does not). A keyed
@@ -8518,6 +8558,15 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 # refused tool call is an HTTP 200 carrying `isError`, so without this
                 # the line for a refusal and the line for a success are the same line.
                 note_tool_outcome(f"blocked:{exc.code}")
+                # Which field, for the operator's 90-day record only (issue #556): a path
+                # of identifiers and indices lifted out of the refusal, never its sentence.
+                validation = exc.extra.get("validation")
+                note_tool_refusal_field(
+                    request_events.refused_field(
+                        exc.detail,
+                        validation.get("errors") if isinstance(validation, dict) else None,
+                    )
+                )
                 if exc.upstream_unauthorized:
                     # The provider refused this athlete's credential, so there is nothing
                     # the model can do with a tool result: the client has to authorize
