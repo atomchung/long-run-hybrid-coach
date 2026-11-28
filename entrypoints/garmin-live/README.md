@@ -52,7 +52,7 @@ tells the Coach in their AI chat "connect my watch K7P4QX9A" (連接我的手錶
 `connectWatch` tool binds the code to the account of that conversation. The field, polling
 every five seconds with a secret only it holds, then receives a credential that can only
 upload that account's runs, keeps it in `Application.Storage`, and shows the account's
-masked email under the trail.
+masked email under the trail (a link icon when the provider gave no address).
 
 - A code lasts ten minutes and works once. The field shows at most three codes each time
   the activity opens, then a crossed-out link until the next time. Three dots show while it
@@ -114,7 +114,9 @@ The source reads current heart rate (bpm), cadence (Garmin's raw rpm) and speed 
 `Activity.Info`. Missing readings stay JSON null. Running samples also carry the timer,
 distance, altitude, ascent, descent, power and completed step count; no location. Each
 sample carries `session_id`, a zero-based sequence number, UTC epoch observation time in
-whole seconds, and session state. Paused and ended events carry null measurements.
+whole seconds, and session state. Paused and ended events carry null heart rate, cadence and
+speed, and the totals at the stop (timer, distance, ascent, descent, completed steps), which
+the recap prefers over the last running sample.
 
 Manual stop and Auto Pause keep the session ID. Restart or resume takes a fresh sample.
 Ending or resetting the activity sends an ended event; the next run gets a new ID. Pending

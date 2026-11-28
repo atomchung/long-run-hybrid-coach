@@ -386,8 +386,9 @@ _WATCH_CLAIMS_PER_ACCOUNT = (10, 600)
 WATCH_FIELD_SENDS = (
     "While the run's timer is going, about every 5 seconds through Garmin Connect on the "
     "phone: heart rate, cadence, speed, timer, distance, altitude, ascent and descent, "
-    "power, and how many workout steps are done. No location. Nothing is sent without "
-    "the phone and its connection."
+    "power, and how many workout steps are done; once more when the timer stops, with the "
+    "totals at that moment. No location. Nothing is sent without the phone and its "
+    "connection."
 )
 WATCH_RUN_KEPT = (
     "Only the latest run is kept, in this service's memory, until 24 hours after its "
@@ -2857,7 +2858,9 @@ class CoachGateway:
                 **self._envelope(),
                 "detail": WATCH_CODE_NOT_ACCEPTED,
             }
-        shown = f"Connected and {label}" if label else "Connected"
+        # The field has no words: before a run it shows the account's masked email, or a
+        # link icon when the provider gave no address.
+        shown = label if label else "a link icon"
         return {
             "status": "connected",
             **self._envelope(),

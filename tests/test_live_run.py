@@ -331,6 +331,36 @@ class RunRecapTest(unittest.TestCase):
         self.assertEqual("running", recap["state"])
         self.assertNotIn("timer_minutes", recap)
 
+    def test_the_stop_carries_the_last_seconds_and_the_step_finished_in_them(self):
+        self.watch.run_for(10, steps_done=2)
+        self.watch.advance(3)
+        self.watch.seq += 1
+        self.watch.store.ingest("a", {"session_id": self.watch.session, "seq": self.watch.seq,
+                                      "observed_at": int(self.watch.wall), "state": "paused",
+                                      "heart_rate_bpm": None, "cadence_rpm": None, "speed_mps": None,
+                                      "timer_ms": self.watch.timer_ms + 3000,
+                                      "distance_m": self.watch.distance + 8.4, "steps_done": 3})
+        recap = self.watch.recap()
+        self.assertEqual(("paused", 10.1, 3), (recap["state"], recap["timer_minutes"], recap["workout_steps_done"]))
+        self.assertEqual(round((self.watch.distance + 8.4) / 1000, 2), recap["distance_km"])
+        # An end without totals, as an older watch sends it, falls back to the running sample.
+        self.watch.control("ended")
+        self.assertEqual((10.0, 2), (self.watch.recap()["timer_minutes"], self.watch.recap()["workout_steps_done"]))
+
+    def test_a_timer_longer_than_any_run_is_refused(self):
+        from garmin_coach_loop.live_run import MAX_TIMER_MS
+        with self.assertRaises(ValueError):
+            self.watch.store.ingest("a", self.watch.sample(timer_ms=MAX_TIMER_MS + 1))
+        self.assertEqual("accepted", self.watch.store.ingest("a", self.watch.sample(timer_ms=MAX_TIMER_MS))["status"])
+
+    def test_a_summary_that_cannot_be_built_still_reports_the_run(self):
+        from unittest import mock
+        self.watch.run_for(2)
+        with mock.patch("garmin_coach_loop.live_run.summarize_run", side_effect=OverflowError("date")):
+            recap = self.watch.recap()
+        self.assertEqual("running", recap["state"])
+        self.assertNotIn("timer_minutes", recap)
+
     def test_unknown_or_impossible_measurements_are_refused(self):
         for bad in ({"gps": [1, 2]}, {"distance_m": -1}, {"timer_ms": float("nan")}, {"power_w": "high"}):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
@@ -404,9 +434,10 @@ class PlannedStepsTest(unittest.TestCase):
         self.assertEqual(1, len(reads))
         stale = watch.store.ingest("a", watch.sample(seq=0), read)
         self.assertEqual(({"session_id", "seq", "status"}, "ignored"), (set(stale), stale["status"]))
-        # A repeated sample is a duplicate with the receipt it always had.
+        # A repeated running sample is a duplicate that answers what its lost receipt did.
         again = watch.sample()
-        self.assertEqual({"session_id", "seq", "status"}, set(watch.store.ingest("a", again, read)))
+        repeated = watch.store.ingest("a", again, read)
+        self.assertEqual(("duplicate", 12), (repeated["status"], repeated["planned_steps"]))
         self.assertNotIn("planned_steps", watch.control("ended"))
         watch.session = "run-b"
         watch.seq = 0

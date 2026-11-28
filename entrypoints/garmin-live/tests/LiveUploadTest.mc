@@ -154,3 +154,19 @@ function anUnpairedFieldShowsNoCodeOnceTheRunStarts(logger) {
     Test.assert(field.linkState() == LiveCoachField.LINK_NONE);
     return true;
 }
+
+(:test)
+function aPauseCarriesTheTotalsAtTheStop(logger) {
+    var upload = new CapturingUpload();
+    upload.setExtra({"timer_ms" => 5000, "distance_m" => 14.0, "steps_done" => 0});
+    upload.sample(100, 1000, 140, 84, 2.8);
+    upload.setExtra({"timer_ms" => 9000, "distance_m" => 25.0, "steps_done" => 1});
+    upload.changeTo("paused", 104, 5000);
+    var pause = upload.requests[1];
+    Test.assert(pause["state"].equals("paused") && pause["timer_ms"] == 9000 && pause["steps_done"] == 1);
+    Test.assert(pause["heart_rate_bpm"] == null && pause["speed_mps"] == null);
+    upload.reply(1, "accepted", 5100);
+    upload.changeTo("ended", 106, 7000);
+    Test.assert(upload.requests[2]["state"].equals("ended") && upload.requests[2]["distance_m"] == 25.0);
+    return true;
+}

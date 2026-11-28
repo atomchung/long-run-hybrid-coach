@@ -180,19 +180,15 @@ class LiveCoachField extends WatchUi.DataField {
         if (timer == Activity.TIMER_STATE_OFF) {
             up.changeTo("ended", now, ticks);
         } else if (timer == Activity.TIMER_STATE_STOPPED || timer == Activity.TIMER_STATE_PAUSED) {
+            // The pause carries the totals at the stop, so the recap is not short by the last
+            // seconds between uploads or the step finished in them. The end that follows
+            // keeps these: after a reset the activity reads zero.
+            up.setExtra(totals(info));
             up.changeTo("paused", now, ticks);
         } else if (timer == Activity.TIMER_STATE_ON && allowRunning) {
             var profile = Activity.getProfileInfo();
             if (profile != null && profile.sport == Activity.SPORT_RUNNING) {
-                up.setExtra({
-                    "timer_ms" => info.timerTime,
-                    "distance_m" => info.elapsedDistance,
-                    "altitude_m" => info.altitude,
-                    "ascent_m" => info.totalAscent,
-                    "descent_m" => info.totalDescent,
-                    "power_w" => (info has :currentPower) ? info.currentPower : null,
-                    "steps_done" => completedSteps
-                });
+                up.setExtra(totals(info));
                 up.sample(now, ticks, info.currentHeartRate, info.currentCadence, info.currentSpeed);
             }
         }
@@ -222,6 +218,18 @@ class LiveCoachField extends WatchUi.DataField {
             retrySince = null;
         }
         link = (retrySince != null && ticks - retrySince >= 30000) ? LINK_FAILING : LINK_OK;
+    }
+
+    private function totals(info as Activity.Info) {
+        return {
+            "timer_ms" => info.timerTime,
+            "distance_m" => info.elapsedDistance,
+            "altitude_m" => info.altitude,
+            "ascent_m" => info.totalAscent,
+            "descent_m" => info.totalDescent,
+            "power_w" => (info has :currentPower) ? info.currentPower : null,
+            "steps_done" => completedSteps
+        };
     }
 
     // Pairing happens before a run starts. A field that is not paired during a run sends
@@ -313,6 +321,8 @@ class LiveCoachField extends WatchUi.DataField {
             var account = pairing.account();
             if (account != null) {
                 p.text(227, 434, Graphics.FONT_XTINY, account, Ink.DIM);
+            } else {
+                Face.link(p, 227, 430, false);
             }
         } else if (link == LINK_RETRY || link == LINK_NONE || link == LINK_FAILING || link == LINK_BROKEN) {
             Face.link(p, 360, 322, true);
@@ -447,7 +457,9 @@ class LiveCoachField extends WatchUi.DataField {
     function onWorkoutStepComplete() as Void {
         completedSteps += 1;
         var ticks = System.getTimer();
-        if (plannedSteps != null && completedSteps >= plannedSteps) {
+        // Exactly the planned count: a longer workout that is not today's Coach run would
+        // otherwise show the check again on every later step.
+        if (plannedSteps != null && completedSteps == plannedSteps) {
             doneUntil = ticks + 10000;
         } else {
             stampUntil = ticks + 5000;
