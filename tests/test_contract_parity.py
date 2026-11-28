@@ -286,6 +286,12 @@ def _build_cases() -> list[Case]:
         CD["training_break_month"], {"TRAINING_BREAK_MONTH_FIELDS"},
     )
 
+    # -- other_activities (issue #558) --
+    add(
+        "OTHER_ACTIVITY_FIELDS", validation.OTHER_ACTIVITY_FIELDS, (),
+        CD["other_activity"], {"OTHER_ACTIVITY_FIELDS"},
+    )
+
     # -- segment_execution: the group, its two activity shapes, and the per-sample
     # fields inside a full-detail activity (issue #340 flipped the envelopes here from
     # KNOWN_DRIFT_EXCEPTIONS once the contract carried the compact shape). --

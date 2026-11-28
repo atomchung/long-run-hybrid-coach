@@ -50,6 +50,14 @@ Carries, and is the only source that carries:
   average heart rate in `recent_actuals`, and reading its auto-laps costs one
   provider request per activity for nothing further.
 
+An activity whose `type` the product does not plan — a generic `Workout`, a
+`Walk`, a ski day — never enters `recent_actuals`: nothing matches it to a planned
+session or counts it toward a sport's volume, and its type is named once in
+`unknowns`. It still reaches the coach as `other_activities`, one row per activity
+with its date, the provider's type, its name, minutes and average heart rate, from
+the same horizon `recent_actuals` reports from — so a week that held a long session
+of an unplanned type does not read as a week without training (issue #558).
+
 The complete wellness record for one day (2026-08-11) is: sleep duration,
 quality and score; `hrv_rmssd`; `resting_hr`; `weight`; `steps`; `ctl` and
 `atl`. Note `temp_weight: true` on that record — the weight is an estimate

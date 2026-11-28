@@ -203,6 +203,22 @@ for _session in PLAN_FIXTURE["week"]["sessions"]:
     _session["prescription"] = render_prescription(_session["plan"])
 
 
+def _make_window() -> BuildWindow:
+    return BuildWindow(
+        as_of=dt.datetime(2026, 1, 8, 20, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8))),
+        resolved_now=NOW,
+        now_iso="2026-01-08T12:00:00+00:00",
+        window_start=dt.date(2026, 1, 2),
+        window_end=dt.date(2026, 1, 8),
+        window14_start=dt.date(2025, 12, 26),
+        window14_end=dt.date(2026, 1, 8),
+        window28_start=dt.date(2025, 12, 12),
+        window28_end=dt.date(2026, 1, 8),
+        window42_start=dt.date(2025, 11, 28),
+        window42_end=dt.date(2026, 1, 8),
+    )
+
+
 def _make_plan() -> dict[str, Any]:
     return copy.deepcopy(PLAN_FIXTURE)
 
@@ -1237,6 +1253,125 @@ class ActivityTypeVocabularyTests(unittest.TestCase):
         context = self._context_for(payload)
         matches = [u for u in context["unknowns"] if u == "activity_type_excluded:AlpineSki"]
         self.assertEqual(1, len(matches))
+
+    def test_an_excluded_activity_still_reaches_the_coach_as_what_was_recorded(self):
+        # issue #558: a 105-minute generic workout left only a type name in `unknowns`,
+        # and a coach said the week held no activity at all. It stays out of
+        # recent_actuals -- nothing matches it to a plan or counts it as a sport -- and
+        # arrives as the five facts the record states.
+        payload = [
+            {
+                "id": "i6101",
+                "type": "Workout",
+                "name": "有氧運動",
+                "start_date_local": "2026-01-06T19:07:00",
+                "moving_time": 6304,
+                "distance": None,
+                "average_speed": 0.0,
+                "average_heartrate": 133,
+            },
+            {
+                "id": "i6102",
+                "type": "Walk",
+                "name": "Walking",
+                "start_date_local": "2026-01-07T08:55:00",
+                "moving_time": 1429,
+                "distance": 1483.0,
+                "average_speed": 1.04,
+                "average_heartrate": 90,
+            },
+            {
+                "id": "i6103",
+                "type": "Run",
+                "start_date_local": "2026-01-07T17:00:00",
+                "moving_time": 1800,
+                "distance": 4500.0,
+                "average_speed": 2.5,
+                "average_heartrate": 140,
+            },
+        ]
+        context = self._context_for(payload)
+        self.assertEqual(["running"], [row["sport"] for row in context["recent_actuals"]])
+        self.assertEqual(
+            [
+                {
+                    "date": "2026-01-06",
+                    "provider_type": "Workout",
+                    "name": "有氧運動",
+                    "duration_minutes": 105,
+                    "average_hr": 133,
+                },
+                {
+                    "date": "2026-01-07",
+                    "provider_type": "Walk",
+                    "name": "Walking",
+                    "duration_minutes": 24,
+                    "average_hr": 90,
+                },
+            ],
+            context["other_activities"],
+        )
+        # The note keeps saying the type is outside the plan's vocabulary; it is no
+        # longer the only trace the session left.
+        self.assertIn("activity_type_excluded:Workout", context["unknowns"])
+
+    def test_an_activity_the_product_plans_never_appears_twice(self):
+        payload = [
+            {
+                "id": "i6104",
+                "type": "Ride",
+                "start_date_local": "2026-01-06T07:00:00",
+                "moving_time": 3600,
+                "distance": 30000.0,
+                "average_speed": 8.3,
+                "average_heartrate": 140,
+            }
+        ]
+        context = self._context_for(payload)
+        self.assertEqual(["cycling"], [row["sport"] for row in context["recent_actuals"]])
+        self.assertIsNone(context["other_activities"])
+
+    def test_an_excluded_activity_before_the_horizon_is_history_not_a_session(self):
+        payload = [
+            {
+                "id": "i6105",
+                "type": "Workout",
+                "start_date_local": "2025-12-01T07:00:00",
+                "moving_time": 3600,
+                "distance": None,
+                "average_speed": 0.0,
+                "average_heartrate": 120,
+            }
+        ]
+        context = self._context_for(payload)
+        self.assertLess("2025-12-01", context["review_frame"]["detail_horizon_start"])
+        self.assertIsNone(context["other_activities"])
+
+    def test_a_row_states_nothing_the_record_did_not(self):
+        rows = source_intervals._build_other_activities(
+            [
+                {
+                    "id": "i6106",
+                    "type": "Workout",
+                    "start_date_local": "2026-01-06T07:00:00",
+                    "moving_time": 0,
+                    "average_heartrate": 0,
+                }
+            ],
+            _make_window(),
+        )
+        self.assertEqual(
+            [
+                {
+                    "date": "2026-01-06",
+                    "provider_type": "Workout",
+                    "name": None,
+                    "duration_minutes": None,
+                    "average_hr": None,
+                }
+            ],
+            rows,
+        )
 
 
 class SessionLabelTests(unittest.TestCase):
@@ -3071,3 +3206,47 @@ class OptionalReaderTaxonomyTests(unittest.TestCase):
             any("run_sport_settings" in note for note in domain.extra_unknowns),
             domain.extra_unknowns,
         )
+
+
+class OtherActivitiesValidationTests(unittest.TestCase):
+    """The shape `validate_coach_context` holds `other_activities` to (issue #558)."""
+
+    ROW = {
+        "date": "2026-01-06",
+        "provider_type": "Workout",
+        "name": "有氧運動",
+        "duration_minutes": 105,
+        "average_hr": 133,
+    }
+
+    def _errors(self, value: Any) -> list[str]:
+        from garmin_coach_loop.validation import _validate_other_activities
+
+        errors: list[str] = []
+        _validate_other_activities(value, "context.other_activities", errors)
+        return errors
+
+    def test_null_and_a_real_row_pass(self):
+        self.assertEqual([], self._errors(None))
+        self.assertEqual([], self._errors([dict(self.ROW)]))
+        self.assertEqual([], self._errors([{**self.ROW, "name": None, "duration_minutes": None, "average_hr": None}]))
+
+    def test_an_empty_list_is_a_second_spelling_of_null(self):
+        self.assertEqual(
+            ["context.other_activities must be null rather than an empty list"], self._errors([])
+        )
+
+    def test_a_row_cannot_carry_a_sport_or_a_verdict(self):
+        errors = self._errors([{**self.ROW, "sport": "recovery"}])
+        self.assertIn("context.other_activities[0].sport is not allowed", errors)
+
+    def test_a_row_cannot_invent_or_blank_a_reading(self):
+        for change, message in (
+            ({"date": "yesterday"}, "context.other_activities[0].date must be an ISO date"),
+            ({"provider_type": " "}, "context.other_activities[0].provider_type must be a non-empty string"),
+            ({"name": ""}, "context.other_activities[0].name must be a non-empty string or null"),
+            ({"duration_minutes": 0}, "context.other_activities[0].duration_minutes must be >= 1"),
+            ({"average_hr": 0}, "context.other_activities[0].average_hr must be > 0 or null"),
+        ):
+            with self.subTest(change=change):
+                self.assertIn(message, self._errors([{**self.ROW, **change}]))

@@ -1111,6 +1111,52 @@ def _build_recent_actuals(
     return recent
 
 
+def _build_other_activities(
+    activities: list[dict[str, Any]], window: BuildWindow
+) -> list[dict[str, Any]] | None:
+    """Every activity in the read window whose type ``_build_recent_actuals`` leaves out,
+    as what was recorded and nothing more -- or ``None`` when there is none.
+
+    ``_build_recent_actuals`` keeps a type this product does not plan out of
+    ``recent_actuals`` and names it once in ``unknowns``. That keeps a generic
+    ``Workout`` from being matched to a planned session or counted as a sport's volume,
+    which stays right (PR #550 kept ``Workout`` out of the sport vocabulary for the same
+    reason). What it lost was the session itself: a type name with no date, no length and
+    no heart rate read as nothing trained, and a coach reassessing a goal said a week
+    holding a 105-minute workout had no activity at all (issue #558).
+
+    So each such activity is carried as five facts the record states -- the date, the
+    provider's type, the athlete's own name for it, minutes and average heart rate --
+    and none it does not: no sport, no intensity, no cost. Reading what a 105-minute
+    "cardio" at heart rate 133 meant for the week is the coach's (AGENTS.md 4).
+    """
+    rows: list[dict[str, Any]] = []
+    for row in activities:
+        day = _activity_date(row)
+        if day is None or not (window.window42_start <= day <= window.window42_end):
+            continue
+        raw_type = row.get("type")
+        if _map_activity_sport(raw_type) is not None:
+            continue
+        moving_time = _safe_float(row.get("moving_time"))
+        average_hr = _safe_float(row.get("average_heartrate"))
+        rows.append(
+            {
+                "date": day.isoformat(),
+                "provider_type": _activity_type_label(raw_type),
+                "name": _session_label(row.get("name")),
+                "duration_minutes": (
+                    max(1, round(moving_time / 60))
+                    if moving_time is not None and moving_time > 0
+                    else None
+                ),
+                "average_hr": average_hr if average_hr is not None and average_hr > 0 else None,
+            }
+        )
+    rows.sort(key=lambda item: (item["date"], item["provider_type"], item["name"] or ""))
+    return rows or None
+
+
 def _segment_pace_sec_per_km(speed: float | None) -> int | None:
     return round(1000.0 / speed) if speed is not None and speed > 0 else None
 
@@ -2141,6 +2187,7 @@ def fetch_domain(
         sport_settings_max_hr=sport_settings_max_hr,
         extra_unknowns=list(notes),
         recovery_days=_recovery_days(wellness, window),
+        other_activities=_build_other_activities(activities, window),
     )
 
 

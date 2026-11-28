@@ -630,6 +630,7 @@
         "window_end": "2026-09-04",
         "window_start": "2026-07-25"
       },
+      "other_activities": null,
       "privacy": {
         "contains_connection_state": false,
         "contains_credentials": false,

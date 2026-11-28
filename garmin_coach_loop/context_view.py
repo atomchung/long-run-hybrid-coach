@@ -112,10 +112,14 @@ EVIDENCE_GROUPS: dict[str, tuple[str, ...]] = {
         # field -- the #249 failure this module's own rule exists to prevent. It is
         # small: at most 28 days of four numbers.
         "reported_recovery",
+        # Training of a type the product does not plan -- a generic workout, a walk.
+        # Beside `recent_actuals` because "what did they actually do lately" is one
+        # question, and a day holding only one of these is not a day of rest.
+        "other_activities",
     ),
     # Planning or reviewing a week: the cycle's own sessions against what happened, the
     # calendar, and the weekly volume those weeks sit in.
-    "week": ("cycle_sessions", "current_calendar", "baseline_evidence"),
+    "week": ("cycle_sessions", "current_calendar", "baseline_evidence", "other_activities"),
     # Reassessing the 28-day direction: the same sessions, plus what the athlete's
     # training looked like before this cycle and where it stopped.
     "cycle": (
@@ -123,6 +127,9 @@ EVIDENCE_GROUPS: dict[str, tuple[str, ...]] = {
         "baseline_evidence",
         "training_breaks",
         "training_history",
+        # A review of the cycle reads which weeks were trained; a week whose only
+        # sessions were of a type the plan does not hold still was (issue #558).
+        "other_activities",
     ),
     # Lifting: the sets as reported, the per-movement arithmetic, and how a session's
     # sets were actually structured.
@@ -362,6 +369,7 @@ _ROWS: dict[str, dict[str, Any]] = {
         "dates": ("date",),
         "activity_key": "activity_id",
     },
+    "other_activities": {"container": None, "dates": ("date",)},
     "strength_execution": {
         "container": "sessions",
         "dates": ("date",),
