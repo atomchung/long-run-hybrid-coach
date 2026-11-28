@@ -1269,15 +1269,15 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
         self.assertEqual("引體向上 3x8 輔助15公斤", added["prescription"])
         self.assertEqual([], self.blocking_errors(projection))
 
-    def test_a_cross_training_session_plans_with_structure_and_does_not_publish(self):
+    def test_a_cross_training_session_plans_with_structure_and_publishes_as_an_entry(self):
         """A cycling session is a plannable answer, not a lie the schema forces.
 
         The coach substituting a ride for a run used to have two dishonest encodings:
         call it recovery (losing the quantified target) or call it running (polluting
         reconciliation and delivery). With the sport in the vocabulary it adopts under
         its own name, carries the same time-axis structure a run would, renders through
-        the same kind-based renderer -- and stays undeliverable, because no delivery
-        representation for it has been verified yet.
+        the same kind-based renderer -- and publishes the way strength does, as a titled
+        calendar entry (issue #541), so the ride is on the athlete's calendar that day.
         """
         ride = {
             "kind": "time_axis",
@@ -1311,7 +1311,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
 
         added = self.sessions(projection["after_plan"])["cycling-2026-08-15"]
         self.assertEqual(ride, added["plan"])
-        self.assertFalse(added["execution"]["publish_supported"])
+        self.assertTrue(added["execution"]["publish_supported"])
         self.assertTrue(added["prescription"].strip())
         self.assertEqual([], self.blocking_errors(projection))
 

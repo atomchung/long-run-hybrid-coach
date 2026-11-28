@@ -48,10 +48,12 @@ def delivery_session_content(session: dict[str, Any]) -> dict[str, Any]:
         # whitespace (`prescription.session_title`): a difference the calendar never shows
         # is not a reason to send the entry again.
         purpose["purpose"] = stored.strip() if isinstance(stored, str) else stored
-    # A run's stored `plan.name` titled its calendar entry before titles were composed, and
-    # reaches nothing now, so a restatement that only drops it is the same workout.
+    # A time_axis plan's stored `name` reaches nothing: the title is composed and the
+    # description renders the steps. A run's once titled its calendar entry, before titles
+    # were composed; a ride's or a swim's never did. A restatement that only drops it is
+    # the same workout.
     projected_plan = session.get("plan")
-    if session.get("sport") == "running" and plan.get("kind") == "time_axis":
+    if plan.get("kind") == "time_axis":
         projected_plan = {key: value for key, value in plan.items() if key != "name"}
     return {
         field: session.get(field)
@@ -60,7 +62,7 @@ def delivery_session_content(session: dict[str, Any]) -> dict[str, Any]:
             "sport",
             "scheduled_date",
             # The other authored field that reaches Intervals (issue #56). It is appended
-            # to the delivered description for both sports, so changing or clearing it
+            # to the delivered description for every sport, so changing or clearing it
             # changes what the calendar holds -- and a delivery reported verified under a
             # note that was since edited would be this projection's one job left undone.
             "coach_note",

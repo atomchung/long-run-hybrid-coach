@@ -294,11 +294,11 @@ to have something to confirm is worse than answering.
 
 ## Delivery, withdrawal, and two independent axes
 
-Every session in the week reaches the calendar — running and strength alike. What differs
-is how much structure each can carry: a run is an executable workout the watch can follow,
-a strength session is a titled calendar entry carrying its prescription as text. The
-product never implies it sent a structure it did not build, so a strength read-back that
-contains one fails closed.
+Every session in the week reaches the calendar except rest, which is never sent: an empty
+day is the rest day. What differs is how much structure each can carry: a run is an
+executable workout the watch can follow, every other sport is a titled calendar entry
+carrying its prescription as text. The product never implies it sent a structure it did
+not build, so a calendar entry's read-back that contains one fails closed.
 
 Withdrawal is the same gate in the other direction, for a delivered workout the current
 plan no longer describes. Only events this product wrote are ever removed, and a past

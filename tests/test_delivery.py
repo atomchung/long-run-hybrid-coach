@@ -45,6 +45,7 @@ from garmin_coach_loop.delivery import (
 )
 from garmin_coach_loop.plan_change import project_change_request
 from garmin_coach_loop.validation import (
+    SPORTS as VALIDATION_SPORTS,
     validate_plan_state,
     _expected_context_baseline,
     _expected_current_calendar,
@@ -54,6 +55,7 @@ from garmin_coach_loop.delivery_content import delivery_session_content
 from garmin_coach_loop.plan_change import _publish_supported
 from garmin_coach_loop.prescription import (
     _WORDS,
+    DELIVERED_SPORTS,
     LANGUAGES,
     SESSION_LABELS,
     render_prescription,
@@ -1465,6 +1467,11 @@ def _run(label: str | None, minutes: int | None, *steps: dict[str, Any], name: s
     return session
 
 
+def _cross_training(sport: str, minutes: int | None) -> dict[str, Any]:
+    return {"sport": sport, "purpose": "x", "planned_minutes": minutes,
+            "plan": {"kind": "unstructured"}}
+
+
 class ComposedSessionTitleTests(unittest.TestCase):
     """Issue #540: every delivered title is the label's word plus numbers the plan holds.
 
@@ -1621,9 +1628,34 @@ class ComposedSessionTitleTests(unittest.TestCase):
         listed = _strength_day("back", _lifts(_lift("划船")), purpose="背日：反向划船與蹲姿單槓")
         self.assertEqual("背 划船5x5", session_title(listed, "zh-Hant"))
 
-    def test_only_a_sport_that_delivers_has_a_title(self):
-        self.assertIsNone(session_title({"sport": "mobility", "plan": {"kind": "unstructured"}}))
-        self.assertIsNone(session_title({"sport": "cycling", "plan": {"kind": "time_axis", "name": "騎車"}}))
+    def test_every_other_sport_is_its_word_then_its_first_repeat_then_its_minutes(self):
+        # Issue #541's table. The sport carries no label, so its own word is the first one,
+        # and a time_axis plan contributes its first repeat exactly as a run's does.
+        swim = {"sport": "swimming", "planned_minutes": 45, "plan": {
+            "kind": "time_axis", "name": "游泳技術課",
+            "steps": [_step(seconds=600), _repeat(4, _step(meters=200), _step(seconds=30))],
+        }}
+        rows = (
+            (_cross_training("cycling", 60), "騎車 60分", "Ride 60 min"),
+            (swim, "游泳 4x200m 45分", "Swim 4x200m 45 min"),
+            (_cross_training("hiking", 120), "健行 120分", "Hike 120 min"),
+            (_cross_training("rowing", 30), "划船 30分", "Row 30 min"),
+            (_cross_training("mobility", 20), "伸展 20分", "Mobility 20 min"),
+            (_cross_training("recovery", 30), "恢復 30分", "Recovery 30 min"),
+            (_cross_training("mobility", None), "伸展", "Mobility"),
+        )
+        for session, zh, en in rows:
+            with self.subTest(sport=session["sport"]):
+                self.assertEqual(zh, session_title(session, "zh-Hant"))
+                self.assertEqual(en, session_title(session, "en"))
+
+    def test_rest_is_the_one_sport_with_no_title(self):
+        self.assertIsNone(session_title(_cross_training("rest", 0)))
+        self.assertEqual(
+            {"rest"},
+            set(VALIDATION_SPORTS) - set(DELIVERED_SPORTS),
+            "every sport but rest delivers",
+        )
 
 
 class SessionLabelVocabularyTests(unittest.TestCase):
@@ -1800,11 +1832,12 @@ class PublishSupportMatchesWhatDeliveryCanBuildTests(unittest.TestCase):
         }),
         ("a rest day", {"sport": "rest", "purpose": "休息", "plan": {"kind": "unstructured"}}),
         ("mobility", {"sport": "mobility", "purpose": "活動度", "plan": {"kind": "unstructured"}}),
-        # A cross-training session with a perfectly executable time axis: the flag says
-        # false because no delivery representation exists for the sport, and the builder
-        # has to agree by refusing rather than by quietly labelling the payload a run --
-        # which is exactly how these two once drifted for strength.
-        ("cycling planned along a time axis it cannot deliver yet", {
+        ("recovery", {"sport": "recovery", "purpose": "放鬆", "plan": {"kind": "unstructured"}}),
+        # A cross-training session with an executable time axis still publishes as a
+        # titled entry rather than as a workout, and the builder has to agree by building
+        # that entry rather than by quietly labelling the payload a run -- which is
+        # exactly how these two once drifted for strength.
+        ("cycling planned along a time axis", {
             "sport": "cycling", "purpose": "有氧替代",
             "plan": {"kind": "time_axis", "name": "輕鬆騎 60分", "steps": [
                 {"kind": "work", "name": "輕鬆騎",
@@ -1827,35 +1860,131 @@ class PublishSupportMatchesWhatDeliveryCanBuildTests(unittest.TestCase):
                 self.assertEqual(buildable, _publish_supported(session), label)
 
 
-class CrossTrainingDeliveryBoundaryTests(unittest.TestCase):
-    """The refusal names the actual gap: delivery, not executability.
+class EverySportButRestDeliversAsAnEntryTests(unittest.TestCase):
+    """Issue #541: every planned sport except rest reaches the calendar as strength does.
 
-    "Must be an executable running or strength session" was the one message for two
-    different situations, and for a cycling session it was wrong on its face -- a ride
-    along a time axis is executable, this product just has no verified way to write it
-    to the provider. An athlete told their session is unexecutable deletes it; an
-    athlete told it does not deliver yet trains it off-calendar, which is the honest
-    state of the product.
+    A titled entry whose description is the prescription and the coach's note, with no
+    executable structure, under an event type the provider's own activities read back as
+    the same sport. Rest is never sent, because an empty day is the rest day.
     """
 
-    def test_a_cross_training_session_is_refused_as_undelivered_not_unexecutable(self):
+    RIDE = {
+        "kind": "time_axis",
+        "steps": [
+            {"kind": "work", "name": "暖身", "duration": {"kind": "time", "seconds": 600},
+             "target": {"kind": "open"}},
+            {"kind": "repeat", "repetitions": 4, "steps": [
+                {"kind": "work", "name": "爬坡", "duration": {"kind": "time", "seconds": 300},
+                 "target": {"kind": "open"}},
+                {"kind": "work", "name": "輕鬆騎", "duration": {"kind": "time", "seconds": 120},
+                 "target": {"kind": "open"}},
+            ]},
+            {"kind": "work", "name": "有氧", "duration": {"kind": "time", "seconds": 900},
+             "target": {"kind": "hr_ceiling", "unit": "bpm", "ceiling_bpm": 150}},
+        ],
+    }
+
+    def setUp(self):
+        self.now = dt.datetime(2026, 8, 12, 10, 0, tzinfo=dt.timezone.utc)
+
+    def _plan_with(self, sport: str, session_plan: dict[str, Any], **fields: Any):
         plan = plan_fixture()
         session = next(
-            item for item in plan["week"]["sessions"]
-            if item["session_id"] == "run-quality-01"
+            item for item in plan["week"]["sessions"] if item["session_id"] == "run-quality-01"
         )
-        session["sport"] = "cycling"
-        session["execution"]["publish_supported"] = False
+        session["sport"] = sport
+        session["plan"] = copy.deepcopy(session_plan)
+        session.update(fields)
+        rerendered(session)
+        session["execution"]["publish_supported"] = _publish_supported(session)
+        self.assertEqual("passed", validate_plan_state(plan)["status"])
+        return plan, session
+
+    def _publish(self, plan: dict[str, Any], readback_steps: list[Any] | None = None):
+        proposal = prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
+        approval = approve_delivery_proposal(
+            proposal, approved_by="fixture-athlete", approved_at=self.now
+        )
+        transport = FakeTransport()
+        # Intervals echoes a workout_doc container with no steps for a calendar entry.
+        transport._readback = lambda event_id, event: {
+            "id": int(event_id),
+            **event,
+            "workout_doc": {"steps": readback_steps or [], "description": event["description"]},
+        }
+        receipt = publish_delivery(
+            proposal, approval, load_current_plan=lambda: plan, transport=transport, now=self.now,
+        )
+        return proposal, receipt, transport
+
+    def test_a_ride_along_a_time_axis_reaches_the_calendar_as_a_titled_entry(self):
+        plan, session = self._plan_with(
+            "cycling", self.RIDE, planned_minutes=45, coach_note="坡上別站起來"
+        )
+
+        proposal, receipt, transport = self._publish(plan)
+
+        self.assertEqual("intervals_accepted", receipt["delivery_state"])
+        written = transport.bulk_calls[0]
+        self.assertEqual("Ride", written["type"])
+        self.assertEqual("騎車 4x5分 45分", written["name"])
+        # The prescription and the note, as prose: no line is a step Intervals would parse,
+        # and the ceiling is a sentence the athlete reads rather than a target sent.
+        self.assertEqual(f"{session['prescription']}\n\n坡上別站起來", written["description"])
+        self.assertIn("心率上限 150 bpm", written["description"])
+        self.assertFalse(
+            [line for line in written["description"].splitlines() if line.lstrip().startswith("-")]
+        )
+        self.assertNotIn("steps", proposal["workout"])
+        self.assertNotIn("workout_doc", written)
+        # A ceiling on a ride is not resolved against the Run threshold: nothing is sent
+        # for it to resolve, and the Run threshold is not the ride's.
+        self.assertIsNone(proposal["preview"]["hr_ceiling_resolution"])
+        self.assertEqual(0, transport.threshold_hr_reads)
+
+    def test_every_sport_but_rest_is_written_under_its_own_event_type(self):
+        for sport, provider_type, title in (
+            ("swimming", "Swim", "游泳 30分"),
+            ("hiking", "Hike", "健行 30分"),
+            ("rowing", "Rowing", "划船 30分"),
+            ("mobility", "Yoga", "伸展 30分"),
+            ("recovery", "Workout", "恢復 30分"),
+        ):
+            with self.subTest(sport=sport):
+                plan, _ = self._plan_with(sport, {"kind": "unstructured"}, planned_minutes=30)
+                _, receipt, transport = self._publish(plan)
+                self.assertEqual("intervals_accepted", receipt["delivery_state"])
+                self.assertEqual(provider_type, transport.bulk_calls[0]["type"])
+                self.assertEqual(title, transport.bulk_calls[0]["name"])
+                self.assertEqual("不設定量化目標", transport.bulk_calls[0]["description"])
+
+    def test_each_event_type_reads_back_as_the_sport_it_was_planned_as(self):
+        # So the activity the watch records reconciles with the planned session. Recovery's
+        # generic `Workout` is the deliberate exception: it is too broad to read as recovery.
+        from garmin_coach_loop.delivery import _PROVIDER_TYPES
+        from garmin_coach_loop.source_intervals import _map_activity_sport
+
+        self.assertEqual(set(DELIVERED_SPORTS), set(_PROVIDER_TYPES))
+        for sport, provider_type in _PROVIDER_TYPES.items():
+            with self.subTest(sport=sport):
+                expected = None if sport == "recovery" else sport
+                self.assertEqual(expected, _map_activity_sport(provider_type))
+
+    def test_an_entry_whose_read_back_carries_steps_fails_closed(self):
+        plan, _ = self._plan_with("cycling", self.RIDE, planned_minutes=45)
+        with self.assertRaisesRegex(DeliveryError, "cycling entry unexpectedly carries workout steps"):
+            self._publish(plan, readback_steps=[{"duration": 600}])
+
+    def test_a_rest_day_is_refused_by_name_and_never_written(self):
+        plan, session = self._plan_with("rest", {"kind": "unstructured"}, planned_minutes=0)
+        self.assertFalse(session["execution"]["publish_supported"])
 
         with self.assertRaises(DeliveryError) as caught:
-            prepare_delivery_proposal(
-                plan, "run-quality-01", now=dt.datetime(2026, 8, 12, 10, 0, tzinfo=dt.timezone.utc)
-            )
+            prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
 
-        message = str(caught.exception)
-        self.assertIn("cycling", message)
-        self.assertIn("not supported yet", message)
-        self.assertNotIn("executable", message)
+        self.assertIn("rest session is never delivered", str(caught.exception))
+        with self.assertRaises(DeliveryError):
+            _workout_from_session(session)
 
 
 class ProjectionWithdrawsWhateverChangesThePayloadTests(unittest.TestCase):

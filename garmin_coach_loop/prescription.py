@@ -46,11 +46,24 @@ from typing import Any
 DEFAULT_LANGUAGE = "zh-Hant"
 LANGUAGES = ("zh-Hant", "en")
 
+# Every sport a session can be delivered as, each with its own word in the tables below.
+# Rest is the one sport missing: it is never sent, because an empty day is the rest day.
+DELIVERED_SPORTS = (
+    "running",
+    "strength",
+    "cycling",
+    "swimming",
+    "hiking",
+    "rowing",
+    "mobility",
+    "recovery",
+)
+
 # What kind of session this is, as one fixed key per sport. A delivered calendar title
 # starts with this key's word from the table below -- or with the sport's own word when a
 # session carries none -- so the same kind of session carries the same title every week
-# and in the athlete's own language. Only the two sports that deliver carry one; the order
-# is the order an error lists them in.
+# and in the athlete's own language. Only running and strength carry one; every other
+# sport is titled with its own word. The order is the order an error lists them in.
 SESSION_LABELS: dict[str, tuple[str, ...]] = {
     "running": (
         "easy_run",
@@ -117,10 +130,16 @@ _WORDS: dict[str, dict[str, str]] = {
         "title_distance_km": "{value}km",
         "title_distance_m": "{value}m",
         "title_planned_minutes": "{minutes}分",
-        # The first word of a title whose session carries no label, one per SESSION_LABELS
-        # sport.
+        # The first word of a title whose session carries no label, one per
+        # DELIVERED_SPORTS sport.
         "running": "跑步",
         "strength": "重訓",
+        "cycling": "騎車",
+        "swimming": "游泳",
+        "hiking": "健行",
+        "rowing": "划船",
+        "mobility": "伸展",
+        "recovery": "恢復",
         # One word per SESSION_LABELS key.
         "easy_run": "輕鬆跑",
         "long_run": "長跑",
@@ -168,6 +187,12 @@ _WORDS: dict[str, dict[str, str]] = {
         "title_planned_minutes": "{minutes} min",
         "running": "Run",
         "strength": "Strength",
+        "cycling": "Ride",
+        "swimming": "Swim",
+        "hiking": "Hike",
+        "rowing": "Row",
+        "mobility": "Mobility",
+        "recovery": "Recovery",
         "easy_run": "Easy run",
         "long_run": "Long run",
         "recovery_run": "Recovery run",
@@ -391,28 +416,28 @@ def session_title(session: Any, language: str = DEFAULT_LANGUAGE) -> str | None:
     """The name a delivered calendar entry carries, composed from the session.
 
     The first word is the ``label``'s word in the athlete's language, or the sport's own
-    word when the session carries no label. Then come numbers the plan already holds, one
-    space between each: for a run, the first repeat's count and rep duration and the
-    session's ``planned_minutes``; for strength, the first movement and its measured load
-    (``strength_title_suffix``). The same kind of session reads the same way every week,
-    and a run's stored ``plan.name`` never reaches the calendar.
+    word when the session carries none; only running and strength sessions carry a label.
+    Then come numbers the plan already holds, one space between each: for
+    strength, the first movement and its measured load (``strength_title_suffix``); for
+    every other sport, the first repeat's count and rep duration and the session's
+    ``planned_minutes``. The same kind of session reads the same way every week, and a
+    stored ``plan.name`` never reaches the calendar.
 
     The one exception is a strength session with no movement list. Its plan holds nothing
     to compose, so its ``purpose`` -- the coach's own sentence naming what the day trains
     and its movements -- is the whole title, whatever its label; the label's or sport's
     word stands in only when that sentence is blank.
 
-    ``None`` for a sport that does not deliver.
+    ``None`` for rest, the one sport that does not deliver.
     """
     if not isinstance(session, dict):
         return None
     sport = session.get("sport")
-    labels = SESSION_LABELS.get(sport) if isinstance(sport, str) else None
-    if labels is None:
+    if sport not in DELIVERED_SPORTS:
         return None
     words = _WORDS[normalize_language(language)]
     label, plan = session.get("label"), session.get("plan")
-    first_word = words[label] if label in labels else words[sport]
+    first_word = words[label] if label in SESSION_LABELS.get(sport, ()) else words[sport]
     if sport == "strength":
         purpose = session.get("purpose")
         if (
