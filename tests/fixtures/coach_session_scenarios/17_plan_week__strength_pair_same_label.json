@@ -705,7 +705,7 @@
           "planned_session_id": null,
           "session_label": "腿部重訓",
           "sport": "strength",
-          "subjective_feel": 4
+          "subjective_feel": 2
         },
         {
           "activity_id": "intervals:i-easy-03",
@@ -759,7 +759,7 @@
           "planned_session_id": null,
           "session_label": "上肢維持訓練",
           "sport": "strength",
-          "subjective_feel": 2
+          "subjective_feel": 4
         },
         {
           "activity_id": "intervals:i-long-03",
