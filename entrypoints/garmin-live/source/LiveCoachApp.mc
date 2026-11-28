@@ -289,7 +289,8 @@ class LiveCoachField extends WatchUi.DataField {
             p.text(316, 384, Graphics.FONT_MEDIUM, parts[1], Ink.CREAM);
         } else if (link == LINK_CONNECTING) {
             Face.waiting(p, 316, 352, (System.getTimer() / 1000).toNumber());
-        } else if (link == LINK_READY) {
+        } else if (link == LINK_READY && timer == Activity.TIMER_STATE_OFF) {
+            // Ready also holds through an activity that is not a run, which sends nothing.
             var account = pairing.account();
             if (account != null) {
                 p.text(227, 434, Graphics.FONT_XTINY, account, Ink.DIM);
