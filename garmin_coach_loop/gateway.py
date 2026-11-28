@@ -105,7 +105,7 @@ from .delivery import (
     withdraw_approved_set,
 )
 from . import owner_data
-from .live_run import LiveRunStore
+from .live_run import LiveRunStore, planned_steps_for_day
 from .rate_limit import RateLimiter
 from .identity import (
     WATCH_PAIRING_INVALID,
@@ -2753,6 +2753,20 @@ class CoachGateway:
                 reason=security_log.INVALID_PAIRING_CODE,
             )
         return {"status": result.status}
+
+    def planned_steps_today(self, owner_id: str) -> int | None:
+        """Step count of the athlete's delivered running workout today, or ``None``.
+
+        Reads the current plan to annotate an upload receipt; writes nothing. Today is the
+        athlete's own day, as everywhere else. Any failure is ``None`` and is not logged,
+        so a plan that cannot be read never costs the watch its upload.
+        """
+        try:
+            today = self._local_date(owner_id, self._now()).isoformat()
+            current = read_current_plan(self._state_dir(owner_id))
+            return planned_steps_for_day(current["current_plan"], today)
+        except Exception:  # noqa: BLE001
+            return None
 
     def live_run_writer(self, bearer: str | None) -> str:
         """The account a watch's device credential was paired to, or a refusal.
@@ -8113,7 +8127,9 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 owner_handle = gateway.owner_log_handle(owner_id)
                 sample = self._json_body(max_bytes=1024)
                 try:
-                    payload = gateway.live_runs.ingest(owner_id, sample)
+                    payload = gateway.live_runs.ingest(
+                        owner_id, sample, lambda: gateway.planned_steps_today(owner_id)
+                    )
                 except ValueError:
                     raise _invalid("invalid live run sample") from None
                 status = HTTPStatus.OK

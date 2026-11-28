@@ -7,6 +7,11 @@ just after the run can summarize all of it before any provider has synced the ac
 replay fence keeps a superseded session from starting again. Nothing here logs or writes
 to disk, and nothing here is read by a count, a plan match or a delivery.
 
+The one thing read the other way is the plan: the first accepted running sample of a
+session gets ``planned_steps`` on its receipt, the step count of today's delivered running
+workout, so the watch can tell when the last step is done. The caller supplies that read;
+this module only caches the answer for the session and writes nothing back.
+
 The summary is arithmetic over those samples. What a number means for this runner is the
 model's call; the only limits here are the ones that define a stop and a walk.
 """
@@ -48,6 +53,42 @@ NOTE = (
     f"Recorded during the run; held {RETENTION_SECONDS // 3600} h after last_sample_at. "
     "Totals and plan matching use Intervals only, which may list this same run once synced."
 )
+
+
+def watch_step_count(steps: list[dict[str, Any]]) -> int:
+    """How many workout steps the watch counts for these plan steps.
+
+    The one place the expansion rule lives: a work step counts 1, and a repeat counts its
+    repetitions times the steps inside it. Whether the watch really completes each
+    repeated child once is unverified on a device; change the rule here if it does not.
+    """
+    total = 0
+    for step in steps:
+        if step["kind"] == "repeat":
+            total += step["repetitions"] * watch_step_count(step["steps"])
+        else:
+            total += 1
+    return total
+
+
+def planned_steps_for_day(plan: dict[str, Any], today: str) -> int | None:
+    """Step count of the one delivered, structured running session scheduled on ``today``.
+
+    ``None`` unless exactly one session is a running session of that date with a
+    time-axis workout whose delivery the provider read back (``intervals_accepted``).
+    Reads the plan only.
+    """
+    matches = [
+        session for session in (plan.get("week") or {}).get("sessions") or []
+        if isinstance(session, dict) and session.get("sport") == "running"
+        and session.get("scheduled_date") == today
+        and (session.get("execution") or {}).get("delivery_state") == "intervals_accepted"
+        and (session.get("plan") or {}).get("kind") == "time_axis"
+    ]
+    if len(matches) != 1:
+        return None
+    count = watch_step_count(matches[0]["plan"]["steps"])
+    return count if count > 0 else None
 
 
 def _validate(sample: dict[str, Any]) -> None:
@@ -268,6 +309,9 @@ class _Run:
     age_at_arrival: float
     retired: dict[str, float]
     samples: list[dict[str, Any]]
+    # Read once per session, on its first accepted running sample; see ``ingest``.
+    planned_steps: int | None = None
+    planned_read: bool = False
 
 
 class LiveRunStore:
@@ -293,7 +337,14 @@ class LiveRunStore:
         if not isinstance(owner_id, str) or not owner_id.strip():
             raise ValueError("An owner is required")
 
-    def ingest(self, owner_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def ingest(self, owner_id: str, payload: dict[str, Any],
+               planned_steps: Callable[[], int | None] | None = None) -> dict[str, Any]:
+        """Keep one sample and answer with its receipt.
+
+        ``planned_steps`` reads today's workout step count for the owner. It runs at most
+        once per session, on the first accepted running sample, and any failure of it is
+        ``None``; the receipt of an accepted running sample carries the cached value.
+        """
         self._check_owner(owner_id)
         if not isinstance(payload, dict):
             raise ValueError("Expected a JSON object")
@@ -331,9 +382,21 @@ class LiveRunStore:
                 if len(samples) >= MAX_RUN_SAMPLES:
                     del samples[1::2]
                 samples.append(sample)
-            self._owners[owner_id] = _Run(sample, arrival, max(0, now - observed), retired, samples)
+            run = _Run(sample, arrival, max(0, now - observed), retired, samples)
+            if same_session:
+                run.planned_steps, run.planned_read = current.planned_steps, current.planned_read
+            receipt = {**receipt, "status": "accepted"}
+            if sample["state"] == "running":
+                if not run.planned_read:
+                    run.planned_read = True
+                    try:
+                        run.planned_steps = None if planned_steps is None else planned_steps()
+                    except Exception:  # noqa: BLE001 - an annotation never fails the upload
+                        run.planned_steps = None
+                receipt["planned_steps"] = run.planned_steps
+            self._owners[owner_id] = run
             self._owners.move_to_end(owner_id)
-            return {**receipt, "status": "accepted"}
+            return receipt
 
     def recap(self, owner_id: str) -> dict[str, Any] | None:
         """The latest run as the model reads it, or ``None`` when none is held."""
