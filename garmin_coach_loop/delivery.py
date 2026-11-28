@@ -333,8 +333,9 @@ def intervals_description(
 #   why a warning is insufficient -- the athlete confirms an exact preview. A preview
 #     that names a ceiling it could not resolve is the 2026-08-14 device failure again,
 #     where the watch showed a heart-rate target that permitted everything.
-#   valid workflows kept -- open-target runs, pace runs and strength entries never reach
-#     this. A ceiling run reaches it once, and only while the account setting is missing.
+#   valid workflows kept -- open-target runs, pace runs and every calendar entry never
+#     reach this, a ride or a swim planned under a ceiling included: its targets travel as
+#     prose. A ceiling run reaches it once, and only while the account setting is missing.
 #   false-positive cost -- one setting the athlete fills in once, named exactly, at
 #     preview rather than after a provider write.
 _MISSING_RUN_THRESHOLD_HR = (
@@ -389,7 +390,7 @@ def _with_coach_note(description: str, note: str | None) -> str:
     so the note reads as its own paragraph on Garmin Connect, which renders this string
     verbatim as the workout's Notes.
 
-    A strength entry has no grammar at all -- its description is the prescription as plain
+    A calendar entry has no grammar at all -- its description is the prescription as plain
     text -- so the same append is unconditional there for free.
     """
     if note is None:
@@ -421,7 +422,7 @@ def _reject_ambiguous_coach_note(session: dict[str, Any]) -> None:
       Nothing is silently sanitised: a note the athlete never approved is worse than a
       rewrite the coach is told about.
 
-    Only for a workout whose description *is* workout text. A strength entry's description
+    Only for a workout whose description *is* workout text. A calendar entry's description
     is plain prose the provider never parses, and refusing a token there would cost the
     coach a sentence for a hazard that does not exist on that path.
     """
@@ -456,21 +457,50 @@ def _current_plan_is_valid(plan: dict[str, Any]) -> None:
         raise DeliveryError(f"current PlanState is invalid: {report['errors']}")
 
 
-def _calendar_entry_from_session(session: dict[str, Any]) -> dict[str, Any]:
-    """Deliver a strength session as a titled calendar entry, not as a workout.
+# The Intervals event type each delivered sport is written as. Running is the one sport
+# delivered as a workout the watch executes; every other sport is a calendar entry with a
+# title and a description. Rest is absent: it is never sent, because an empty day is the
+# rest day.
+#
+# Every type reads back as the same sport through `source_intervals._map_activity_sport`,
+# so a planned session and the activity the watch records line up for reconciliation --
+# except recovery's `Workout`, deliberately: a generic workout activity is too broad to
+# read as recovery, so a recovery session is reconciled by the athlete's confirmation, as
+# an unmatched session is.
+_PROVIDER_TYPES = {
+    "running": "Run",
+    "strength": "WeightTraining",
+    "cycling": "Ride",
+    "swimming": "Swim",
+    "hiking": "Hike",
+    "rowing": "Rowing",
+    "mobility": "Yoga",
+    "recovery": "Workout",
+}
 
-    The plan owns the sets, reps and load; the watch has no structured strength
-    target it could execute from them, and inventing one would be the structured
-    strength delivery this product deliberately defers. Publishing the title puts
-    the day on the calendar so planned and actual line up on one surface, while the
-    prescription rides along as text the athlete reads rather than the device follows.
+_REST_IS_NEVER_DELIVERED = (
+    "a {sport} session is never delivered: an empty day on the calendar is the rest day"
+)
+
+
+def _calendar_entry_from_session(session: dict[str, Any]) -> dict[str, Any]:
+    """Deliver any session but a run as a titled calendar entry, not as a workout.
+
+    The plan owns the sets, reps and load of a lift, the steps of a ride or a swim; the
+    watch is given no structured target to execute from any of them, and inventing one
+    would be the structured delivery this product deliberately defers per sport.
+    Publishing the title puts the day on the calendar so planned and actual line up on one
+    surface, while the prescription rides along as text the athlete reads rather than the
+    device follows -- including a time_axis ride's steps, which reach the calendar as
+    prose and never as workout syntax.
 
     The athlete effectively sees only this title on the watch, so it is composed
-    (`prescription.session_title`): the label's word, or the sport's for a session with
-    none, then the primary lift and its measured load from the plan's first movement --
-    the model writes none of it. A plan with nothing to render (`unstructured`) has no
-    lift to name, so its title is the coach's `purpose` ("背日：反向划船與蹲姿單槓"),
-    which is where that day's movements are written down.
+    (`prescription.session_title`) and the model writes none of it: for strength, the
+    label's word, or the sport's for a session with none, then the primary lift and its
+    measured load from the plan's first movement; for every other sport, the sport's own
+    word, the first repeat and the planned minutes. A strength plan with nothing to render
+    (`unstructured`) has no lift to name, so its title is the coach's `purpose`
+    ("背日：反向划船與蹲姿單槓"), which is where that day's movements are written down.
 
     The title is written in whichever language the session's own prescription was, which
     is read off that sentence rather than passed in: the description below it *is* that
@@ -479,12 +509,12 @@ def _calendar_entry_from_session(session: dict[str, Any]) -> dict[str, Any]:
     """
     prescription = session.get("prescription")
     return {
-        "sport": "strength",
+        "sport": session["sport"],
         "name": _session_title(session, _language_of(session.get("plan"), prescription)),
         "scheduled_date": session["scheduled_date"],
         # The coach's sentence rides at the end of the prose the athlete already reads
-        # here. Nothing parses a strength description, so there is no grammar to collide
-        # with and no guard to run -- the note is simply the last paragraph of it.
+        # here. Nothing parses a calendar entry's description, so there is no grammar to
+        # collide with and no guard to run -- the note is simply the last paragraph of it.
         "description": _with_coach_note(
             prescription.strip() if isinstance(prescription, str) else "",
             _session_coach_note(session),
@@ -495,16 +525,14 @@ def _calendar_entry_from_session(session: dict[str, Any]) -> dict[str, Any]:
 def _workout_from_session(
     session: dict[str, Any], run_threshold_hr: int | None = None
 ) -> dict[str, Any]:
-    if session.get("sport") == "strength":
-        return _calendar_entry_from_session(session)
-    if session.get("sport") != "running":
+    sport = session.get("sport")
+    if sport not in _PROVIDER_TYPES:
         # The guard prepare_delivery_proposal already applies, repeated here so this
-        # function cannot silently label some other sport's payload "running" if that
-        # outer gate ever loosens. A cross-training sport gets a real representation per
-        # sport, or none.
-        raise DeliveryError(
-            f"no delivery representation exists for {session.get('sport')} sessions yet"
-        )
+        # function cannot label a rest day's payload as some other sport if that outer
+        # gate ever loosens.
+        raise DeliveryError(_REST_IS_NEVER_DELIVERED.format(sport=sport))
+    if sport != "running":
+        return _calendar_entry_from_session(session)
     plan = session.get("plan")
     if not isinstance(plan, dict) or plan.get("kind") != "time_axis":
         raise DeliveryError(
@@ -628,17 +656,15 @@ def prepare_delivery_proposal(
     if current_plan.get("status") != "active":
         raise DeliveryError("only an active current plan may publish workouts")
     session = _plan_session(current_plan, session_id)
-    if session.get("sport") not in {"running", "strength"}:
-        # Not the same refusal as an unexecutable session: a cycling time_axis session
-        # is perfectly executable, this product just has no verified way to write it to
-        # the provider yet. Saying which is which is what lets the athlete plan the
-        # session anyway and execute it off-calendar.
-        raise DeliveryError(
-            f"delivery for {session.get('sport')} sessions is not supported yet; "
-            "running and strength are the sports that deliver today"
-        )
+    if session.get("sport") not in _PROVIDER_TYPES:
+        # Said as what it is -- an empty day is the rest day -- rather than as a session
+        # that failed to publish, so nobody goes looking for a missing calendar entry.
+        raise DeliveryError(_REST_IS_NEVER_DELIVERED.format(sport=session.get("sport")))
     if session.get("match_status") not in {"planned", "moved", "replaced"}:
-        raise DeliveryError("delivery session must be an executable running or strength session")
+        raise DeliveryError(
+            "delivery session must still be planned, moved or replaced, not "
+            f"{session.get('match_status')}"
+        )
     execution = session.get("execution") if isinstance(session.get("execution"), dict) else {}
     if execution.get("publish_supported") is not True:
         raise DeliveryError("selected session does not support structured publishing")
@@ -654,7 +680,14 @@ def prepare_delivery_proposal(
             f"{execution.get('external_id')}; select only the sessions still to deliver"
         )
 
-    plan_ceiling = _plan_ceiling_bpm(session.get("plan") or {})
+    # Only a run's ceiling reaches the provider as a target. A ride or a swim planned under
+    # one is a calendar entry whose ceiling is a sentence in its description, so there is
+    # nothing to resolve against the Run threshold -- which is not that sport's anyway.
+    plan_ceiling = (
+        _plan_ceiling_bpm(session.get("plan") or {})
+        if session.get("sport") == "running"
+        else None
+    )
     if plan_ceiling is not None and run_threshold_hr is None and read_run_threshold_hr is not None:
         run_threshold_hr = read_run_threshold_hr()
     workout = _workout_from_session(session, run_threshold_hr)
@@ -1256,7 +1289,7 @@ def _provider_payload(proposal: dict[str, Any]) -> dict[str, Any]:
 
 
 def _provider_type(workout: dict[str, Any]) -> str:
-    return "WeightTraining" if workout.get("sport") == "strength" else "Run"
+    return _PROVIDER_TYPES[workout["sport"]]
 
 
 def _actual_number(value: Any, field: str) -> int:
@@ -1359,15 +1392,18 @@ def verify_readback(proposal: dict[str, Any], event: dict[str, Any], event_id: s
         raise DeliveryError("read-back workout name mismatch")
     if str(event.get("description", "")).strip() != workout["description"].strip():
         raise DeliveryError("read-back workout description mismatch")
-    if workout.get("sport") == "strength":
+    if workout.get("sport") != "running":
         # Intervals echoes a workout_doc container for every calendar entry, carrying
         # the description and no steps. The container is not the claim; steps are.
-        # Steps coming back would mean the provider synthesised a structure this path
-        # never delivered, which is the structured strength delivery it must not imply.
+        # Steps coming back would mean the provider parsed the description into a
+        # structure this path never delivered, which is the structured delivery of that
+        # sport it must not imply.
         document = event.get("workout_doc")
         steps = document.get("steps") if isinstance(document, dict) else None
         if steps:
-            raise DeliveryError("read-back strength entry unexpectedly carries workout steps")
+            raise DeliveryError(
+                f"read-back {workout.get('sport')} entry unexpectedly carries workout steps"
+            )
         return
     document = _mapping(event.get("workout_doc"), "read-back workout_doc")
     steps = document.get("steps")

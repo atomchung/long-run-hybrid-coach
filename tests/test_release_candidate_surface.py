@@ -54,7 +54,7 @@ RELEASE_CANDIDATE_TOOL_CATALOGUE_SHA256 = FULL_PROFILE.tool_catalogue_sha256
 # a reviewer approved are no longer the bytes being served.
 RELEASE_CANDIDATE_INSTRUCTIONS_SHA256 = FULL_PROFILE.instructions_sha256
 RELEASE_CANDIDATE_SKILL_SHA256 = (
-    "3aa07f88d621629e0d49f8e01c357395c6b4b09bd6127d3c2a94d5d1b7ae9261"
+    "2088ac5bd3f6c93aaab078b033ee91fdf9637d8d928b40287d96a9763e098135"
 )
 
 # The Plugin entry: the surface a deployment with health data off serves, which is

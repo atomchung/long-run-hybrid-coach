@@ -716,8 +716,8 @@ def _label(op: dict[str, Any], sport: str, field: str) -> str | None:
     """The label a request sends, checked against the session's sport; None when absent.
 
     Optional: a session without one is titled with its sport's own word. A sent one has to
-    be a key of that sport, and a sport that delivers nothing carries none. Null is the
-    same as leaving it out.
+    be a key of that sport, and a sport with no labels carries none. Null is the same as
+    leaving it out.
     """
     labels = SESSION_LABELS.get(sport)
     value = op.get("label")
@@ -1114,18 +1114,18 @@ def _publish_supported(session: dict[str, Any]) -> bool:
     """Whether delivery has something it could actually send for this session.
 
     Sport decides *how* a session is delivered, and both ways are implemented: a running
-    session is written as the workout its time_axis plan describes, and a strength session
+    session is written as the workout its time_axis plan describes, and every other sport
     as a calendar entry whose title is composed from its label or its sport, so every one
-    has something to send. Reading this flag as "a run along a time axis" described only
-    the first way, so every strength session a writer touched came out unpublishable and
-    the delivery boundary then refused a sport the product had already been putting on
-    the athlete's calendar.
+    has something to send. Rest is the exception, and the reason is the same rule: it has
+    no title (``session_title``), because an empty day is the rest day. Reading this flag
+    as "a run along a time axis" described only the first way, so every strength session a
+    writer touched came out unpublishable and the delivery boundary then refused a sport
+    the product had already been putting on the athlete's calendar.
     """
-    sport = session.get("sport")
-    if sport == "running":
+    if session.get("sport") == "running":
         plan = session.get("plan")
         return isinstance(plan, dict) and plan.get("kind") == "time_axis"
-    return sport == "strength"
+    return session_title(session) is not None
 
 
 def _bookkeeping(
@@ -1298,7 +1298,7 @@ def _session_view(session: dict[str, Any] | None) -> dict[str, Any] | None:
         **{field: session.get(field) for field in _PREVIEW_SESSION_FIELDS},
         "plan_kind": plan.get("kind"),
         # The title the calendar entry would carry, composed the way delivery composes
-        # it and in the language of the prescription beside it; null for a sport that
+        # it and in the language of the prescription beside it; null for rest, which
         # does not deliver.
         "workout_name": session_title(
             session, language_of(session.get("plan"), session.get("prescription"))

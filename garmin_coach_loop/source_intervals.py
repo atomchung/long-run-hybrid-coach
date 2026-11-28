@@ -876,6 +876,10 @@ _CYCLING_ACTIVITY_TYPES = frozenset({"ride", "virtualride", "mountainbikeride", 
 _SWIMMING_ACTIVITY_TYPES = frozenset({"swim", "openwaterswim"})
 _HIKING_ACTIVITY_TYPES = frozenset({"hike"})
 _ROWING_ACTIVITY_TYPES = frozenset({"rowing", "virtualrow"})
+# The type a planned mobility session is delivered as, so a recorded yoga or stretching
+# session reconciles with it. `Workout` is deliberately not mapped to recovery: a generic
+# workout activity is too broad to read as any one sport.
+_MOBILITY_ACTIVITY_TYPES = frozenset({"yoga"})
 
 _SPORT_BY_ACTIVITY_TYPE = {
     **{member: "running" for member in _RUNNING_ACTIVITY_TYPES},
@@ -884,6 +888,7 @@ _SPORT_BY_ACTIVITY_TYPE = {
     **{member: "swimming" for member in _SWIMMING_ACTIVITY_TYPES},
     **{member: "hiking" for member in _HIKING_ACTIVITY_TYPES},
     **{member: "rowing" for member in _ROWING_ACTIVITY_TYPES},
+    **{member: "mobility" for member in _MOBILITY_ACTIVITY_TYPES},
 }
 
 

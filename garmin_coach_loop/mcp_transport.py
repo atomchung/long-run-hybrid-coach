@@ -3004,7 +3004,7 @@ TOOLS: tuple[Tool, ...] = (
                 },
                 "publish_new_workouts": {
                     "type": "boolean", "default": False,
-                    "description": "Also preview publishing this plan's new, undelivered future running/strength sessions. "
+                    "description": "Also preview publishing this plan's new, undelivered future sessions, every sport but rest. "
                                    "Use only when the athlete asked to send them. False still updates affected workouts previously delivered by this product.",
                 },
                 "change_request": _COACH_CHANGE_REQUEST,

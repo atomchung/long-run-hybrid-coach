@@ -31,10 +31,10 @@ DECISION_EVENT_SCHEMA_VERSION = "1.0"
 # written before that change carries it.
 FRESHNESS = {"fresh", "partial", "stale", "failed", "unknown"}
 COVERAGE_STATUS = {"complete", "partial", "missing"}
-# Cross-training sports carry the same three execution models as everything else and
-# deliver nothing yet: `_publish_supported` answers false for them until a delivery
-# representation is verified per sport, so adding one here changes what a plan may hold
-# and what an athlete may report, never what reaches the watch.
+# Cross-training sports carry the same three execution models as everything else. Every
+# sport but rest delivers -- a run as a workout, the rest as a titled calendar entry
+# (`prescription.DELIVERED_SPORTS`) -- so adding one here also means giving it a word and
+# an Intervals event type, or it plans and reports without ever reaching the calendar.
 SPORTS = {
     "running",
     "strength",

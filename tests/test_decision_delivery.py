@@ -173,6 +173,25 @@ class CombinedDecisionJourneyTests(McpTestCase):
         self.assertEqual([{"session_id": "run-quality-01"}], result["calendar_delivery"]["withdrawn"])
         self.assertEqual([], self.fake.events)
 
+    def test_a_ride_replacing_a_delivered_run_overwrites_its_entry_in_place(self):
+        # Issue #541: a ride delivers, so a run replaced by one is replaced on the calendar
+        # under that same confirmation rather than withdrawn and left as a gap.
+        self.deliver(["run-quality-01"])
+        event_id = str(self.fake.events[0]["id"])
+        change = coaching_request(sessions=[{
+            "operation": "replace", "session_id": "run-quality-01", "sport": "cycling",
+            "purpose": "膝蓋休兵改騎車", "adaptation": "aerobic_base", "cost": "easy",
+            "planned_minutes": 45, "plan": {"kind": "unstructured"},
+        }])
+        prepared = self.prepare(change)
+        self.assertEqual([], prepared["preview"]["calendar_delivery"]["withdrawals"])
+        result = self.apply(prepared)
+        self.assertEqual("passed", result["calendar_delivery"]["status"])
+        self.assertEqual(1, len(self.fake.events))
+        self.assertEqual(event_id, str(self.fake.events[0]["id"]))
+        self.assertEqual("Ride", self.fake.events[0]["type"])
+        self.assertEqual("騎車 45分", self.fake.events[0]["name"])
+
     def test_partial_failure_resumes_the_saved_approval_after_cache_loss_without_another_yes(self):
         self.deliver(["run-quality-01", "run-long-01"])
         change = coaching_request(sessions=[{"operation": "keep", "session_id": sid, "coach_note": "本週保持輕鬆"}

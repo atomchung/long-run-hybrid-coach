@@ -1050,6 +1050,13 @@ class ActivityTypeVocabularyTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertEqual(sport, self._map(raw))
 
+    def test_yoga_maps_to_mobility_and_a_generic_workout_to_nothing(self):
+        # Yoga is the type a planned mobility session is delivered as, so a recorded yoga
+        # or stretching session reconciles with it (issue #541). A generic Workout is too
+        # broad to read as recovery and stays excluded.
+        self.assertEqual("mobility", self._map("Yoga"))
+        self.assertIsNone(self._map("Workout"))
+
     def test_the_deliberate_exclusions_hold(self):
         # Named in _CYCLING_ACTIVITY_TYPES' comment: a motor changes what an e-bike
         # ride's duration means, and a Walk is not a Hike. Both stay observable through

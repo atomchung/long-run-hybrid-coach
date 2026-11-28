@@ -99,8 +99,9 @@ file exists to prevent. Nothing below applies until a connection exists.
    confirmation. A plan change may include delivery and withdrawal in that same
    preview; retry unchanged approved effects without asking again. Report only
    delivery the product observed — Intervals accepting a workout is never
-   evidence that Garmin Connect or the watch received it, and a strength day
-   reaches the calendar as a title carrying no executable structure.
+   evidence that Garmin Connect or the watch received it, and every session but
+   a run reaches the calendar as a title carrying no executable structure; rest
+   is never sent.
 
 ## Reviewing a week or a cycle
 

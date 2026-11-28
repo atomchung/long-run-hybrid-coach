@@ -580,7 +580,7 @@
       ]
     },
     "sport": {
-      "description": "Which discipline a session belongs to. Only running and strength deliver today; every other sport plans, reports and reconciles with publish_supported false until its delivery representation is verified.",
+      "description": "Which discipline a session belongs to. Rest is the only sport that never delivers. A run delivers as an executable workout, every other sport as a titled calendar entry with no executable structure.",
       "enum": [
         "running",
         "strength",

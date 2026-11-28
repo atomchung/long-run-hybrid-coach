@@ -19,6 +19,7 @@ from .delivery import (
     approve_delivery_set, approve_withdrawal_set, deliver_approved_set,
     prepare_delivery_set, prepare_withdrawal_set, withdraw_approved_set,
 )
+from .prescription import DELIVERED_SPORTS
 from .store import (
     StateStoreError, canonical_hash, close_delivery_attempt, mark_delivery_attempt_recorded,
     pending_delivery_attempt, read_current_plan,
@@ -83,7 +84,7 @@ def prepare_decision_delivery(
                        and session.get("match_status") in ACTIONABLE_MATCH_STATUSES)
         changed = old != session
         replace_old = bool(previous_id and old_pending and changed)
-        executable = bool(pending and session.get("sport") in {"running", "strength"}
+        executable = bool(pending and session.get("sport") in DELIVERED_SPORTS
                           and execution.get("publish_supported") is True)
         deliver = executable and execution.get("delivery_state") == "not_published" and (
             replace_old or publish_new_workouts
