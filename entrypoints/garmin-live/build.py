@@ -83,6 +83,8 @@ def main() -> None:
     parser.add_argument("--monkeyc", default="monkeyc", help="Connect IQ compiler path")
     parser.add_argument("--server", help="https origin of a test deployment; default: the one in source/Server.mc")
     parser.add_argument("--test", action="store_true", help="compile the on-device unit tests")
+    parser.add_argument("--demo", action="store_true",
+                        help="compile a scripted run for the simulator and store screenshots; it never uses the network")
     parser.add_argument("--package", action="store_true",
                         help="build the Connect IQ Store package (.iq) for every listed watch")
     parser.add_argument("--check-devices", type=Path, metavar="DEVICES_DIR",
@@ -95,6 +97,8 @@ def main() -> None:
             print(problem)
         print(f"{len(manifest_products())} listed; {'differences above' if problems else 'matches the SDK profiles'}")
         raise SystemExit(1 if problems else 0)
+    if args.demo and (args.test or args.package):
+        parser.error("--demo builds a sideload binary on its own")
     if args.package and (args.test or args.device):
         parser.error("--package builds every listed watch, without tests")
     signer = args.developer_key.expanduser().resolve() if args.developer_key else None
@@ -122,6 +126,10 @@ def main() -> None:
             shutil.copytree(ROOT / name, project / name)
         for name in ("manifest.xml", "monkey.jungle"):
             shutil.copyfile(ROOT / name, project / name)
+        if args.demo:
+            shutil.copytree(ROOT / "demo", project / "demo")
+            with (project / "monkey.jungle").open("a", encoding="utf-8") as jungle:
+                jungle.write("base.sourcePath = source;demo\nbase.excludeAnnotations = live\n")
         if args.test:
             shutil.copytree(ROOT / "tests", project / "tests")
             with (project / "monkey.jungle").open("a", encoding="utf-8") as jungle:
@@ -137,7 +145,7 @@ def main() -> None:
             built = project / "Coach.iq"
             builds = [("store", base + ["-e", "-r", "-o", str(built)], built)]
         else:
-            name = "CoachTest.prg" if args.test else "Coach.prg"
+            name = "CoachTest.prg" if args.test else ("CoachDemo.prg" if args.demo else "Coach.prg")
             builds = [(device, base + ["-d", device, "-o", str(project / device / name), "-t" if args.test else "-r"],
                        project / device / name)
                       for device in dict.fromkeys(args.device or DEFAULT_DEVICES)]

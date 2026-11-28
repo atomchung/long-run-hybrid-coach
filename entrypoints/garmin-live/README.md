@@ -1,28 +1,64 @@
 # Coach data field (Long Run Hybrid Coach)
 
 A Connect IQ data field for the full Coach product. Add **Coach** to a data screen of a
-running activity. While the timer runs it sends a sample about every five seconds through
-Garmin Connect on the phone, so the Coach can recap the run as soon as the watch stops,
-without waiting for Garmin → Intervals.icu. What it sends and how long it is kept:
-[docs/ops/watch-run-recap.md](../../docs/ops/watch-run-recap.md).
+running activity, as a one-field page. While the timer runs it sends a sample about every five
+seconds through Garmin Connect on the phone, so the Coach can recap the run as soon as the
+watch stops, without waiting for Garmin → Intervals.icu. What it sends and how long it is
+kept: [docs/ops/watch-run-recap.md](../../docs/ops/watch-run-recap.md).
+
+## What the field shows
+
+There are no words on the field, so nothing needs translating.
+
+- **Top arc:** the heart-rate zone, in five colours from the athlete's own Garmin zones
+  (`UserProfile.getHeartRateZones`, which is why the manifest asks for the `UserProfile`
+  permission). Only the current zone is lit.
+- **Numbers:** heart rate large, then pace, timer time and distance under a shoe, a
+  stopwatch and a map pin. Units follow the watch's settings.
+- **Bottom strip:** the mascot runs while a mountain trail scrolls past. The near layer moves
+  12 design pixels per metre run, so the scene keeps the runner's real speed and stops when
+  they stop.
+  - **Mascot:** one form per zone, heating up from dark hatching to solid coral. It walks
+    below 80% of the run's median moving cadence (the `live_run.py` rule), stands when not
+    moving, and sits while the timer is paused.
+  - **Eye:** in zones 1 and 2 and while walking the field draws the pupil itself, so it moves
+    only when something happens. It rests looking up at the scenery (straight ahead in zone
+    2), turns to the next km flag once the flag is on screen and lower as it nears, and looks
+    at the athlete during a step stamp and for two seconds after a cheer. Zones 3 to 5 keep a
+    fixed stare.
+  - **Kilometre flags:** a flag for each whole kilometre (mile on an imperial watch) scrolls
+    in and turns gold as it passes. The mascot cheers for five seconds. A field that starts
+    mid-run counts the distance already run as passed, so it does not cheer for it.
+  - **Workout steps:** each completed step shows a cream stamp. When the step count reaches
+    the `planned_steps` an upload receipt reported, a gold check with confetti shows instead.
+- **Unreadable heart rate:** "--", a dark arc, and the zone-1 mascot.
+- **Smaller slots:** heart rate with a zone bar, and the mascot where it fits.
+- **Before the run:** an unpaired field shows its pairing code. A paired field shows the
+  masked email of the account it sends to.
+- **Upload status:** shown only when it fails. A crossed-out link appears after 30 seconds
+  of failed uploads.
+
+The data field redraws once a second (`View.onUpdate`); `WatchUi.animate`, layers and timers
+are not available to data fields, so every animation runs at one frame a second. The
+mascot sprites in `resources/drawables/sprites/` are drawn for a 454-pixel screen and scaled
+per device by the resource compiler (`scaleRelativeTo="screen"`). `source/SpriteEyes.mc`, where
+each sprite with a drawn pupil has its eye, comes from the same generator.
 
 ## Pairing
 
 Nothing secret is in a build. Unpaired, before a run starts, the field asks the Coach
-server for a code and shows it under **Code** (配對碼), for example `K7P4 QX9A`. The athlete
+server for a code and shows it next to a link icon, for example `K7P4 QX9A`. The athlete
 tells the Coach in their AI chat "connect my watch K7P4QX9A" (連接我的手錶 K7P4QX9A), and the
 `connectWatch` tool binds the code to the account of that conversation. The field, polling
 every five seconds with a secret only it holds, then receives a credential that can only
-upload that account's runs, keeps it in `Application.Storage`, and shows **Connected**
-(已連接) with the account's masked email.
+upload that account's runs, keeps it in `Application.Storage`, and shows the account's
+masked email under the trail.
 
 - A code lasts ten minutes and works once. The field shows at most three codes each time
-  the activity opens, then **Not connected** (未連接) until the next time. Without the phone
-  it keeps retrying, with growing waits.
+  the activity opens, then a crossed-out link until the next time. Three dots show while it
+  asks for a code. Without the phone it keeps retrying, with growing waits.
 - Paired, before the timer starts, the field shows whose account it sends to. During the
-  run it shows how the upload is going: **Sent 3s** (已送 3s) means the server acknowledged
-  the latest sample three seconds ago; **Sending**, **Retry**, **Paused**, **Pause sent**,
-  **End pending** and **End sent** follow the timer.
+  run it shows nothing about the upload unless uploads have failed for 30 seconds.
 - Pairing another watch to the account retires the old one: its next upload is refused
   (401), and the field forgets its credential and shows a new code before the next run. A
   paired field shows no code, so moving this watch to another account means uninstalling
@@ -79,9 +115,14 @@ A 2xx JSON receipt with a matching session ID, sequence number and `status` of `
 or `duplicate` marks delivery. `ignored`, malformed receipts and other failures leave the
 sample unconfirmed.
 
-For a structured workout, the label changes to **Done 0** (完成 0) on Garmin's
-workout-start callback and counts workout-step-complete callbacks. The count is local to
-the watch and does not identify the current step or the workout.
+For a structured workout, the field counts Garmin's workout-step-complete callbacks from
+the workout-start callback and sends the count as `steps_done`. The count does not
+identify the current step or the workout.
+
+The receipt of an accepted running sample carries `planned_steps`: the step count of
+today's delivered Coach running workout, or null. The field keeps the first number it gets
+for the run and shows the gold check when its own count reaches it. A different workout, or
+a day with two Coach runs, shows stamps only.
 
 ## Simulator and device checks
 
@@ -89,6 +130,11 @@ the watch and does not identify the current step or the workout.
 python3 -B build.py --test --output-dir "$HOME/Library/Caches/CoachFieldBuilds"
 connectiq
 monkeydo "$HOME/Library/Caches/CoachFieldBuilds/fr57042mm/CoachTest.prg" fr57042mm -t
+# A scripted 80-second run that loops: the code, the paired account, zones 2 and 5, a km
+# flag, a stamp, the gold check, walking, a pause and no heart rate. It never uses the
+# network, so it is also the way to take store screenshots.
+python3 -B build.py --demo --device fr57047mm --output-dir "$HOME/Library/Caches/CoachFieldBuilds"
+monkeydo "$HOME/Library/Caches/CoachFieldBuilds/fr57047mm/CoachDemo.prg" fr57047mm
 ```
 
 Tests replace the network and storage with in-memory captures. On a paired watch, check

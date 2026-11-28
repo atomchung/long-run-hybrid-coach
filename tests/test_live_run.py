@@ -67,7 +67,7 @@ class LiveRunTest(unittest.TestCase):
         self.assertIsNone(self.store.recap("owner-b"))
         sample = self.sample(timer_ms=5000, heart_rate_bpm=121)
         receipt = self.store.ingest("owner-a", sample)
-        self.assertEqual({"status": "accepted", "session_id": "run-a", "seq": 0}, receipt)
+        self.assertEqual({"status": "accepted", "session_id": "run-a", "seq": 0, "planned_steps": None}, receipt)
         sample["heart_rate_bpm"] = 200
         self.store.recap("owner-a")["average_hr"] = 201
         self.store.recap("owner-a")["every_10_minutes"][0]["average_hr"] = 202
@@ -336,6 +336,95 @@ class RunRecapTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 self.watch.store.ingest("a", self.watch.sample(**bad))
         self.assertEqual("accepted", self.watch.store.ingest("a", self.watch.sample(altitude_m=-3.5))["status"])
+
+
+def work(name="Step"):
+    return {"kind": "work", "name": name, "duration": {"kind": "time", "seconds": 60}, "target": {"kind": "open"}}
+
+
+def session(day="2026-08-13", *, sport="running", state="intervals_accepted", kind="time_axis", steps=None, sid="s"):
+    plan = {"kind": kind} if kind != "time_axis" else {"kind": kind, "name": "Run", "steps": steps or [work()]}
+    return {"session_id": sid, "sport": sport, "scheduled_date": day, "plan": plan,
+            "execution": {"publish_supported": True, "external_id": None, "delivery_state": state}}
+
+
+def plan_of(*sessions):
+    return {"week": {"sessions": list(sessions)}}
+
+
+class PlannedStepsTest(unittest.TestCase):
+    def test_steps_expand_the_way_the_watch_counts_them(self):
+        self.assertEqual(3, live_run.watch_step_count([work(), work(), work()]))
+        intervals = [work("Warm-up"), {"kind": "repeat", "repetitions": 5, "steps": [work(), work()]}, work("Cool-down")]
+        self.assertEqual(12, live_run.watch_step_count(intervals))
+
+    def test_one_delivered_structured_run_today_gives_its_count(self):
+        steps = [work(), {"kind": "repeat", "repetitions": 3, "steps": [work(), work()]}]
+        plan = plan_of(session(steps=steps), session("2026-08-14", steps=[work()] * 9, sid="t"),
+                       session(sport="strength", kind="movement_list", sid="u"))
+        self.assertEqual(7, live_run.planned_steps_for_day(plan, "2026-08-13"))
+
+    def test_anything_but_exactly_one_such_session_is_null(self):
+        today = "2026-08-13"
+        cases = {
+            "no running session today": plan_of(session("2026-08-14")),
+            "two delivered running sessions": plan_of(session(sid="a"), session(sid="b")),
+            "not delivered": plan_of(session(state="not_published")),
+            "no structured workout": plan_of(session(kind="unstructured")),
+            "not a run": plan_of(session(sport="strength")),
+            "empty plan": {},
+        }
+        for name, plan in cases.items():
+            with self.subTest(name):
+                self.assertIsNone(live_run.planned_steps_for_day(plan, today))
+        # False-positive control: an undelivered second run does not hide the delivered one.
+        self.assertEqual(1, live_run.planned_steps_for_day(
+            plan_of(session(sid="a"), session(sid="b", state="not_published")), today))
+
+    def test_a_receipt_carries_the_value_only_when_running_and_reads_once_per_session(self):
+        watch = WatchRun()
+        reads = []
+
+        def read():
+            reads.append(1)
+            return 12
+
+        def send(**updates):
+            watch.advance(5)
+            watch.seq += 1
+            watch.timer_ms += 5000
+            return watch.store.ingest("a", watch.sample(**updates), read)
+
+        self.assertEqual(12, send()["planned_steps"])
+        self.assertEqual(12, send()["planned_steps"])
+        paused = watch.control("paused")
+        self.assertEqual("accepted", paused["status"])
+        self.assertNotIn("planned_steps", paused)
+        self.assertEqual(12, send()["planned_steps"])
+        self.assertEqual(1, len(reads))
+        stale = watch.store.ingest("a", watch.sample(seq=0), read)
+        self.assertEqual(({"session_id", "seq", "status"}, "ignored"), (set(stale), stale["status"]))
+        # A repeated sample is a duplicate with the receipt it always had.
+        again = watch.sample()
+        self.assertEqual({"session_id", "seq", "status"}, set(watch.store.ingest("a", again, read)))
+        self.assertNotIn("planned_steps", watch.control("ended"))
+        watch.session = "run-b"
+        watch.seq = 0
+        self.assertEqual(12, send()["planned_steps"])
+        self.assertEqual(2, len(reads))
+
+    def test_a_read_that_raises_is_null_and_does_not_fail_the_upload(self):
+        watch = WatchRun()
+
+        def broken():
+            raise OSError("plan unreadable")
+
+        receipt = watch.store.ingest("a", watch.sample(timer_ms=5000), broken)
+        self.assertEqual(("accepted", None), (receipt["status"], receipt["planned_steps"]))
+        calls = []
+        watch.seq += 1
+        again = watch.store.ingest("a", watch.sample(timer_ms=10000), lambda: calls.append(1) or 5)
+        self.assertEqual((None, []), (again["planned_steps"], calls))
 
 
 if __name__ == "__main__":
