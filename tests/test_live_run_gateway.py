@@ -43,8 +43,11 @@ class WatchGatewayTestCase(GatewayTestCase):
 
     def setUp(self):
         super().setUp()
-        self.owner = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.owner = self.seed_owner(TOKEN_A, plan=self.seeded_plan())
         self.other = self.seed_owner(TOKEN_B, athlete_id="i2")
+
+    def seeded_plan(self):
+        return publishable_plan()
 
     def tool(self, token, name, arguments=None):
         status, reply = self.call("POST", MCP_PATH, body=self.tool_rpc(name, arguments),
@@ -175,6 +178,56 @@ class WatchPairingTests(WatchGatewayTestCase):
         self.assertEqual("code_not_accepted", again["status"])
         self.assertEqual(200, self.call("POST", LIVE_RUN_PATH, token=second,
                                         body=running(2, 10000, int(time.time())))[0])
+
+
+def delivered_today_plan():
+    """The fixture plan with today's (2026-08-13) interval run delivered to the calendar."""
+    plan = publishable_plan()
+    for item in plan["week"]["sessions"]:
+        if item["session_id"] == "run-quality-01":
+            item["execution"].update(external_id="9001", delivery_state="intervals_accepted")
+    return plan
+
+
+class PlannedStepsReceiptTests(WatchGatewayTestCase):
+    def seeded_plan(self):
+        return delivered_today_plan()
+
+    def setUp(self):
+        super().setUp()
+        self.watch = self.pair()
+        self.gateway._watch_upload_limit = RateLimiter(10_000, 60)
+        self.gateway._watch_address_limits["live_run_samples"] = RateLimiter(10_000, 60)
+
+    def post(self, sample):
+        status, ack = self.call("POST", LIVE_RUN_PATH, token=self.watch, body=sample)
+        self.assertEqual(200, status, ack)
+        return ack
+
+    def test_a_running_receipt_names_the_steps_of_todays_delivered_workout(self):
+        now = int(time.time()) - 20
+        first = self.post(running(1, 5000, now))
+        # Warm-up, five repetitions of two steps, cool-down.
+        self.assertEqual(("accepted", 12), (first["status"], first["planned_steps"]))
+        self.assertEqual(12, self.post(running(2, 10000, now + 5))["planned_steps"])
+        self.assertEqual({"session_id", "seq", "status"}, set(self.post(running(2, 10000, now + 5))))
+        paused = self.post({**running(3, 15000, now + 10), "state": "paused"})
+        self.assertEqual({"session_id", "seq", "status"}, set(paused))
+
+    def test_it_is_null_when_nothing_is_delivered_today_or_the_plan_cannot_be_read(self):
+        # Another day: the same plan, read a day later, has no run scheduled today.
+        self.now = NOW.replace(day=20)
+        self.assertIsNone(self.post(running(1, 5000, int(time.time()) - 10))["planned_steps"])
+        self.now = NOW
+        for path in self.owner_dir(self.owner).rglob("store.json"):
+            path.write_text("not json")
+        again = self.post(running(1, 5000, int(time.time()), session_id="fixture-2"))
+        self.assertEqual(("accepted", None), (again["status"], again["planned_steps"]))
+
+    def test_reading_the_plan_for_a_receipt_writes_nothing(self):
+        before = self.snapshot(self.owner_dir(self.owner))
+        self.post(running(1, 5000, int(time.time())))
+        self.assertEqual(before, self.snapshot(self.owner_dir(self.owner)))
 
 
 class WatchRunReadTests(WatchGatewayTestCase):

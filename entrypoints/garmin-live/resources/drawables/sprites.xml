@@ -1,0 +1,32 @@
+<!-- Sprites from the running field design, box x=72 y=285 w=159 h=136 in the 454 design space. -->
+<drawables>
+    <bitmap id="RunZ1P0" filename="sprites/run_z1_p0.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ1P1" filename="sprites/run_z1_p1.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ1P2" filename="sprites/run_z1_p2.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ1P3" filename="sprites/run_z1_p3.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="CheerZ1" filename="sprites/cheer_z1.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ2P0" filename="sprites/run_z2_p0.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ2P1" filename="sprites/run_z2_p1.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ2P2" filename="sprites/run_z2_p2.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ2P3" filename="sprites/run_z2_p3.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="CheerZ2" filename="sprites/cheer_z2.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ3P0" filename="sprites/run_z3_p0.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ3P1" filename="sprites/run_z3_p1.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ3P2" filename="sprites/run_z3_p2.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ3P3" filename="sprites/run_z3_p3.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="CheerZ3" filename="sprites/cheer_z3.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ4P0" filename="sprites/run_z4_p0.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ4P1" filename="sprites/run_z4_p1.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ4P2" filename="sprites/run_z4_p2.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ4P3" filename="sprites/run_z4_p3.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="CheerZ4" filename="sprites/cheer_z4.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ5P0" filename="sprites/run_z5_p0.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ5P1" filename="sprites/run_z5_p1.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ5P2" filename="sprites/run_z5_p2.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="RunZ5P3" filename="sprites/run_z5_p3.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="CheerZ5" filename="sprites/cheer_z5.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="Walk0" filename="sprites/walk_0.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="Walk1" filename="sprites/walk_1.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="Sit" filename="sprites/sit.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+    <bitmap id="Stand" filename="sprites/stand.png" scaleX="35.02%" scaleRelativeTo="screen"/>
+</drawables>
